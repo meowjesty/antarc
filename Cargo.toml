@@ -1,14 +1,6 @@
-[package]
-name = "antarc"
-version = "0.1.0"
-authors = ["meowjesty <meowjesty_nyan@outlook.com>"]
-edition = "2018"
+[workspace]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-
-[[example]]
-name="hello_antarc"
-path="examples/hello_antarc/main.rs"
-test = true
+members = [
+    "antarc",
+    "experimental",
+]
