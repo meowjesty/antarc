@@ -1,5 +1,6 @@
 use std::net::UdpSocket;
 
+/*
 use antarc::Header;
 
 fn client_main() {
@@ -96,5 +97,6 @@ fn server_main() {
         server.send(world_state_changes); // .await
     }
 }
+*/
 
 fn main() {}
