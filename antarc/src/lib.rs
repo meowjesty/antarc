@@ -107,12 +107,12 @@ pub type TimeData = u128;
 
 pub type PacketKind = u16;
 
-pub const PROTOCOL_ID: NonZeroU32 = NonZeroU32::new_unchecked(0xbabedad);
+pub const PROTOCOL_ID: NonZeroU32 = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
 pub const PROTOCOL_ID_BYTES: [u8; mem::size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
 pub const BUFFER_CAP: usize = Header::ENCODED_SIZE + 128;
-pub const PADDING: NonZeroU8 = NonZeroU8::new_unchecked(0xe0);
+pub const PADDING: NonZeroU8 = unsafe { NonZeroU8::new_unchecked(0xe0) };
 /// Marks the end of useful data, anything past this can be skipped.
-pub const END_OF_PACKET: NonZeroU16 = NonZeroU16::new_unchecked(0x31f6);
+pub const END_OF_PACKET: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(0x31f6) };
 pub const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
     END_OF_PACKET.get().to_be_bytes();
 // pub const END_OF_PACKET: PacketMarker = 0xa43a;
@@ -121,6 +121,12 @@ pub const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
 pub const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
 
+/// TODO(alex): 2021-02-05: How to represent these types of packets?
+/// `ConnectionRequest<Packet<ToSend>>`, `ConnectionRequest<Packet<Received>>`? There'll be a bunch
+/// of these structs for each type, as each outer-state may contain any inner-state:
+/// `ConnectionRequest<Packet<*>>`. Could we get away with `ConnectionRequest<Packet<State>>`
+/// in a generic way?
+///
 /// Packets might be either:
 /// - FRAGMENTED or NON_FRAGMENTED;
 /// - DATA_TRANSFER or CONNECTION_REQUEST or CHALLENGE or CHALLENGE_RESPONSE;
@@ -133,7 +139,6 @@ pub const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
 pub const NON_FRAGMENTED: PacketKind = 1;
 pub const FRAGMENTED: PacketKind = 1 << 1;
 pub const DATA_TRANSFER: PacketKind = 1 << 2;
-pub const SENT: PacketKind = 1 << 3;
 pub const CONNECTION_REQUEST: PacketKind = 1 << 3;
 pub const CHALLENGE_REQUEST: PacketKind = 1 << 4;
 pub const CHALLENGE_RESPONSE: PacketKind = 1 << 5;

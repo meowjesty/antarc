@@ -10,8 +10,13 @@ use crc32fast::Hasher;
 
 use crate::{
     read_buffer_inc, PacketInfo, PacketKind, PacketMarker, BUFFER_CAP, END_OF_PACKET_BYTES,
-    PACKED_LEN, PROTOCOL_ID_BYTES, SENT,
+    PACKED_LEN, PROTOCOL_ID_BYTES,
 };
+
+pub(crate) struct RawPacket {
+    crc32: NonZeroU32,
+    buffer: Vec<u8>,
+}
 
 /// NOTE(alex): Valid `Packet` state transitions:
 /// - Received -> Retrieved;
@@ -48,18 +53,22 @@ pub(crate) struct Header {
     /// Incremented individually for each `Host`.
     pub(crate) sequence: NonZeroU32,
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
-    pub(crate) ack: PacketInfo,
+    pub(crate) ack: u32,
     /// Represents the ack bitfields to send previous acked state in a compact manner.
     /// TODO(alex): Use this.
-    pub(crate) past_acks: PacketInfo,
+    pub(crate) past_acks: u32,
     /// TODO(alex) 2021-01-29: I need this to differentiate between packets, having separate
     /// `Packet` structs (union) won't cover the case when the user sends an empty packet vs the
     /// protocol sending an ack-only packet, as both would have a zero-length body.
     /// ADD(alex) 2021-01-29: The above is talking about the lower level header, that is transmitted
     /// through the network, but here, I could use the type system to encode the correct state, and
-    /// convert it into the an `u16` only at `send` and `recv` time. Similar to how the crc32 and
+    /// convert it into a `u16` only at `send` and `recv` time. Similar to how the crc32 and
     /// sentinel values are not present in this struct, the kind also doesn't have to be, I just
     /// need to handle it in a sort of just-in-time way (encode/decode).
+    /// ADD(alex) 2021-02-05: The `kind` is defines the packet as a connection request, or a
+    /// response, maybe a data transfer, and each is handled differently, for example, the protocol
+    /// will read the `body` of a connection request, and of a fragment, but it just passes it in
+    /// the case of a data transfer.
     pub(crate) kind: NonZeroU16,
 }
 
@@ -73,17 +82,16 @@ pub(crate) struct Header {
 /// `Header.kind` field during encoding / decoding.
 impl Header {
     /// NOTE(alex): This is the size of the `Header` for the fields that are **encoded** and
-    /// transmitted via the network.
-    pub(crate) const ENCODED_SIZE: usize =
-        mem::size_of::<PacketInfo>() * 5 + mem::size_of::<PacketKind>();
+    /// transmitted via the network, `Self + ProtocolId`, even though the crc32 substitutes it.
+    pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Self>() + mem::size_of::<u32>();
 
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
+    fn encode(&self) -> Result<Vec<u8>, String> {
         let b_protocol_id = PROTOCOL_ID_BYTES;
-        let b_connection_id = self.connection_id.to_be_bytes();
-        let b_sequence = self.sequence.to_be_bytes();
+        let b_connection_id = self.connection_id.get().to_be_bytes();
+        let b_sequence = self.sequence.get().to_be_bytes();
         let b_ack = self.ack.to_be_bytes();
         let b_past_acks = self.past_acks.to_be_bytes();
-        let b_kind = self.kind.to_be_bytes();
+        let b_kind = self.kind.get().to_be_bytes();
 
         // NOTE(alex): Protocol Id will be overwritten and discarded after crc32 is calculated.
         let write_buffers = [
@@ -99,7 +107,7 @@ impl Header {
         let num_written = cursor
             .write_vectored(&write_buffers)
             .map_err(|fail| fail.to_string())?;
-        // TODO(alex): Create an error for basically a failed written packet.
+        // TODO(alex): Create an error for a failed written packet.
         // This also requires us to have a more uniform size for a packet, right now it may have any
         // size, this will stop when a packet becomes a hash_packet.
         if num_written == 0 {
@@ -111,21 +119,21 @@ impl Header {
         Ok(cursor.into_inner())
     }
 
-    pub fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, String> {
+    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, String> {
         let mut read_pos = 0;
         let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
 
-        // let crc32 = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
-        let connection_id = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
-        let sequence = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
+        let connection_id =
+            NonZeroU32::new(read_buffer_inc!(PacketInfo, read_buffer, read_pos)).unwrap();
+        let sequence =
+            NonZeroU32::new(read_buffer_inc!(PacketInfo, read_buffer, read_pos)).unwrap();
         let ack = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
         let past_acks = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
-        let kind = read_buffer_inc!(PacketKind, read_buffer, read_pos);
+        let kind = NonZeroU16::new(read_buffer_inc!(PacketKind, read_buffer, read_pos)).unwrap();
 
         cursor.consume(read_pos);
 
         let header = Header {
-            // crc32,
             connection_id,
             sequence,
             ack,
@@ -155,19 +163,14 @@ impl Header {
 /// containing the previous state, which seems counterintuitive, as the biggest benefit I'm seeking
 /// is to have the most help possible from the compiler to prevent incorrect states from being
 /// representable.
-// struct Header {}
-
-trait MetaPacket<Kind> {
-    fn metadata(&self) -> Kind;
-}
 
 #[derive(Debug)]
 pub(crate) struct Received {
     time_received: Duration,
 }
 
-/// TODO(alex) 2021-01-28: These are packets that were received, and the user application has
-/// loaded, so they're moved into this state.
+/// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
+/// loaded them, so they're moved into this state.
 #[derive(Debug)]
 pub(crate) struct Retrieved {
     time_received: Duration,
@@ -192,7 +195,7 @@ pub(crate) struct Acked {
     time_acked: Duration,
 }
 
-/// TODO(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
+/// NOTE(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.
 #[derive(Debug)]
 pub(crate) struct Packet<State> {
@@ -201,53 +204,152 @@ pub(crate) struct Packet<State> {
     state: State,
 }
 
-/// TODO(alex) 2021-01-31: This is an impl block only for packets with `Sent` as the state.
-impl Packet<Sent> {
-    fn ack_packet(self) -> Packet<Acked> {
-        let acked = Acked {
-            time_enqueued: Duration::new(1, 0),
-            time_sent: Duration::new(2, 0),
-            time_acked: Duration::new(3, 0),
+impl Packet<Received> {
+    pub(crate) fn new(header: Header, body: Vec<u8>) -> Self {
+        let state = Received {
+            // TODO(alex) 2021-02-05: This function requires a timing system.
+            time_received: Duration::new(0, 0),
         };
         let packet = Packet {
-            header: self.header,
-            body: self.body,
-            state: acked,
+            header,
+            body,
+            state,
         };
 
         packet
     }
-}
 
-/// TODO(alex) 2021-01-31: This is an impl block for packets with **any** state.
-impl<Kind> Packet<Kind> {
-    pub fn new(header: Header, body: Vec<u8>) -> Self {
-        // TODO(alex) 2021-02-01: How to deal with the state here? There must be some initial
-        // default state, or this function doesn't exist, prohibiting the creation of a default
-        // packet. This `new` here would be basically equal to a `impl Default`.
-        Packet {
-            header,
-            body,
-            state: todo!(),
-        }
+    pub(crate) fn retrieved(self) -> Packet<Retrieved> {
+        let state = Retrieved {
+            time_received: self.state.time_received,
+            // TODO(alex) 2021-02-05: This function requires a timing system.
+            time_retrieved: Duration::new(0, 0),
+        };
+        let packet = Packet {
+            header: self.header,
+            body: self.body,
+            state,
+        };
+
+        packet
     }
 
-    // TODO(alex): Deep into the future, try to use `ptr::copy_nonoverlapping` instead of `Cursor`,
-    // it's use of memcpy will probably be faster.
-    pub fn serialize(&self) -> Result<Vec<u8>, String> {
+    /// TODO(alex) 2021-02-05: Decoding only makes sense in a `Packet<Received>` context, why would
+    /// I want to decode any other state of a packet?
+    pub fn decode(buffer: &[u8]) -> Result<Packet<Received>, String> {
+        if buffer.len() > PACKED_LEN {
+            panic!(
+                "Not handling packets that have a different len {:?} > PACKED_LEN {:?}",
+                buffer.len(),
+                PACKED_LEN
+            );
+        }
+
+        let skip_crc32 = mem::size_of::<u32>();
+        // NOTE(alex): New buffer that has a `ProtocolId` at the start, instead of the crc32.
+        // TODO(alex): Check if this is allocating a vec, then converting it into a slice.
+        let challenge_buffer = &[&PROTOCOL_ID_BYTES, &buffer[skip_crc32..]].concat();
+        // NOTE(alex): Calculate crc32 and check it against the received packet.
+        let mut hasher = Hasher::new();
+        hasher.update(challenge_buffer);
+        let expected_crc32 = hasher.finalize();
+
+        // NOTE(alex): Deserialize `Header` and retrieve number of bytes written.
+        // TODO(alex) 2021-02-05: Can't we read the crc32 from the buffer, then pass a cursor
+        // (or a read_buf) to Header::deserialize, to keep the cursor position synchronized?
+        let mut cursor = Cursor::new(buffer);
+        let mut read_pos = 0;
+        let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
+
+        let received_crc32 = read_buffer_inc!(u32, read_buffer, read_pos);
+        cursor.consume(read_pos);
+        if expected_crc32 != received_crc32 {
+            return Err(format!(
+                "CRC32 error: invalid crc32, expected {:?}, but got {:?}.",
+                expected_crc32, received_crc32
+            ));
+        }
+
+        let header = Header::decode(&mut cursor)?;
+        let pos_after_header = cursor.position() as usize;
+
+        // NOTE(alex): Cursor skips the decoded `Header` (which does not have the same number of
+        // bytes as `size_of::<Header>()`).
+        let mut cursor = Cursor::new(&buffer[pos_after_header..]);
+        let body_buffer_with_marker = cursor.fill_buf().map_err(|fail| fail.to_string())?;
+
+        // NOTE(alex): Check for a valid packet end marker.
+        let offset_to_marker = body_buffer_with_marker.len() - mem::size_of::<PacketMarker>();
+        let (body_buffer, marker) = body_buffer_with_marker.split_at(offset_to_marker);
+        if marker != END_OF_PACKET_BYTES {
+            return Err("Serialization error: wrong packet marker.".to_string());
+        }
+
+        let body = body_buffer.to_vec();
+
+        let read_pos = body_buffer.len() + marker.len();
+        cursor.consume(read_pos);
+
+        // TODO(alex) 2021-01-24: This should be an actual time, we need some form of global timing
+        // system to keep track of received, sent, lost connection, heartbeat timings.
+        // ADD(alex) 2021-02-05: This function requires a timing system.
+        let now = 0;
+        // let packet = RawPacket::new(header, body, Metadata::Received(now));
+        // Ok(packet)
+        unimplemented!();
+    }
+}
+
+impl Packet<ToSend> {
+    pub(crate) fn new(header: Header, body: Vec<u8>) -> Self {
+        let state = ToSend {
+            // TODO(alex) 2021-02-05: This function requires a timing system.
+            time_enqueued: Duration::new(1, 0),
+        };
+        let packet = Packet {
+            header,
+            body,
+            state,
+        };
+
+        packet
+    }
+
+    pub(crate) fn sent(self) -> Packet<Sent> {
+        let state = Sent {
+            time_enqueued: self.state.time_enqueued,
+            // TODO(alex) 2021-02-05: This function requires a timing system.
+            time_sent: Duration::new(0, 0),
+        };
+        let packet = Packet {
+            header: self.header,
+            body: self.body,
+            state,
+        };
+
+        packet
+    }
+
+    /// TODO(alex) 2021-02-05: Encoding only makes sense in packets we want to send (preparing to
+    /// send), I can't see any reason to having this function be more generic (and be used by other
+    /// states). Is there a point to having this in any other state? Why would I want to encode
+    /// a `Packet<Acked>`?
+    fn encode(&self) -> Result<RawPacket, String> {
         if self.body.len() > BUFFER_CAP {
             return Err("Serialization error: over buffer capacity.".to_string());
         }
 
         let header = self.header.encode()?;
-        let b_end_of_packet = END_OF_PACKET_BYTES;
         let write_buffers = [
             // NOTE(alex): Header buffer contains the `ProtocolId` value at its start.
             IoSlice::new(&header),
             IoSlice::new(&self.body),
-            IoSlice::new(&b_end_of_packet),
+            IoSlice::new(&END_OF_PACKET_BYTES),
         ];
 
+        // TODO(alex) 2021-02-05: Consider `ptr::copy_nonoverlapping` as an alternative to `Cursor`,
+        //  this is a potential performance consideration, but we're not in that phase yet
+        // (`memcpy`).
         let mut cursor = Cursor::new(Vec::with_capacity(PACKED_LEN));
         let num_written = cursor
             .write_vectored(&write_buffers)
@@ -266,96 +368,56 @@ impl<Kind> Packet<Kind> {
         // NOTE(alex): Calculate crc32 and add it into the packet.
         let mut hasher = Hasher::new();
         hasher.update(cursor.get_ref());
-        let crc32 = hasher.finalize();
+        let crc32 = NonZeroU32::new(hasher.finalize()).unwrap();
 
         println!("written crc32 {:?}", crc32);
 
         // NOTE(alex): This overwrites the Protocol Id with crc32.
         cursor.set_position(0);
         cursor
-            .write(&crc32.to_be_bytes())
+            .write(&crc32.get().to_be_bytes())
             .map_err(|fail| fail.to_string())?;
 
         cursor.flush().map_err(|fail| fail.to_string())?;
 
-        let packet = cursor.into_inner();
-        assert!(packet.len() > 0);
-        assert!(packet.len() <= PACKED_LEN);
-        // Ok((packet, crc32))
-        Ok(packet)
+        let buffer = cursor.into_inner();
+        assert!(buffer.len() > 0);
+        assert!(buffer.len() <= PACKED_LEN);
+
+        let raw_packet = RawPacket { crc32, buffer };
+
+        Ok(raw_packet)
     }
+}
 
-    // TODO(alex):  Can't we read the crc32 from the buffer, then pass a cursor (or a read_buf) to
-    // Header::deserialize, to keep the cursor position synchronized?
-    pub fn deserialize(buffer: &[u8]) -> Result<Self, String> {
-        if buffer.len() > PACKED_LEN {
-            panic!(
-                "Not handling packets that have a different len {:?} > PACKED_LEN {:?}",
-                buffer.len(),
-                PACKED_LEN
-            );
-        }
+impl Packet<Sent> {
+    pub(crate) fn acked(self) -> Packet<Acked> {
+        let state = Acked {
+            time_enqueued: self.state.time_enqueued,
+            time_sent: self.state.time_sent,
+            // TODO(alex) 2021-02-05: This function requires a timing system.
+            time_acked: Duration::new(0, 0),
+        };
+        let packet = Packet {
+            header: self.header,
+            body: self.body,
+            state,
+        };
 
-        let skip_crc32 = mem::size_of::<PacketInfo>();
-
-        // NOTE(alex): Deserialize `Header` and retrieve number of bytes written.
-        let mut cursor = Cursor::new(buffer);
-        let mut read_pos = 0;
-        let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
-
-        let read_crc32 = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
-        cursor.consume(read_pos);
-
-        let header = Header::decode(&mut cursor)?;
-        let pos_after_header = cursor.position() as usize;
-
-        // NOTE(alex): New buffer that has a `ProtocolId` at the start, instead of the crc32.
-        // TODO(alex): Check if this is allocating a vec, then converting it into a slice.
-        let buffer = &[&PROTOCOL_ID_BYTES, &buffer[skip_crc32..]].concat();
-
-        // NOTE(alex): Calculate crc32 and check it against the received packet.
-        let mut hasher = Hasher::new();
-        hasher.update(buffer);
-        let expected_crc32 = hasher.finalize();
-
-        if expected_crc32 != read_crc32 {
-            return Err(format!(
-                "CRC32 error: invalid crc32, expected {:?}, but got {:?}.",
-                expected_crc32, read_crc32
-            ));
-        }
-
-        // NOTE(alex): Cursor skips the deserialized `Header` (which might not have the same number of
-        // bytes as `mem::size_of::<Header>()`).
-        let mut cursor = Cursor::new(&buffer[pos_after_header..]);
-        let read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
-
-        // NOTE(alex): Check for a valid packet end marker.
-        let offset_to_marker = read_buffer.len() - mem::size_of::<PacketMarker>();
-        let (data_buf, marker) = read_buffer.split_at(offset_to_marker);
-        if marker != END_OF_PACKET_BYTES {
-            return Err("Serialization error: wrong packet marker.".to_string());
-        }
-
-        let body = data_buf.to_vec();
-
-        let read_pos = data_buf.len() + marker.len();
-        cursor.consume(read_pos);
-
-        // TODO(alex) 2021-01-24: This should be an actual time, we need some form of global timing
-        // system to keep track of received, sent, lost connection, heartbeat timings.
-        let now = 0;
-        // let packet = RawPacket::new(header, body, Metadata::Received(now));
-        // Ok(packet)
-        unimplemented!();
+        packet
     }
+}
 
-    // TODO(alex): Hash the buffer to have a fixed size.
+/// TODO(alex) 2021-01-31: This is an impl block for packets with **any** state.
+/// ADD(alex) 2021-02-05: Functions defined here conflict with functions in every other state, so
+/// a `fn new` here won't allow any other state to have an `fn new`, you must use the most generic.
+impl<State> Packet<State> {
+    /// TODO(alex) 2021-02-05: Hash the buffer to have a fixed size.
     pub fn pack(mut buffer: Vec<u8>) -> u128 {
         unimplemented!()
     }
 
-    // TODO(alex): Unhash the value into a packet buffer.
+    /// TODO(alex) 2021-02-05: Unhash the value into a packet buffer.
     pub fn unpack(buffer: &[u8]) -> &[u8] {
         unimplemented!()
     }
