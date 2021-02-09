@@ -177,6 +177,14 @@ pub(crate) struct Retrieved {
     time_retrieved: Duration,
 }
 
+/// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
+/// they cannot be retrieved by the use. Deals with connection requests (connection handling),
+/// hearbeat, fragmentation.
+#[derive(Debug)]
+pub(crate) struct Internal {
+    time_received: Duration,
+}
+
 #[derive(Debug)]
 pub(crate) struct Sent {
     time_enqueued: Duration,
@@ -194,6 +202,18 @@ pub(crate) struct Acked {
     time_sent: Duration,
     time_acked: Duration,
 }
+
+/// TODO(alex) 2021-02-09: There must be a way to mark a packet as `Reliable` and/or `Priority`.
+/// The `Reliable` packet will keep retrying until it is acked, how the algorithm will actually work
+/// I'm still unsure, should it keep bumping itself into being the first to send, until it's acked?
+/// Maybe send it once, wait some `timeout_not_acked` time and then resend it, this would allow the
+/// `past_acks` part to shine, as we could end up not getting a direct packet ack (the client
+/// doesn't receive a packet with `ack` equals the sent `sequence`), but it gets acked anyway by
+/// the `past_acks` in some later packet saying: "Hey, I've acked the last 6 packets you've sent",
+/// this would be done by getting whatever `sequence` the server received (client sent packet 10,
+/// but server never got packet 9, 8, 7), acking it, and replying with a
+/// `ack: 10, past_ack: (10, 6, 5, 4, 3,...)`, then the client would know that the server is acking
+/// the packet 10, but missed some (9, 8, 7).
 
 /// NOTE(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.

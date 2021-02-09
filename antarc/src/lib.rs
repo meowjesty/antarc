@@ -9,6 +9,7 @@ use std::{
 };
 
 mod packet;
+mod host;
 
 #[macro_export]
 macro_rules! read_buffer_inc {

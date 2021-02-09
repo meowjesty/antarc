@@ -1,45 +1,5 @@
 # Antarc UDP protocol
 
-```mermaid
-stateDiagram-v2
-    [*] --> Disconnected
-    Disconnected --> Connecting : client sends connection request
-    Connecting --> Challenge : server sends challenge to client
-    Challenge --> Connected : client sends challenge response to server
-    Connected --> [*]
-```
-
-```mermaid
-sequenceDiagram
-    autonumber
-
-    Note left of Client : client starts as "Disconnected"
-    Client ->> Server : connection request
-    activate Server
-    Note right of Server : server either creates a new "Host" or updates an existing "Disconnected"
-    Server -->> Server : "Host" connecting
-    Server ->> Client : challenge request
-    deactivate Server
-    activate Client
-    Note right of Server : the server's client host state always lags behind (awaits client ack)
-
-    Client -->> Client : change state from "Connecting" to "Challenge"
-    Client ->> Server : challenge response
-    deactivate Client
-
-    activate Server
-    Server -->> Server : host from "Connecting" to "Challenge" state
-    Note right of Server : server received an ack for it's challenge
-    Note right of Server : checks if the response is ok, then acks the connection
-    Server ->> Client : connection accepted
-    deactivate Server
-
-    activate Client
-    Client -->> Client : change state from "Challenge" to "Connected"
-    Client ->> Server : data transfer plus ack
-    deactivate Client
-```
-
 **Client**:
 
 ```mermaid
