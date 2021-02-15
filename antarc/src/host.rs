@@ -1,30 +1,38 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, num::NonZeroU32};
 
-use crate::packet::{Acked, Packet, Received, Retrieved, Sent, ToSend};
+use crate::packet::{Acked, Internal, Packet, Received, Retrieved, Sent, ToSend};
 
+/// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
+/// when trying to figure out how to keep alive a session (connection), how the communication
+/// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 #[derive(Debug)]
-struct Connecting {
-    remote_addr: SocketAddr,
+pub(crate) struct Connecting {
+    pub(crate) remote_addr: SocketAddr,
 }
 
 #[derive(Debug)]
-struct Connected {
-    remote_addr: SocketAddr,
+pub(crate) struct Connected {
+    pub(crate) remote_addr: SocketAddr,
 }
 
 #[derive(Debug)]
-struct Disconnected {
-    remote_addr: SocketAddr,
+pub(crate) struct Disconnected {
+    pub(crate) remote_addr: SocketAddr,
 }
 
 #[derive(Debug)]
-struct Host<State> {
-    received_list: Vec<Packet<Received>>,
-    retrieved: Vec<Packet<Retrieved>>,
-    send_queue: Vec<Packet<ToSend>>,
-    sent: Vec<Packet<Sent>>,
-    acked: Vec<Packet<Acked>>,
-    state: State,
+pub(crate) struct Host<ConnectionState> {
+    pub(crate) sequence: NonZeroU32,
+    /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
+    /// increasing due to us flooding the network with packets.
+    pub(crate) rtt: u128,
+    pub(crate) received_list: Vec<Packet<Received>>,
+    pub(crate) retrieved: Vec<Packet<Retrieved>>,
+    pub(crate) internals: Vec<Packet<Internal>>,
+    pub(crate) send_queue: Vec<Packet<ToSend>>,
+    pub(crate) sent: Vec<Packet<Sent>>,
+    pub(crate) acked: Vec<Packet<Acked>>,
+    pub(crate) state: ConnectionState,
 }
 
 impl Host<Disconnected> {
@@ -33,8 +41,11 @@ impl Host<Disconnected> {
     pub(crate) fn new(remote_addr: SocketAddr) -> Host<Disconnected> {
         let state = Disconnected { remote_addr };
         let host = Host {
+            sequence: unsafe { NonZeroU32::new_unchecked(1) },
+            rtt: 0,
             received_list: Vec::with_capacity(32),
             retrieved: Vec::with_capacity(32),
+            internals: Vec::with_capacity(32),
             send_queue: Vec::with_capacity(32),
             sent: Vec::with_capacity(32),
             acked: Vec::with_capacity(32),
@@ -44,14 +55,17 @@ impl Host<Disconnected> {
         host
     }
 
-    fn into_connecting(self) -> Host<Connecting> {
+    pub(crate) fn into_connecting(self) -> Host<Connecting> {
         let state = Connecting {
             remote_addr: "127.0.0.1:7777".parse().unwrap(),
         };
 
         let host = Host {
+            sequence: self.sequence,
+            rtt: self.rtt,
             received_list: self.received_list,
             retrieved: self.retrieved,
+            internals: self.internals,
             send_queue: self.send_queue,
             sent: self.sent,
             acked: self.acked,
@@ -59,87 +73,5 @@ impl Host<Disconnected> {
         };
 
         host
-    }
-}
-
-impl Host<Connecting> {
-    fn into_connected(self) -> Host<Connected> {
-        let state = Connected {
-            remote_addr: "127.0.0.1:7777".parse().unwrap(),
-        };
-
-        let host = Host {
-            received_list: self.received_list,
-            retrieved: self.retrieved,
-            send_queue: self.send_queue,
-            sent: self.sent,
-            acked: self.acked,
-            state,
-        };
-
-        host
-    }
-}
-
-#[derive(Debug)]
-struct Client;
-#[derive(Debug)]
-struct Server;
-
-/// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
-/// receive information about the other `Peer<Client>` that are connected to the same server. They
-/// should probably remain in `disconnected` until there is a server migration (server goes offline
-/// for a while), in which case the clients will try to estabilish a new `Peer<Server>` (negotiate
-/// using some heuristic to determine which of the known hosts would be best).
-///
-/// Migration will require having a `into_server` function.
-/// Is this the correct abstraction to handle different kinds of peers?
-#[derive(Debug)]
-struct Peer<Kind> {
-    connecting: Vec<Host<Connecting>>,
-    connected: Vec<Host<Connected>>,
-    disconnected: Vec<Host<Disconnected>>,
-    kind: Kind,
-}
-
-impl Peer<Client> {
-    fn new(server_address: &SocketAddr) -> Self {
-        let server = Host::new(*server_address);
-        let mut disconnected = Vec::with_capacity(8);
-        disconnected.push(server);
-
-        Self {
-            connecting: Vec::with_capacity(8),
-            connected: Vec::with_capacity(8),
-            disconnected,
-            kind: Client,
-        }
-    }
-
-    /// TODO(alex) 2021-02-07: Handle the connection request to a server, there are a few points
-    /// to consider:
-    ///
-    /// 1. Is it okay to connect to another client, when this one is already connected to a server?
-    ///    - probably not, keep connected checks to empty or single element in the client;
-    /// 2. Create connection request packet:
-    ///    - must check if there is an outgoing request already, that has not yet been acked.
-    ///    - this function should keep itself to packet handling only, do not try to escalate it
-    /// into handling packet loss or anything like that, this will be part of the network
-    /// implementation, as it requires reading incoming packets.
-    fn connect(&self) {
-        if !self.connected.is_empty() {
-            panic!("Client is already connected {:?}.", self);
-        }
-    }
-}
-
-impl Peer<Server> {
-    fn new() -> Self {
-        Self {
-            connecting: Vec::with_capacity(8),
-            connected: Vec::with_capacity(8),
-            disconnected: Vec::with_capacity(8),
-            kind: Server,
-        }
     }
 }

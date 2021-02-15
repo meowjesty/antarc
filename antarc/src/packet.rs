@@ -13,6 +13,10 @@ use crate::{
     PACKED_LEN, PROTOCOL_ID_BYTES,
 };
 
+/// TODO(alex) 2021-02-09: Improve terminology:
+/// http://www.tcpipguide.com/free/t_MessagesPacketsFramesDatagramsandCells-2.htm
+///
+/// http://www.tcpipguide.com/free/t_MessageFormattingHeadersPayloadsandFooters.htm
 pub(crate) struct RawPacket {
     crc32: NonZeroU32,
     buffer: Vec<u8>,
@@ -32,6 +36,16 @@ pub(crate) struct RawPacket {
 // Having it inside `Header` means that serialization takes a `&mut Packet`, so that the crc32 can
 // be inserted, or the alternative where it returns a `(Vec<u8>, crc32)`, which delegates the
 // insertion of crc32 back into the packet, to whoever is calling `packet.serialize()`.
+///
+/// ADD(alex) 2021-02-09: I've missed the concept of a `Footer` completely, putting the crc32 in it
+/// avoids the dance around `protocol_id` <-> `crc32` swap.
+/// http://www.tcpipguide.com/free/t_MessageFormattingHeadersPayloadsandFooters.htm
+///
+/// ADD(alex) 2021-02-10: It's probably also important to include the length of the data in the
+/// header, to avoid dealing with _markers_ for the start/end of the payload. Having a `payload_len`
+/// makes everything simpler to handle when encoding/decoding, we already know where the `Header`
+/// ends (`size_of::<Header>`), with this field we get to just offset `buffer[payload_len]` to get
+/// the `Footer` (with the `crc32`), keeping the `Footer` out of crc32 calculation.
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Header {
     /// WARNING(alex): This must always be the first bytes of the `Header` when converting it
@@ -180,9 +194,11 @@ pub(crate) struct Retrieved {
 /// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
 /// they cannot be retrieved by the use. Deals with connection requests (connection handling),
 /// hearbeat, fragmentation.
+/// TODO(alex) 2021-02-15: This name sucks and doesn't really convey what it does.
 #[derive(Debug)]
 pub(crate) struct Internal {
     time_received: Duration,
+    time_internal: Duration,
 }
 
 #[derive(Debug)]
@@ -219,9 +235,9 @@ pub(crate) struct Acked {
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.
 #[derive(Debug)]
 pub(crate) struct Packet<State> {
-    header: Header,
-    body: Vec<u8>,
-    state: State,
+    pub(crate) header: Header,
+    pub(crate) body: Vec<u8>,
+    pub(crate) state: State,
 }
 
 impl Packet<Received> {
@@ -244,6 +260,21 @@ impl Packet<Received> {
             time_received: self.state.time_received,
             // TODO(alex) 2021-02-05: This function requires a timing system.
             time_retrieved: Duration::new(0, 0),
+        };
+        let packet = Packet {
+            header: self.header,
+            body: self.body,
+            state,
+        };
+
+        packet
+    }
+
+    pub(crate) fn internald(self) -> Packet<Internal> {
+        let state = Internal {
+            time_received: self.state.time_received,
+            // TODO(alex) 2021-02-05: This function requires a timing system.
+            time_internal: Duration::new(0, 0),
         };
         let packet = Packet {
             header: self.header,

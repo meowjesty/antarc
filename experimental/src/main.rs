@@ -1,13 +1,13 @@
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 
-/*
-use antarc::Header;
+use antarc::peer::{Client, Peer, Server};
 
 fn client_main() {
-    let client_addr = "172.0.0.1:8888";
-    let client = antarc::Client::new(client_addr);
+    let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
+    let client_addr: SocketAddr = "127.0.0.1:8888".parse().unwrap();
+    let mut client: Peer<Client> = Peer::<Client>::new(&client_addr, server_addr);
 
-    let _ = client.connect_to(server_addr); // .await
+    let _ = client.connect(); // .await
     let world_state = vec![0x0; 32];
 
     'running: loop {
@@ -27,8 +27,8 @@ fn client_main() {
         // TODO(alex) 2021-01-28: Is this the exact same as the server? Do we need multiple ids?
         // The answer I have right now is, probably yes, if we have host migration then the client
         // needs to know that these changes are coming from this new server.
-        let received_world_changes: Vec<(ids, WorldStateChanges)> = client.receive(); // .await ??
-        for (_, world_change) in received_world_changes {
+        let received_world_changes = client.retrieve(); // .await ??
+        for (id, world_change) in received_world_changes {
             // TODO(alex) 2021-01-28: This is different from a simple `update` function, as this
             // exists to prevent networked update problems (packets out of order making the user
             // move to a wrong position, then come back, and move again).
@@ -42,19 +42,22 @@ fn client_main() {
             // actual latest packet.
             // It ties in with the foundational aspects of the protocol, as in, do resends update
             // packet `sequence`, or does resending means copy + send again?
-            world_state.sync(world_change);
+
+            // world_state.sync(world_change);
         }
 
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
-        client.send(data); // .await ??
+        client.enqueue(data); // .await ??
     }
 }
 
 fn server_main() {
-    let server_addr = "172.0.0.1:7777";
-    let server = antarc::Server::new(server_addr);
+    let server_addr = "127.0.0.1:7777".parse().unwrap();
+    let client_addr = "127.0.0.1:8888";
+
+    let mut server: Peer<Server> = Peer::<Server>::new(&server_addr);
     let world_state = vec![0x0; 32];
 
     'running: loop {
@@ -71,32 +74,32 @@ fn server_main() {
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
-        server.send(&new_world_state); // .await ??
+        server.enqueue(new_world_state); // .await ??
 
         // TODO(alex) 2021-01-28: Receive retrieves all messages that the underlying protocol has
         // stored, but it also needs to move these messages into some form of `Retrieved(Packet)`
         // state, otherwise calling it again would keep returning the same packets.
-        let received_world_changes: Vec<(ids, WorldStateChanges)> = server.receive(); // .await ??
+        let received_world_changes = server.retrieve(); // .await ??
         for (_, world_change) in received_world_changes {
-            world_state.update(world_change);
+            // world_state.update(world_change);
         }
-        let (player_1_id, player_1_changes) =
-            received_world_changes.find(|(id, world_changes)| world_changes.player_id == 1)?;
-        if player_1_changes.health < 0 {
-            let peer_player_1 = server.get_host(player_1_id)?;
-            // TODO(alex) 2021-01-28: Not thinking about bans right now, but this could probably
-            // just mark this host as banned, and drop the connection. The `Disconnected` ->
-            // `ConnectionRequest` handling should have a special case to check if the host is in
-            // a ban list, and ignore the connection request, or whatever.
-            server.ban_list.add(peer_player_1);
-        }
-        let world_state_changes = world_state.delta().serialize();
+        // let (player_1_id, player_1_changes) =
+        //     received_world_changes.find(|(id, world_changes)| world_changes.player_id == 1)?;
+        // if player_1_changes.health < 0 {
+        // TODO(alex) 2021-01-28: Not thinking about bans right now, but this could probably
+        // just mark this host as banned, and drop the connection. The `Disconnected` ->
+        // `ConnectionRequest` handling should have a special case to check if the host is in
+        // a ban list, and ignore the connection request, or whatever.
+        let player_1 = 1;
+        server.ban_host(player_1);
+        // }
+        // let world_state_changes = world_state.delta().serialize();
         // TODO(alex) 2021-01-27: Work priority in the future, right now I would rather not
         // deal with handling this.
         // server.send_with_priority(Priority::High, id, dead_player_world_state);
-        server.send(world_state_changes); // .await
+        let world_state_changes = vec![0x2; 32];
+        server.enqueue(world_state_changes); // .await
     }
 }
-*/
 
 fn main() {}

@@ -1,15 +1,10 @@
 use core::mem;
-use crc32fast::Hasher;
-use packet::{Acked, Header, Packet, Received, Sent};
-use std::{
-    io::{BufRead, Cursor, IoSlice, Read, Write},
-    net::SocketAddr,
-    num::{NonZeroU16, NonZeroU32, NonZeroU8},
-    time::Instant,
-};
+use packet::Header;
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
-mod packet;
 mod host;
+mod packet;
+pub mod peer;
 
 #[macro_export]
 macro_rules! read_buffer_inc {
@@ -23,65 +18,6 @@ macro_rules! read_buffer_inc {
         $start = end;
         val
     }};
-}
-
-#[derive(Debug)]
-struct AntarcManager {
-    host: Host,
-    timer: Instant,
-}
-
-#[derive(Debug)]
-struct HostInfo {
-    address: SocketAddr,
-    rtt: u128,
-    sent: Vec<Packet<Sent>>,
-    acked: Vec<Packet<Acked>>,
-    received: Vec<Packet<Received>>,
-}
-
-/// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
-/// when trying to figure out how to keep alive a session (connection), how the communication
-/// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
-#[derive(Debug)]
-struct Connecting(HostInfo);
-
-#[derive(Debug)]
-struct Challenge(HostInfo);
-
-#[derive(Debug)]
-struct Connected(HostInfo);
-
-#[derive(Debug)]
-struct Disconnected(HostInfo);
-
-/// NOTE(alex) 2021-01-26: The `Host`s in here are the remote hosts.
-#[derive(Debug)]
-struct ServerInfo {
-    connecting: Vec<Connecting>,
-    challenge: Vec<Challenge>,
-    connected: Vec<Connected>,
-    disconnected: Vec<Disconnected>,
-}
-
-#[derive(Debug)]
-struct ClientInfo {
-    server: HostInfo,
-    connection: ConnectionState,
-}
-
-#[derive(Debug)]
-enum Host {
-    Client(ClientInfo),
-    Server(ServerInfo),
-}
-
-#[derive(Debug)]
-enum ConnectionState {
-    Connecting,
-    Challenged,
-    Connected,
-    Disconnected,
 }
 
 // TODO(alex) 2021-01-25: Have separate types for `Server` and `Client`, instead of using a flag.

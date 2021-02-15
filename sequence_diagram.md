@@ -64,3 +64,16 @@ sequenceDiagram
     Server ->> Client : send(Packet: 13)
     deactivate Server
 ```
+
+## protocol_id + crc32 packet encoding
+
+```mermaid
+flowchart TB
+
+    encode([Encode]) --> start[insert 'protocol_id' at the start of the buffer - before 'Header']
+    start --> crc32[calculate crc32]
+    crc32 --> footer[insert 'crc32' at the end of the buffer - after data]
+    footer --> new_start[remove 'protocol_id' from the buffer - not stored after encoded]
+    new_start --> buffer[(Buffer with 'Header' + 'Data' + 'Footer' - no 'protocol_id')]
+
+```
