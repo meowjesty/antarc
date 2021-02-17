@@ -73,15 +73,15 @@ pub const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
 ///
 /// but this is NOT:
 /// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
-pub const NON_FRAGMENTED: PacketKind = 1;
-pub const FRAGMENTED: PacketKind = 1 << 1;
-pub const DATA_TRANSFER: PacketKind = 1 << 2;
-pub const CONNECTION_REQUEST: PacketKind = 1 << 3;
-pub const CHALLENGE_REQUEST: PacketKind = 1 << 4;
-pub const CHALLENGE_RESPONSE: PacketKind = 1 << 5;
-pub const CONNECTION_ACCEPTED: PacketKind = 1 << 6;
-pub const CONNECTION_DENIED: PacketKind = 1 << 7;
-pub const HEARTBEAT: PacketKind = 1 << 8;
+pub const SPECIAL: u8 = 0;
+pub const FRAGMENTED: u8 = 1;
+pub const DATA_TRANSFER: u8 = 1 << 1;
+pub const CONNECTION_REQUEST: u8 = 1 << 2;
+pub const CHALLENGE_REQUEST: u8 = 1 << 3;
+pub const CHALLENGE_RESPONSE: u8 = 1 << 4;
+pub const CONNECTION_ACCEPTED: u8 = 1 << 5;
+pub const CONNECTION_DENIED: u8 = 1 << 6;
+pub const HEARTBEAT: u8 = 1 << 7;
 
 // TODO(alex) 2021-01-24: How does send / receive works?
 // - Packet is sent with data / client replies with either data or just ack;

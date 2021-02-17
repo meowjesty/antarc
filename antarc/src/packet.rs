@@ -2,7 +2,7 @@ use std::{
     io::{BufRead, Cursor, IoSlice, Read, Write},
     marker::PhantomData,
     mem,
-    num::{NonZeroU16, NonZeroU32},
+    num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Duration,
 };
 
@@ -63,14 +63,14 @@ pub(crate) struct Header {
 
     /// Identifies the connection, this enables network switching from either side without having
     /// to slowly re-estabilish the connection.
-    pub(crate) connection_id: NonZeroU32,
+    pub(crate) connection_id: NonZeroU16,
     /// Incremented individually for each `Host`.
     pub(crate) sequence: NonZeroU32,
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
     pub(crate) ack: u32,
     /// Represents the ack bitfields to send previous acked state in a compact manner.
     /// TODO(alex): Use this.
-    pub(crate) past_acks: u32,
+    pub(crate) past_acks: u16,
     /// TODO(alex) 2021-01-29: I need this to differentiate between packets, having separate
     /// `Packet` structs (union) won't cover the case when the user sends an empty packet vs the
     /// protocol sending an ack-only packet, as both would have a zero-length body.
@@ -79,11 +79,11 @@ pub(crate) struct Header {
     /// convert it into a `u16` only at `send` and `recv` time. Similar to how the crc32 and
     /// sentinel values are not present in this struct, the kind also doesn't have to be, I just
     /// need to handle it in a sort of just-in-time way (encode/decode).
-    /// ADD(alex) 2021-02-05: The `kind` is defines the packet as a connection request, or a
+    /// ADD(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
     /// response, maybe a data transfer, and each is handled differently, for example, the protocol
     /// will read the `body` of a connection request, and of a fragment, but it just passes it in
     /// the case of a data transfer.
-    pub(crate) kind: NonZeroU16,
+    pub(crate) kind: u8,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -105,7 +105,7 @@ impl Header {
         let b_sequence = self.sequence.get().to_be_bytes();
         let b_ack = self.ack.to_be_bytes();
         let b_past_acks = self.past_acks.to_be_bytes();
-        let b_kind = self.kind.get().to_be_bytes();
+        let b_kind = self.kind.to_be_bytes();
 
         // NOTE(alex): Protocol Id will be overwritten and discarded after crc32 is calculated.
         let write_buffers = [
@@ -137,13 +137,11 @@ impl Header {
         let mut read_pos = 0;
         let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
 
-        let connection_id =
-            NonZeroU32::new(read_buffer_inc!(PacketInfo, read_buffer, read_pos)).unwrap();
-        let sequence =
-            NonZeroU32::new(read_buffer_inc!(PacketInfo, read_buffer, read_pos)).unwrap();
-        let ack = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
-        let past_acks = read_buffer_inc!(PacketInfo, read_buffer, read_pos);
-        let kind = NonZeroU16::new(read_buffer_inc!(PacketKind, read_buffer, read_pos)).unwrap();
+        let connection_id = NonZeroU16::new(read_buffer_inc!(u16, read_buffer, read_pos)).unwrap();
+        let sequence = NonZeroU32::new(read_buffer_inc!(u32, read_buffer, read_pos)).unwrap();
+        let ack = read_buffer_inc!(u32, read_buffer, read_pos);
+        let past_acks = read_buffer_inc!(u16, read_buffer, read_pos);
+        let kind = read_buffer_inc!(u8, read_buffer, read_pos);
 
         cursor.consume(read_pos);
 

@@ -5,9 +5,9 @@ use antarc::peer::{Client, Peer, Server};
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
     let client_addr: SocketAddr = "127.0.0.1:8888".parse().unwrap();
-    let mut client: Peer<Client> = Peer::<Client>::new(&client_addr, server_addr);
+    let mut client = Peer::new_client(&client_addr, server_addr);
 
-    let _ = client.connect(); // .await
+    let client = client.connect(); // .await
     let world_state = vec![0x0; 32];
 
     'running: loop {
@@ -27,6 +27,15 @@ fn client_main() {
         // TODO(alex) 2021-01-28: Is this the exact same as the server? Do we need multiple ids?
         // The answer I have right now is, probably yes, if we have host migration then the client
         // needs to know that these changes are coming from this new server.
+        // TODO(alex) 2021-02-17: Geting an error here because of what happens in the `Client`
+        // creation. I don't want to have this as the API for creating a peer and managing the
+        // network, the user should create some `NetworkManager`, set it's mode as either `Client`
+        // or `Server` and use some `connect` that handles internal details for them, such as
+        // connection retry and so on., but as it stands, the API requires the user to keep
+        // creating a new binding everytime the `Peer` changes state, `let client = ...` is
+        // leaking into user code.
+        //
+        // What I'm doing here is basically what the `NetworkManager` will have to do.
         let received_world_changes = client.retrieve(); // .await ??
         for (id, world_change) in received_world_changes {
             // TODO(alex) 2021-01-28: This is different from a simple `update` function, as this
@@ -57,7 +66,7 @@ fn server_main() {
     let server_addr = "127.0.0.1:7777".parse().unwrap();
     let client_addr = "127.0.0.1:8888";
 
-    let mut server: Peer<Server> = Peer::<Server>::new(&server_addr);
+    let mut server: Peer<Server> = Peer::<Server>::new_server(&server_addr);
     let world_state = vec![0x0; 32];
 
     'running: loop {

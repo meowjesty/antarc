@@ -1,27 +1,28 @@
-use std::{net::SocketAddr, num::NonZeroU32};
+use std::{
+    net::SocketAddr,
+    num::{NonZeroU16, NonZeroU32},
+};
 
-use crate::packet::{Acked, Internal, Packet, Received, Retrieved, Sent, ToSend};
+use crate::{
+    packet::{Acked, Header, Internal, Packet, Received, Retrieved, Sent, ToSend},
+    CONNECTION_REQUEST,
+};
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 #[derive(Debug)]
-pub(crate) struct Connecting {
-    pub(crate) remote_addr: SocketAddr,
-}
+pub(crate) struct Connecting;
 
 #[derive(Debug)]
-pub(crate) struct Connected {
-    pub(crate) remote_addr: SocketAddr,
-}
+pub(crate) struct Connected;
 
 #[derive(Debug)]
-pub(crate) struct Disconnected {
-    pub(crate) remote_addr: SocketAddr,
-}
+pub(crate) struct Disconnected;
 
 #[derive(Debug)]
 pub(crate) struct Host<ConnectionState> {
+    pub(crate) address: SocketAddr,
     pub(crate) sequence: NonZeroU32,
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
@@ -38,9 +39,10 @@ pub(crate) struct Host<ConnectionState> {
 impl Host<Disconnected> {
     /// TODO(alex) 2021-02-07: Is it possible to create a `Host` in any other state? Or should it
     /// always start in disconnected mode?
-    pub(crate) fn new(remote_addr: SocketAddr) -> Host<Disconnected> {
-        let state = Disconnected { remote_addr };
+    pub(crate) fn new(address: SocketAddr) -> Host<Disconnected> {
+        let state = Disconnected;
         let host = Host {
+            address,
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             rtt: 0,
             received_list: Vec::with_capacity(32),
@@ -55,12 +57,24 @@ impl Host<Disconnected> {
         host
     }
 
-    pub(crate) fn into_connecting(self) -> Host<Connecting> {
-        let state = Connecting {
-            remote_addr: "127.0.0.1:7777".parse().unwrap(),
+    pub(crate) fn into_connecting(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
+        let state = Connecting;
+
+        let connection_header = Header {
+            connection_id,
+            sequence: unsafe { NonZeroU32::new_unchecked(1) },
+            ack: 0,
+            past_acks: 0,
+            kind: CONNECTION_REQUEST,
         };
+        let connection_request = Packet::<ToSend>::new(connection_header, vec![0; 10]);
+        // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
+        // until the connection is estabilished, and the user cannot be able to put packets into
+        // the `send_queue` until the protocol is done handling it.
+        self.send_queue.push(connection_request);
 
         let host = Host {
+            address: self.address,
             sequence: self.sequence,
             rtt: self.rtt,
             received_list: self.received_list,

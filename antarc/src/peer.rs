@@ -1,6 +1,7 @@
 use std::{
+    marker::PhantomData,
     net::{SocketAddr, UdpSocket},
-    num::{NonZeroU16, NonZeroU32},
+    num::{NonZeroU16, NonZeroU32, NonZeroU8},
 };
 
 use crate::host::{Connected, Connecting, Disconnected, Host};
@@ -25,38 +26,48 @@ use crate::CONNECTION_REQUEST;
 /// think that it's the same peer. This field is a bit more complicated than the `Peer.sequence`, as
 /// it kinda has to be unique among many peers, and maybe be the same in case of a
 /// disconnect->reconnect peer.
+/// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
+/// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
 #[derive(Debug)]
 pub struct Peer<Kind> {
     /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher level
     /// manager thingy, as `socket.send` feels weird when used here.
     socket: UdpSocket,
-    disconnected: Vec<Host<Disconnected>>,
-    connecting: Vec<Host<Connecting>>,
-    connected: Vec<Host<Connected>>,
+    connection_id: NonZeroU16,
     kind: Kind,
 }
 
 #[derive(Debug)]
-pub struct Server;
+pub struct Server {
+    disconnected: Vec<Host<Disconnected>>,
+    connecting: Vec<Host<Connecting>>,
+    connected: Vec<Host<Connected>>,
+}
 
 #[derive(Debug)]
-pub struct Client {
-    server_address: SocketAddr,
+pub struct Client<State> {
+    server_host: Host<State>,
+    other_clients: Vec<Host<Disconnected>>,
+    _phantom: PhantomData<State>,
 }
 
 /// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
 /// integrated into the lower parts of the protocol. It should handle the state transitions for
 /// packets, and connections, but leave the actual send/receive to the `net` crate.
 impl Peer<Server> {
-    pub fn new(address: &SocketAddr) -> Self {
+    pub fn new_server(address: &SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).unwrap();
 
-        Peer {
-            socket,
+        let server = Server {
             disconnected: Vec::with_capacity(8),
             connecting: Vec::with_capacity(8),
             connected: Vec::with_capacity(8),
-            kind: Server,
+        };
+
+        Peer {
+            socket,
+            connection_id: unsafe { NonZeroU16::new_unchecked(1) },
+            kind: server,
         }
     }
 
@@ -80,16 +91,22 @@ impl Peer<Server> {
 /// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
 /// integrated into the lower parts of the protocol. It should handle the state transitions for
 /// packets, and connections, but leave the actual send/receive to the `net` crate.
-impl Peer<Client> {
-    pub fn new(address: &SocketAddr, server_address: SocketAddr) -> Self {
+impl Peer<Client<Disconnected>> {
+    pub fn new_client(address: &SocketAddr, server_address: SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).unwrap();
+
+        let server_host = Host::new(server_address);
+
+        let client = Client {
+            server_host,
+            other_clients: Vec::with_capacity(8),
+            _phantom: PhantomData::default(),
+        };
 
         Peer {
             socket,
-            disconnected: Vec::with_capacity(8),
-            connecting: Vec::with_capacity(8),
-            connected: Vec::with_capacity(8),
-            kind: Client { server_address },
+            connection_id: unsafe { NonZeroU16::new_unchecked(1) },
+            kind: client,
         }
     }
 
@@ -103,75 +120,34 @@ impl Peer<Client> {
     /// 2. Create connection request packet:
     ///    - must check if there is an outgoing request already, that has not yet been acked.
     ///    - this function should keep itself to packet handling only, do not try to escalate it
-    /// into handling packet loss or anything like that, this will be part of the network
-    /// implementation, as it requires reading incoming packets.
-    pub fn connect(&mut self) -> Result<(), String> {
-        if !self.connected.is_empty() {
-            panic!("Client is already connected {:?}.", self);
-        }
+    ///    into handling packet loss or anything like that, this will be part of the network
+    ///    implementation, as it requires reading incoming packets.
+    pub fn connect(self) -> Peer<Client<Connecting>> {
+        let server_host = self.kind.server_host.into_connecting(self.connection_id);
 
-        let server = if let Some((index, _)) = self
-            .disconnected
-            .iter()
-            .enumerate()
-            .find(|(_, host)| host.state.remote_addr == self.kind.server_address)
-        {
-            self.disconnected.remove(index)
-        } else {
-            Host::<Disconnected>::new(self.kind.server_address)
+        // self.connecting.push(server_host);
+
+        // TODO(alex) 2021-02-17: This is a 2-part problem:
+        // 1. Here we need to check if we're wrapping the `u16::MAX` value and getting a zero back,
+        //    if so, then we need to clean the `connection_id` sequencer from old values, find an
+        //    unused value for it by searching through `disconnected` hosts;
+        let connection_id = NonZeroU16::new(self.connection_id.get() + 1)
+            .unwrap_or(unsafe { NonZeroU16::new_unchecked(1) });
+
+        let client = Client {
+            server_host,
+            other_clients: self.kind.other_clients,
+            _phantom: PhantomData::default(),
         };
 
-        let mut server = server.into_connecting();
-
-        let connection_header = Header {
-            connection_id: unsafe { NonZeroU32::new_unchecked(1) },
-            sequence: unsafe { NonZeroU32::new_unchecked(1) },
-            ack: 0,
-            past_acks: 0,
-            kind: unsafe { NonZeroU16::new_unchecked(CONNECTION_REQUEST) },
-        };
-        let connection_request = Packet::<ToSend>::new(connection_header, vec![0; 10]);
-        server.send_queue.push(connection_request);
-
-        self.connecting.push(server);
-
-        Ok(())
-    }
-
-    pub fn tick(&mut self) {
-        for (index, connecting) in self.connecting.iter_mut().enumerate() {
-            if let Some(to_send) = connecting.send_queue.pop() {
-                // socket.send(to_send)
-                println!("Sent {:?}", to_send);
-                let sent = to_send.sent();
-
-                connecting.sent.push(sent);
-                connecting.sequence =
-                    unsafe { NonZeroU32::new_unchecked(connecting.sequence.get() + 1) };
-            }
-
-            if let Some(received) = connecting.received_list.pop() {
-                if received.header.ack > 0 {
-                    if let Some((index, _)) = connecting
-                        .sent
-                        .iter()
-                        .enumerate()
-                        .find(|(_, sent)| sent.header.sequence.get() == received.header.ack)
-                    {
-                        let sent = connecting.sent.remove(index);
-                        let acked = sent.acked();
-
-                        connecting.acked.push(acked);
-                    }
-                }
-
-                let internal = received.internald();
-                connecting.internals.push(internal);
-            }
+        Peer {
+            socket: self.socket,
+            connection_id,
+            kind: client,
         }
-
-        for (index, connected) in self.connected.iter().enumerate() {}
     }
+
+    pub fn tick(&mut self) {}
 
     pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {
         todo!();
@@ -179,5 +155,39 @@ impl Peer<Client> {
 
     pub fn enqueue(&self, data: Vec<u8>) {
         todo!();
+    }
+}
+
+impl Peer<Client<Connecting>> {
+    pub fn tick(&mut self) {
+        let server_host = &mut self.kind.server_host;
+        if let Some(to_send) = server_host.send_queue.pop() {
+            // socket.send(to_send)
+            println!("Sent {:?}", to_send);
+            let sent = to_send.sent();
+
+            server_host.sent.push(sent);
+            server_host.sequence =
+                unsafe { NonZeroU32::new_unchecked(server_host.sequence.get() + 1) };
+        }
+
+        if let Some(received) = server_host.received_list.pop() {
+            if received.header.ack > 0 {
+                if let Some((index, _)) = server_host
+                    .sent
+                    .iter()
+                    .enumerate()
+                    .find(|(_, sent)| sent.header.sequence.get() == received.header.ack)
+                {
+                    let sent = server_host.sent.remove(index);
+                    let acked = sent.acked();
+
+                    server_host.acked.push(acked);
+                }
+            }
+
+            let internal = received.internald();
+            server_host.internals.push(internal);
+        }
     }
 }
