@@ -1,4 +1,5 @@
 use std::{
+    marker::PhantomData,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
 };
@@ -12,13 +13,13 @@ use crate::{
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 #[derive(Debug)]
-pub(crate) struct Connecting;
+pub struct Connecting;
 
 #[derive(Debug)]
-pub(crate) struct Connected;
+pub struct Connected;
 
 #[derive(Debug)]
-pub(crate) struct Disconnected;
+pub struct Disconnected;
 
 #[derive(Debug)]
 pub(crate) struct Host<ConnectionState> {
@@ -33,7 +34,7 @@ pub(crate) struct Host<ConnectionState> {
     pub(crate) send_queue: Vec<Packet<ToSend>>,
     pub(crate) sent: Vec<Packet<Sent>>,
     pub(crate) acked: Vec<Packet<Acked>>,
-    pub(crate) state: ConnectionState,
+    _phantom: PhantomData<ConnectionState>,
 }
 
 impl Host<Disconnected> {
@@ -51,15 +52,13 @@ impl Host<Disconnected> {
             send_queue: Vec::with_capacity(32),
             sent: Vec::with_capacity(32),
             acked: Vec::with_capacity(32),
-            state,
+            _phantom: PhantomData::default(),
         };
 
         host
     }
 
     pub(crate) fn into_connecting(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
-        let state = Connecting;
-
         let connection_header = Header {
             connection_id,
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
@@ -83,7 +82,26 @@ impl Host<Disconnected> {
             send_queue: self.send_queue,
             sent: self.sent,
             acked: self.acked,
-            state,
+            _phantom: PhantomData::default(),
+        };
+
+        host
+    }
+}
+
+impl Host<Connecting> {
+    pub(crate) fn into_connected(mut self) -> Host<Connected> {
+        let host = Host {
+            address: self.address,
+            sequence: self.sequence,
+            rtt: self.rtt,
+            received_list: self.received_list,
+            retrieved: self.retrieved,
+            internals: self.internals,
+            send_queue: self.send_queue,
+            sent: self.sent,
+            acked: self.acked,
+            _phantom: PhantomData::default(),
         };
 
         host

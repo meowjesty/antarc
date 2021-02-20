@@ -190,4 +190,34 @@ impl Peer<Client<Connecting>> {
             server_host.internals.push(internal);
         }
     }
+
+    pub fn connected(self) -> Peer<Client<Connected>> {
+        let server_host = self.kind.server_host.into_connected();
+
+        let client = Client {
+            server_host,
+            other_clients: self.kind.other_clients,
+            _phantom: PhantomData::default(),
+        };
+
+        Peer {
+            socket: self.socket,
+            connection_id: self.connection_id,
+            kind: client,
+        }
+    }
+}
+
+impl Peer<Client<Connected>> {
+    pub fn tick(&mut self) {
+        todo!()
+    }
+
+    pub fn retrieve(&mut self) -> Vec<(u32, Vec<u8>)> {
+        todo!()
+    }
+
+    pub fn enqueue(&mut self, data: Vec<u8>) {
+        todo!()
+    }
 }

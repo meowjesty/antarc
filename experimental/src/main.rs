@@ -5,9 +5,15 @@ use antarc::peer::{Client, Peer, Server};
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
     let client_addr: SocketAddr = "127.0.0.1:8888".parse().unwrap();
-    let mut client = Peer::new_client(&client_addr, server_addr);
+    let client_disconnected = Peer::new_client(&client_addr, server_addr);
 
-    let client = client.connect(); // .await
+    // .await ?
+    let client_connecting = client_disconnected.connect();
+    // TODO(alex): 2021-02-20: This is part of the network manager side of things. When getting a
+    // `Peer<Client<Connecting>>`, it keeps ticking until the client is actually connected to the
+    // server. The user API won't be calling these inner `tick` functions, it'll call a
+    // `NetworkManager.tick`.
+    let mut client_connected = client_connecting.connected();
     let world_state = vec![0x0; 32];
 
     'running: loop {
@@ -21,7 +27,7 @@ fn client_main() {
         // to the different packet structs idea.
         // let new_connections? = server.connection_requests();
         // server.deny_connection(new_connections[1]);
-        client.tick();
+        client_connected.tick();
 
         let data = vec![0x1; 32];
         // TODO(alex) 2021-01-28: Is this the exact same as the server? Do we need multiple ids?
@@ -36,7 +42,7 @@ fn client_main() {
         // leaking into user code.
         //
         // What I'm doing here is basically what the `NetworkManager` will have to do.
-        let received_world_changes = client.retrieve(); // .await ??
+        let received_world_changes = client_connected.retrieve(); // .await ??
         for (id, world_change) in received_world_changes {
             // TODO(alex) 2021-01-28: This is different from a simple `update` function, as this
             // exists to prevent networked update problems (packets out of order making the user
@@ -58,7 +64,7 @@ fn client_main() {
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
-        client.enqueue(data); // .await ??
+        client_connected.enqueue(data); // .await ??
     }
 }
 
