@@ -2,9 +2,11 @@ use core::mem;
 use packet::Header;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
-mod host;
+pub mod client;
+pub mod host;
 mod packet;
 pub mod peer;
+pub mod server;
 
 #[macro_export]
 macro_rules! read_buffer_inc {

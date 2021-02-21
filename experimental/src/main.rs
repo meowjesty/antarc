@@ -1,11 +1,11 @@
 use std::net::{SocketAddr, UdpSocket};
 
-use antarc::peer::{Client, Peer, Server};
+use antarc::{peer::NetManager, server::Server};
 
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
     let client_addr: SocketAddr = "127.0.0.1:8888".parse().unwrap();
-    let client_disconnected = Peer::new_client(&client_addr, server_addr);
+    let client_disconnected = NetManager::new_client(&client_addr, server_addr);
 
     // .await ?
     let client_connecting = client_disconnected.connect();
@@ -72,7 +72,7 @@ fn server_main() {
     let server_addr = "127.0.0.1:7777".parse().unwrap();
     let client_addr = "127.0.0.1:8888";
 
-    let mut server: Peer<Server> = Peer::<Server>::new_server(&server_addr);
+    let mut server: NetManager<Server> = NetManager::<Server>::new_server(&server_addr);
     let world_state = vec![0x0; 32];
 
     'running: loop {
