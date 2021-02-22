@@ -63,18 +63,12 @@ impl<T> Owned<T> {
 /// TODO(alex) 2021-02-22: Change this to `Box<Host<Disconnected>>, ...` to mimick the `Server`
 /// struct. The approach of `enum Connection` will work, but its benefits are hard to notice (if
 /// they even exist). Substitute `Client` with `ClientBox` (keep the name `Client`).
-pub struct ClientBox {
-    other_clients: Vec<Host<Disconnected>>,
-    disconnected: Box<Host<Disconnected>>,
-    connecting: Box<Host<Disconnected>>,
-    connected: Box<Host<Disconnected>>,
-}
-
 #[derive(Debug)]
-pub enum Client {
-    Disconnected(Owned<Connection<Disconnected>>),
-    Connecting(Owned<Connection<Connecting>>),
-    Connceted(Owned<Connection<Connected>>),
+pub struct Client {
+    other_clients: Vec<Host<Disconnected>>,
+    disconnected: Option<Host<Disconnected>>,
+    connecting: Option<Host<Connecting>>,
+    connected: Option<Host<Connected>>,
 }
 
 impl Connection<Disconnected> {
@@ -144,15 +138,17 @@ impl NetManager<Client> {
 
         let server = Host::new(server_address);
 
-        let client = Connection {
-            server,
+        let client = Client {
             other_clients: Vec::with_capacity(8),
+            disconnected: Some(server),
+            connecting: None,
+            connected: None,
         };
 
         NetManager {
             socket,
             connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
-            kind: Client::Disconnected(Owned::Own(client)),
+            kind: client,
         }
     }
 
@@ -169,64 +165,29 @@ impl NetManager<Client> {
     ///    into handling packet loss or anything like that, this will be part of the network
     ///    implementation, as it requires reading incoming packets.
     pub fn connect(&mut self) {
-        // FIXME(alex) 2021-02-20: How do we keep the move semantics here, but avoid the borrowing
-        // that breaks it? `Connection<Disconnected>::into_connecting` takes `self` to invalidate
-        // itself upon returning a `Connection<Connecting>` (I want this), but this doesn't make
-        // sense, as we borrow `kind` to `match` it before the conversion is done. Without variants
-        // this would simply be a struct being replace by another, so just doing `into_connecting`
-        // directly would make sense.
-        //
-        // ADD(alex) 2021-02-21: Can't do this with `Option` or `Box`, we end up in the same place,
-        // borrowing for a match but trying to move something that is still borrowed.
-        // For this to work, we need some sort of transform result monad, and to be returning things
-        // based on `self`, no reference (in some sort of pure functional form).
-        //
-        // Find a way to simplify all this stuff, or else I won't ever finish this damn library.
-        //
-        // ADD(alex) 2021-02-21: The idea of having an `Option` to take out ownership works! What
-        // I need right now is a `Option`-like structure to keep this ownership semantic and allow
-        // the mutable reference in match. This is okay thanks to the way `take` works, recall
-        // that something like this also made it possible to change stuff in a `Vec` inside a loop,
-        // where I would "fake" the mutable borrow, by taking the data.
-        let connecting = match &mut self.kind {
-            Client::Disconnected(disconnected) => {
-                let d = disconnected.take().unwrap();
-                d.into_connecting(self.connection_id_tracker)
-            }
-            fail_state => {
-                panic!("fn connect -> Incorrect state {:?}", fail_state)
-            }
-        };
+        if let Some(disconnected) = self.kind.disconnected.take() {
+            let connecting = disconnected.into_connecting(self.connection_id_tracker);
+            self.kind.connecting = Some(connecting);
+        }
 
         // TODO(alex) 2021-02-17: This is a 2-part problem:
         // 1. Here we need to check if we're wrapping the `u16::MAX` value and getting a zero back,
         //    if so, then we need to clean the `connection_id` sequencer from old values, find an
         //    unused value for it by searching through `disconnected` hosts;
         self.connection_id_tracker = NonZeroU16::new(self.connection_id_tracker.get() + 1).unwrap();
-
-        self.kind = Client::Connecting(Owned::Own(connecting));
     }
 
     pub fn connected(&mut self) {
-        let connected = match &mut self.kind {
-            Client::Connecting(connecting) => {
-                let connecting = connecting.take().unwrap();
-                connecting.into_connected()
-            }
-            fail_state => {
-                panic!("fn connected -> Incorrect state {:?}", fail_state)
-            }
-        };
-
-        self.kind = Client::Connceted(Owned::Own(connected));
+        if let Some(connecting) = self.kind.connecting.take() {
+            let connected = connecting.into_connected();
+            self.kind.connected = Some(connected);
+        }
     }
 
     pub fn tick(&mut self) {
-        match self.kind {
-            Client::Disconnected(_) => {}
-            Client::Connecting(_) => {}
-            Client::Connceted(_) => {}
-        }
+        if let Some(disconnected) = &self.kind.disconnected {}
+        if let Some(connecting) = &self.kind.connecting {}
+        if let Some(connected) = &self.kind.connected {}
     }
 
     pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {
