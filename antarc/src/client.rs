@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32},
 };
@@ -32,11 +33,48 @@ pub struct Connection<State> {
     other_clients: Vec<Host<Disconnected>>,
 }
 
+#[derive(Debug, Clone, Copy, Ord, PartialEq, PartialOrd, Eq)]
+pub enum Owned<T> {
+    Own(T),
+    Nothing,
+}
+
+impl<T> Default for Owned<T> {
+    fn default() -> Self {
+        Self::Nothing
+    }
+}
+
+impl<T> Owned<T> {
+    pub fn take(&mut self) -> Self {
+        core::mem::take(self)
+    }
+
+    pub const fn unwrap(self) -> T {
+        match self {
+            Owned::Own(owned) => owned,
+            Owned::Nothing => {
+                panic!("called `Owned::unwrap()` on a `Nothing` value")
+            }
+        }
+    }
+}
+
+/// TODO(alex) 2021-02-22: Change this to `Box<Host<Disconnected>>, ...` to mimick the `Server`
+/// struct. The approach of `enum Connection` will work, but its benefits are hard to notice (if
+/// they even exist). Substitute `Client` with `ClientBox` (keep the name `Client`).
+pub struct ClientBox {
+    other_clients: Vec<Host<Disconnected>>,
+    disconnected: Box<Host<Disconnected>>,
+    connecting: Box<Host<Disconnected>>,
+    connected: Box<Host<Disconnected>>,
+}
+
 #[derive(Debug)]
 pub enum Client {
-    Disconnected(Connection<Disconnected>),
-    Connecting(Connection<Connecting>),
-    Connceted(Connection<Connected>),
+    Disconnected(Owned<Connection<Disconnected>>),
+    Connecting(Owned<Connection<Connecting>>),
+    Connceted(Owned<Connection<Connected>>),
 }
 
 impl Connection<Disconnected> {
@@ -114,7 +152,7 @@ impl NetManager<Client> {
         NetManager {
             socket,
             connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
-            kind: Client::Disconnected(client),
+            kind: Client::Disconnected(Owned::Own(client)),
         }
     }
 
@@ -137,9 +175,23 @@ impl NetManager<Client> {
         // sense, as we borrow `kind` to `match` it before the conversion is done. Without variants
         // this would simply be a struct being replace by another, so just doing `into_connecting`
         // directly would make sense.
-        let connecting = match self.kind {
+        //
+        // ADD(alex) 2021-02-21: Can't do this with `Option` or `Box`, we end up in the same place,
+        // borrowing for a match but trying to move something that is still borrowed.
+        // For this to work, we need some sort of transform result monad, and to be returning things
+        // based on `self`, no reference (in some sort of pure functional form).
+        //
+        // Find a way to simplify all this stuff, or else I won't ever finish this damn library.
+        //
+        // ADD(alex) 2021-02-21: The idea of having an `Option` to take out ownership works! What
+        // I need right now is a `Option`-like structure to keep this ownership semantic and allow
+        // the mutable reference in match. This is okay thanks to the way `take` works, recall
+        // that something like this also made it possible to change stuff in a `Vec` inside a loop,
+        // where I would "fake" the mutable borrow, by taking the data.
+        let connecting = match &mut self.kind {
             Client::Disconnected(disconnected) => {
-                disconnected.into_connecting(self.connection_id_tracker)
+                let d = disconnected.take().unwrap();
+                d.into_connecting(self.connection_id_tracker)
             }
             fail_state => {
                 panic!("fn connect -> Incorrect state {:?}", fail_state)
@@ -152,18 +204,21 @@ impl NetManager<Client> {
         //    unused value for it by searching through `disconnected` hosts;
         self.connection_id_tracker = NonZeroU16::new(self.connection_id_tracker.get() + 1).unwrap();
 
-        self.kind = Client::Connecting(connecting);
+        self.kind = Client::Connecting(Owned::Own(connecting));
     }
 
     pub fn connected(&mut self) {
-        let connected = match self.kind {
-            Client::Connecting(connecting) => connecting.into_connected(),
+        let connected = match &mut self.kind {
+            Client::Connecting(connecting) => {
+                let connecting = connecting.take().unwrap();
+                connecting.into_connected()
+            }
             fail_state => {
                 panic!("fn connected -> Incorrect state {:?}", fail_state)
             }
         };
 
-        self.kind = Client::Connceted(connected);
+        self.kind = Client::Connceted(Owned::Own(connected));
     }
 
     pub fn tick(&mut self) {

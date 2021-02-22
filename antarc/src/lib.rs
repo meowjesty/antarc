@@ -1,3 +1,7 @@
+#![feature(const_panic)]
+// https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
+#![feature(const_precise_live_drops)]
+
 use core::mem;
 use packet::Header;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU8};
