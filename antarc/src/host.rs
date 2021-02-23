@@ -58,7 +58,39 @@ impl Host<Disconnected> {
         host
     }
 
-    pub(crate) fn into_connecting(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
+    pub(crate) fn request_connection(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
+        let connection_header = Header {
+            connection_id,
+            sequence: unsafe { NonZeroU32::new_unchecked(1) },
+            ack: 0,
+            past_acks: 0,
+            kind: CONNECTION_REQUEST,
+        };
+        let connection_request = Packet::<ToSend>::new(connection_header, vec![0; 10]);
+        // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
+        // until the connection is estabilished, and the user cannot be able to put packets into
+        // the `send_queue` until the protocol is done handling it.
+        self.send_queue.push(connection_request);
+
+        let host = Host {
+            address: self.address,
+            sequence: self.sequence,
+            rtt: self.rtt,
+            received_list: self.received_list,
+            retrieved: self.retrieved,
+            internals: self.internals,
+            send_queue: self.send_queue,
+            sent: self.sent,
+            acked: self.acked,
+            _phantom: PhantomData::default(),
+        };
+
+        host
+    }
+
+    /// TODO(alex) 2021-02-23: This is the `server`-side of the `Disconnected -> Connecting`
+    /// transformation.
+    pub(crate) fn connection_response(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
         let connection_header = Header {
             connection_id,
             sequence: unsafe { NonZeroU32::new_unchecked(1) },

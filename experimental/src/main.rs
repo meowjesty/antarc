@@ -5,10 +5,10 @@ use antarc::{peer::NetManager, server::Server};
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
     let client_addr: SocketAddr = "127.0.0.1:8888".parse().unwrap();
-    let mut net_client = NetManager::new_client(&client_addr, server_addr);
+    let mut net_client = NetManager::new_client(&client_addr);
 
     // .await ?
-    net_client.connect();
+    net_client.connect(&server_addr);
     // TODO(alex): 2021-02-20: This is part of the network manager side of things. When getting a
     // `Peer<Client<Connecting>>`, it keeps ticking until the client is actually connected to the
     // server. The user API won't be calling these inner `tick` functions, it'll call a
