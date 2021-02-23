@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
+    packet::Packet,
     peer::NetManager,
 };
 
@@ -25,39 +26,6 @@ pub struct Client {
     connection: Option<Connection>,
 }
 
-//     pub(crate) fn tick(&mut self) {
-//         if let Some(to_send) = self.server.send_queue.pop() {
-//             // socket.send(to_send)
-//             println!("Sent {:?}", to_send);
-//             let sent = to_send.sent();
-
-//             self.server.sent.push(sent);
-//             self.server.sequence =
-//                 unsafe { NonZeroU32::new_unchecked(self.server.sequence.get() + 1) };
-//         }
-
-//         if let Some(received) = self.server.received_list.pop() {
-//             if received.header.ack > 0 {
-//                 if let Some((index, _)) = self
-//                     .server
-//                     .sent
-//                     .iter()
-//                     .enumerate()
-//                     .find(|(_, sent)| sent.header.sequence.get() == received.header.ack)
-//                 {
-//                     let sent = self.server.sent.remove(index);
-//                     let acked = sent.acked();
-
-//                     self.server.acked.push(acked);
-//                 }
-//             }
-
-//             let internal = received.internald();
-//             self.server.internals.push(internal);
-//         }
-//     }
-// }
-
 /// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
 /// integrated into the lower parts of the protocol. It should handle the state transitions for
 /// packets, and connections, but leave the actual send/receive to the `net` crate.
@@ -70,8 +38,11 @@ impl NetManager<Client> {
             connection: None,
         };
 
+        let buffer = vec![0x0; 1024];
+
         NetManager {
             socket,
+            buffer,
             connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
             kind: client,
         }
@@ -122,17 +93,22 @@ impl NetManager<Client> {
     /// user should call `retrieve`.
     pub fn tick(&mut self) -> Result<bool, String> {
         let mut may_retrieve = false;
+        let (size, from_addr) = self
+            .socket
+            .recv_from(&mut self.buffer)
+            .map_err(|fail| fail.to_string())?;
+
         if let Some(connection) = self.kind.connection.take() {
             // TODO(alex) 2021-02-23: What should happen here?
-            // 1. Call `recv_from`;
-            // 2. Push packet received into the host `received_list`;
-            // 3. Ack packet from `sent` list with the `packet.ack` value received;
             // 4. Ack packet(s) from `sent` list with the `packet.past_acks` value received;
             //   - this is done by checking the last `16` packets based on the received `ack`;
             // 5. Calculate `rtt` based on how long it took from sending the packet to its ack;
-            // 6. Call `sent_to` with a packet from the `send_queue`;
-            // 7. Push sent packet into `sent` list;
             // 8. If last packet sent time > live connection threshold, drop the connection;
+            //
+            // ADD(alex) 2021-02-23: The code inside here will be mostly the same in each branch,
+            // it probably makes sense to move into `Host<T>` and just pass in whatever is needed
+            // (the packet and `from_addr`), it's lacking a basic `handle_received` function, and a
+            // `handle_send`.
             match connection {
                 Connection::Disconnected(disconnected) => {
                     // TODO(alex) 2021-02-23: We enter this state when the connection has been lost
@@ -141,13 +117,72 @@ impl NetManager<Client> {
                     dbg!("Attempting to reconnect to {:?}", &disconnected);
                     self.connect(&disconnected.address);
                 }
-                Connection::Connecting(connecting) => {
+                Connection::Connecting(mut connecting) => {
                     // TODO(alex) 2021-02-23: What should happen here?
                     // 1. Check `host.received_list` for internal, connection related packets;
                     //   - what happens if we received data transfers from this host before (when it
                     //     was in a connected state, but lost connection)?
+                    if from_addr != connecting.address {
+                        return Err(format!(
+                            "expected {:?}, but received {:?}",
+                            connecting.address, from_addr
+                        ));
+                    }
+
+                    let packet = Packet::decode(&self.buffer)?;
+                    if let Some((index, _)) = connecting
+                        .sent
+                        .iter_mut()
+                        .enumerate()
+                        .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
+                    {
+                        let sent = connecting.sent.remove(index);
+                        connecting.acked.push(sent.acked());
+                    }
+
+                    connecting.received_list.push(packet);
+
+                    if let Some(to_send) = connecting.send_queue.pop() {
+                        let to_send_raw = to_send.encode()?;
+                        let num_sent = self
+                            .socket
+                            .send_to(&to_send_raw.buffer, connecting.address)
+                            .map_err(|fail| fail.to_string())?;
+
+                        connecting.sent.push(to_send.sent());
+                    }
                 }
-                Connection::Connected(connected) => {}
+                Connection::Connected(mut connected) => {
+                    if from_addr != connected.address {
+                        return Err(format!(
+                            "expected {:?}, but received {:?}",
+                            connected.address, from_addr
+                        ));
+                    }
+
+                    let packet = Packet::decode(&self.buffer)?;
+                    if let Some((index, _)) = connected
+                        .sent
+                        .iter_mut()
+                        .enumerate()
+                        .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
+                    {
+                        let sent = connected.sent.remove(index);
+                        connected.acked.push(sent.acked());
+                    }
+
+                    connected.received_list.push(packet);
+
+                    if let Some(to_send) = connected.send_queue.pop() {
+                        let to_send_raw = to_send.encode()?;
+                        let num_sent = self
+                            .socket
+                            .send_to(&to_send_raw.buffer, connected.address)
+                            .map_err(|fail| fail.to_string())?;
+
+                        connected.sent.push(to_send.sent());
+                    }
+                }
             }
         }
 

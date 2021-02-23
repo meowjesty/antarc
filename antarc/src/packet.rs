@@ -19,7 +19,7 @@ use crate::{
 /// http://www.tcpipguide.com/free/t_MessageFormattingHeadersPayloadsandFooters.htm
 pub(crate) struct RawPacket {
     crc32: NonZeroU32,
-    buffer: Vec<u8>,
+    pub(crate) buffer: Vec<u8>,
 }
 
 /// NOTE(alex): Valid `Packet` state transitions:
@@ -383,7 +383,7 @@ impl Packet<ToSend> {
     /// send), I can't see any reason to having this function be more generic (and be used by other
     /// states). Is there a point to having this in any other state? Why would I want to encode
     /// a `Packet<Acked>`?
-    fn encode(&self) -> Result<RawPacket, String> {
+    pub(crate) fn encode(&self) -> Result<RawPacket, String> {
         if self.body.len() > BUFFER_CAP {
             return Err("Serialization error: over buffer capacity.".to_string());
         }

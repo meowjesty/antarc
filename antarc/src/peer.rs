@@ -33,6 +33,7 @@ pub struct NetManager<Kind> {
     /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher level
     /// manager thingy, as `socket.send` feels weird when used here.
     pub(crate) socket: UdpSocket,
+    pub(crate) buffer: Vec<u8>,
     pub(crate) connection_id_tracker: NonZeroU16,
     pub(crate) kind: Kind,
 }

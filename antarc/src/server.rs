@@ -28,8 +28,11 @@ impl NetManager<Server> {
             connected: Vec::with_capacity(8),
         };
 
+        let buffer = vec![0x0; 1024];
+
         NetManager {
             socket,
+            buffer,
             connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
             kind: server,
         }
