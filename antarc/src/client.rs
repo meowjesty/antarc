@@ -93,7 +93,7 @@ impl NetManager<Client> {
     /// user should call `retrieve`.
     pub fn tick(&mut self) -> Result<bool, String> {
         let mut may_retrieve = false;
-        let (size, from_addr) = self
+        let (size, remote_addr) = self
             .socket
             .recv_from(&mut self.buffer)
             .map_err(|fail| fail.to_string())?;
@@ -105,10 +105,6 @@ impl NetManager<Client> {
             // 5. Calculate `rtt` based on how long it took from sending the packet to its ack;
             // 8. If last packet sent time > live connection threshold, drop the connection;
             //
-            // ADD(alex) 2021-02-23: The code inside here will be mostly the same in each branch,
-            // it probably makes sense to move into `Host<T>` and just pass in whatever is needed
-            // (the packet and `from_addr`), it's lacking a basic `handle_received` function, and a
-            // `handle_send`.
             match connection {
                 Connection::Disconnected(disconnected) => {
                     // TODO(alex) 2021-02-23: We enter this state when the connection has been lost
@@ -122,66 +118,12 @@ impl NetManager<Client> {
                     // 1. Check `host.received_list` for internal, connection related packets;
                     //   - what happens if we received data transfers from this host before (when it
                     //     was in a connected state, but lost connection)?
-                    if from_addr != connecting.address {
-                        return Err(format!(
-                            "expected {:?}, but received {:?}",
-                            connecting.address, from_addr
-                        ));
-                    }
-
-                    let packet = Packet::decode(&self.buffer)?;
-                    if let Some((index, _)) = connecting
-                        .sent
-                        .iter_mut()
-                        .enumerate()
-                        .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
-                    {
-                        let sent = connecting.sent.remove(index);
-                        connecting.acked.push(sent.acked());
-                    }
-
-                    connecting.received_list.push(packet);
-
-                    if let Some(to_send) = connecting.send_queue.pop() {
-                        let to_send_raw = to_send.encode()?;
-                        let num_sent = self
-                            .socket
-                            .send_to(&to_send_raw.buffer, connecting.address)
-                            .map_err(|fail| fail.to_string())?;
-
-                        connecting.sent.push(to_send.sent());
-                    }
+                    let _ = connecting.handle_receive(&remote_addr, &self.buffer)?;
+                    let _ = connecting.send(&self.socket)?;
                 }
                 Connection::Connected(mut connected) => {
-                    if from_addr != connected.address {
-                        return Err(format!(
-                            "expected {:?}, but received {:?}",
-                            connected.address, from_addr
-                        ));
-                    }
-
-                    let packet = Packet::decode(&self.buffer)?;
-                    if let Some((index, _)) = connected
-                        .sent
-                        .iter_mut()
-                        .enumerate()
-                        .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
-                    {
-                        let sent = connected.sent.remove(index);
-                        connected.acked.push(sent.acked());
-                    }
-
-                    connected.received_list.push(packet);
-
-                    if let Some(to_send) = connected.send_queue.pop() {
-                        let to_send_raw = to_send.encode()?;
-                        let num_sent = self
-                            .socket
-                            .send_to(&to_send_raw.buffer, connected.address)
-                            .map_err(|fail| fail.to_string())?;
-
-                        connected.sent.push(to_send.sent());
-                    }
+                    let _ = connected.handle_receive(&remote_addr, &self.buffer)?;
+                    let _ = connected.send(&self.socket)?;
                 }
             }
         }

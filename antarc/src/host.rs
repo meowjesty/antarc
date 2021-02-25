@@ -1,6 +1,6 @@
 use std::{
     marker::PhantomData,
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32},
 };
 
@@ -35,6 +35,86 @@ pub(crate) struct Host<ConnectionState> {
     pub(crate) sent: Vec<Packet<Sent>>,
     pub(crate) acked: Vec<Packet<Acked>>,
     _phantom: PhantomData<ConnectionState>,
+}
+
+impl<State> Host<State> {
+    /// 1. Check if the address is expected (this function returns an `Error` if the `remote_addr`
+    ///    doesn't match this host's address);
+    ///    - the packet validity is checked in the `Packet<Received>::decode` function.
+    /// 2. Decode `buffer` into a `Packet<Received>`;
+    ///
+    /// TODO(alex) 2021-02-25: This step requires adding the packet meta data (`time_received`), but
+    /// there is no timer mechanism yet.
+    ///
+    /// 3. Use the received packet `ack` to move a packet from `sent_list` into `acked_list`, if
+    ///    there is a `Packet<Sent>` with `sent.sequence == received.ack`;
+    ///
+    /// TODO(alex) 2021-02-25: Calculate the `rtt` based on the packet that was acked, by using its
+    /// `time_sent` to `time_acked`.
+    ///
+    /// TODO(alex) 2021-02-25: Use the `received.past_acks` to ack multiple `Packet<Sent>` that
+    /// might still be lingering in the `sent_list`.
+    ///
+    /// 4. Push the `Packet<Received>` into the `received_list` for further handling, either by
+    /// some internal protocol mechanism (hearbeat, connection estabilishment), or for the user to
+    /// retrieve.
+    pub(crate) fn handle_receive(
+        &mut self,
+        remote_addr: &SocketAddr,
+        buffer: &[u8],
+    ) -> Result<(), String> {
+        // TODO(alex) 2021-02-23: What should happen here?
+        // 1. Check `host.received_list` for internal, connection related packets;
+        //   - what happens if we received data transfers from this host before (when it was in a
+        //     connected state, but lost connection)?
+        if *remote_addr != self.address {
+            return Err(format!(
+                "expected {:?}, but received {:?}",
+                self.address, remote_addr
+            ));
+        }
+
+        let packet = Packet::decode(&buffer)?;
+        if let Some((index, _)) = self
+            .sent
+            .iter_mut()
+            .enumerate()
+            .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
+        {
+            let sent = self.sent.remove(index);
+            self.acked.push(sent.acked());
+        }
+
+        self.received_list.push(packet);
+
+        Ok(())
+    }
+
+    /// Internal function that may only be called by one of the valid `Host<State>` where sending a
+    /// packet makes sense (currently: `Host<Connecting>` and `Host<Connected>`).
+    ///
+    /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
+    /// for now.
+    ///
+    /// 1. Remove a `Packet<ToSend>` from the `send_queue`;
+    /// 2. Encode the packet;
+    /// 3. Use the `socket` actually send the packet (`[u8]` buffer) to this `Host::address`;
+    /// 4. Change the `Packet<ToSend>` into `Packet<Sent>` and move it to `Host::sent_list`;
+    ///
+    /// TODO(alex) 2021-02-25: Add packet meta data (`time_sent`), lacking timing mechanism.
+    ///
+    fn handle_send(&mut self, socket: &UdpSocket) -> Result<(), String> {
+        if let Some(to_send) = self.send_queue.pop() {
+            let to_send_raw = to_send.encode()?;
+            let num_sent = socket
+                .send_to(&to_send_raw.buffer, self.address)
+                .map_err(|fail| fail.to_string())?;
+
+            self.sent.push(to_send.sent());
+        }
+
+        Ok(())
+    }
 }
 
 impl Host<Disconnected> {
@@ -137,5 +217,15 @@ impl Host<Connecting> {
         };
 
         host
+    }
+
+    pub(crate) fn send(&mut self, socket: &UdpSocket) -> Result<(), String> {
+        self.handle_send(&socket)
+    }
+}
+
+impl Host<Connected> {
+    pub(crate) fn send(&mut self, socket: &UdpSocket) -> Result<(), String> {
+        self.handle_send(&socket)
     }
 }
