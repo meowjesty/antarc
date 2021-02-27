@@ -2,14 +2,18 @@ use std::{
     cell::Cell,
     net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32},
+    time::Instant,
 };
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
+    net::NetManager,
     packet::Packet,
-    peer::NetManager,
 };
 
+/// TODO(alex) 2021-02-26: References for ideas about connection:
+/// http://www.tcpipguide.com/free/t_PPPLinkSetupandPhases.htm
+/// ADD(alex) 2021-02-26: We need a `Disconnecting` state (link termination phase)?
 #[derive(Debug)]
 pub(crate) enum Connection {
     Disconnected(Host<Disconnected>),
@@ -29,6 +33,7 @@ pub struct Client {
 /// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
 /// integrated into the lower parts of the protocol. It should handle the state transitions for
 /// packets, and connections, but leave the actual send/receive to the `net` crate.
+/// ADD(alex) 2021-02-25: I'm questioning this, it might belong here after all.
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).unwrap();
@@ -38,6 +43,7 @@ impl NetManager<Client> {
             connection: None,
         };
 
+        // TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
         let buffer = vec![0x0; 1024];
 
         NetManager {
@@ -60,6 +66,9 @@ impl NetManager<Client> {
     ///    - this function should keep itself to packet handling only, do not try to escalate it
     ///    into handling packet loss or anything like that, this will be part of the network
     ///    implementation, as it requires reading incoming packets.
+    ///
+    /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
+    /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) {
         let disconnected = Connection::Disconnected(Host::new(*server_addr));
 
@@ -91,6 +100,10 @@ impl NetManager<Client> {
 
     /// TODO(alex) 2021-02-23: Return some indication that the manager received new packets and the
     /// user should call `retrieve`.
+    /// ADD(alex) 2021-02-26: The return can be made even more general, by having an enum of
+    /// possibilities, like `HasMessagesToRetrieve`, `ConnectionLost`. The only success cases I can
+    /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
+    /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> Result<bool, String> {
         let mut may_retrieve = false;
         let (size, remote_addr) = self

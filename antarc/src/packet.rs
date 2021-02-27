@@ -13,10 +13,39 @@ use crate::{
     PACKED_LEN, PROTOCOL_ID_BYTES,
 };
 
+/// TODO(alex): 2021-02-05: How to represent these types of packets?
+/// `ConnectionRequest<Packet<ToSend>>`, `ConnectionRequest<Packet<Received>>`? There'll be a bunch
+/// of these structs for each type, as each outer-state may contain any inner-state:
+/// `ConnectionRequest<Packet<*>>`. Could we get away with `ConnectionRequest<Packet<State>>`
+/// in a generic way?
+///
+/// Packets might be either:
+/// - FRAGMENTED or NON_FRAGMENTED;
+/// - DATA_TRANSFER or CONNECTION_REQUEST or CHALLENGE or CHALLENGE_RESPONSE;
+///
+/// this is valid:
+/// - `FRAGMENTED | DATA_TRANSFER`
+///
+/// but this is NOT:
+/// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
+type KindFlag = u16;
+pub(crate) const SPECIAL: KindFlag = 0;
+pub(crate) const FRAGMENTED: KindFlag = 1;
+pub(crate) const DATA_TRANSFER: KindFlag = 1 << 1;
+pub(crate) const CONNECTION_REQUEST: KindFlag = 1 << 2;
+pub(crate) const CHALLENGE_REQUEST: KindFlag = 1 << 3;
+pub(crate) const CHALLENGE_RESPONSE: KindFlag = 1 << 4;
+pub(crate) const CONNECTION_ACCEPTED: KindFlag = 1 << 5;
+pub(crate) const CONNECTION_DENIED: KindFlag = 1 << 6;
+pub(crate) const HEARTBEAT: KindFlag = 1 << 7;
+
 /// TODO(alex) 2021-02-09: Improve terminology:
 /// http://www.tcpipguide.com/free/t_MessagesPacketsFramesDatagramsandCells-2.htm
 ///
 /// http://www.tcpipguide.com/free/t_MessageFormattingHeadersPayloadsandFooters.htm
+/// TODO(alex) 2021-02-26: The idea of "framing" a packet can be understood as putting it in an
+/// envelope, making it clear where the packet ends, starts, where is the message. This will help
+/// with packet fragmentation.
 pub(crate) struct RawPacket {
     crc32: NonZeroU32,
     pub(crate) buffer: Vec<u8>,
@@ -46,14 +75,15 @@ pub(crate) struct RawPacket {
 /// makes everything simpler to handle when encoding/decoding, we already know where the `Header`
 /// ends (`size_of::<Header>`), with this field we get to just offset `buffer[payload_len]` to get
 /// the `Footer` (with the `crc32`), keeping the `Footer` out of crc32 calculation.
+/// ADD(alex) 2021-02-26: `kind` is a limited set of variants, so maybe `Header<Kind>` makes sense?
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Header {
     /// WARNING(alex): This must always be the first bytes of the `Header` when converting it
     /// into (and from) buffers.
     /// TODO(alex) 2021-02-03: How to initialize this? I want a non-default value, but this won't
     /// be calculated until the `Header` is encoded. If the crc32 is not stored in the `Header`,
-    /// it'll be lost, the same issue happens when moving it into the `Packet`? Maybe this is stored
-    /// separately, in the packet's meta structures?
+    /// it'll be lost, the same issue happens when moving it into the `Packet`? Maybe this is
+    /// stored separately, in the packet's meta structures?
     ///
     /// This is also part of a bigger question, where do we store the encoded packets (do I even
     /// want to store them?)? If stored, then the crc32 may simply be coupled there like
@@ -74,16 +104,16 @@ pub(crate) struct Header {
     /// TODO(alex) 2021-01-29: I need this to differentiate between packets, having separate
     /// `Packet` structs (union) won't cover the case when the user sends an empty packet vs the
     /// protocol sending an ack-only packet, as both would have a zero-length body.
-    /// ADD(alex) 2021-01-29: The above is talking about the lower level header, that is transmitted
-    /// through the network, but here, I could use the type system to encode the correct state, and
-    /// convert it into a `u16` only at `send` and `recv` time. Similar to how the crc32 and
-    /// sentinel values are not present in this struct, the kind also doesn't have to be, I just
-    /// need to handle it in a sort of just-in-time way (encode/decode).
+    /// ADD(alex) 2021-01-29: The above is talking about the lower level header, that is
+    /// transmitted through the network, but here, I could use the type system to encode the
+    /// correct state, and convert it into a `u16` only at `send` and `recv` time. Similar to
+    /// how the crc32 and sentinel values are not present in this struct, the kind also doesn't
+    /// have to be, I just need to handle it in a sort of just-in-time way (encode/decode).
     /// ADD(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
     /// response, maybe a data transfer, and each is handled differently, for example, the protocol
     /// will read the `body` of a connection request, and of a fragment, but it just passes it in
     /// the case of a data transfer.
-    pub(crate) kind: u8,
+    pub(crate) kind: KindFlag,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -99,6 +129,9 @@ impl Header {
     /// transmitted via the network, `Self + ProtocolId`, even though the crc32 substitutes it.
     pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Self>() + mem::size_of::<u32>();
 
+    /// TODO(alex) 2021-02-26: This will encode based on the `Header<Kind>` so we need different
+    /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
+    /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn encode(&self) -> Result<Vec<u8>, String> {
         let b_protocol_id = PROTOCOL_ID_BYTES;
         let b_connection_id = self.connection_id.get().to_be_bytes();
@@ -133,6 +166,9 @@ impl Header {
         Ok(cursor.into_inner())
     }
 
+    /// TODO(alex) 2021-02-26: This will decode based on the `Header<Kind>` so we need different
+    /// public APIs that call this function, like we have for the `Host<State>`. `Header::decode`
+    /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, String> {
         let mut read_pos = 0;
         let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
@@ -141,7 +177,7 @@ impl Header {
         let sequence = NonZeroU32::new(read_buffer_inc!(u32, read_buffer, read_pos)).unwrap();
         let ack = read_buffer_inc!(u32, read_buffer, read_pos);
         let past_acks = read_buffer_inc!(u16, read_buffer, read_pos);
-        let kind = read_buffer_inc!(u8, read_buffer, read_pos);
+        let kind = read_buffer_inc!(KindFlag, read_buffer, read_pos).into();
 
         cursor.consume(read_pos);
 
@@ -178,15 +214,15 @@ impl Header {
 
 #[derive(Debug)]
 pub(crate) struct Received {
-    time_received: Duration,
+    pub(crate) time_received: Duration,
 }
 
 /// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
 /// loaded them, so they're moved into this state.
 #[derive(Debug)]
 pub(crate) struct Retrieved {
-    time_received: Duration,
-    time_retrieved: Duration,
+    pub(crate) time_received: Duration,
+    pub(crate) time_retrieved: Duration,
 }
 
 /// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
@@ -195,26 +231,26 @@ pub(crate) struct Retrieved {
 /// TODO(alex) 2021-02-15: This name sucks and doesn't really convey what it does.
 #[derive(Debug)]
 pub(crate) struct Internal {
-    time_received: Duration,
-    time_internal: Duration,
+    pub(crate) time_received: Duration,
+    pub(crate) time_internal: Duration,
 }
 
 #[derive(Debug)]
 pub(crate) struct Sent {
-    time_enqueued: Duration,
-    time_sent: Duration,
+    pub(crate) time_enqueued: Duration,
+    pub(crate) time_sent: Duration,
 }
 
 #[derive(Debug)]
 pub(crate) struct ToSend {
-    time_enqueued: Duration,
+    pub(crate) time_enqueued: Duration,
 }
 
 #[derive(Debug)]
 pub(crate) struct Acked {
-    time_enqueued: Duration,
-    time_sent: Duration,
-    time_acked: Duration,
+    pub(crate) time_enqueued: Duration,
+    pub(crate) time_sent: Duration,
+    pub(crate) time_acked: Duration,
 }
 
 /// TODO(alex) 2021-02-09: There must be a way to mark a packet as `Reliable` and/or `Priority`.
@@ -239,11 +275,8 @@ pub(crate) struct Packet<State> {
 }
 
 impl Packet<Received> {
-    pub(crate) fn new(header: Header, body: Vec<u8>) -> Self {
-        let state = Received {
-            // TODO(alex) 2021-02-05: This function requires a timing system.
-            time_received: Duration::new(0, 0),
-        };
+    pub(crate) fn new(header: Header, body: Vec<u8>, time_received: Duration) -> Self {
+        let state = Received { time_received };
         let packet = Packet {
             header,
             body,
@@ -253,11 +286,10 @@ impl Packet<Received> {
         packet
     }
 
-    pub(crate) fn retrieved(self) -> Packet<Retrieved> {
+    pub(crate) fn retrieved(self, time_retrieved: Duration) -> Packet<Retrieved> {
         let state = Retrieved {
             time_received: self.state.time_received,
-            // TODO(alex) 2021-02-05: This function requires a timing system.
-            time_retrieved: Duration::new(0, 0),
+            time_retrieved,
         };
         let packet = Packet {
             header: self.header,
@@ -268,11 +300,10 @@ impl Packet<Received> {
         packet
     }
 
-    pub(crate) fn internald(self) -> Packet<Internal> {
+    pub(crate) fn internald(self, time_internal: Duration) -> Packet<Internal> {
         let state = Internal {
             time_received: self.state.time_received,
-            // TODO(alex) 2021-02-05: This function requires a timing system.
-            time_internal: Duration::new(0, 0),
+            time_internal,
         };
         let packet = Packet {
             header: self.header,
@@ -285,7 +316,7 @@ impl Packet<Received> {
 
     /// TODO(alex) 2021-02-05: Decoding only makes sense in a `Packet<Received>` context, why would
     /// I want to decode any other state of a packet?
-    pub fn decode(buffer: &[u8]) -> Result<Packet<Received>, String> {
+    pub fn decode(buffer: &[u8], time_received: Duration) -> Result<Packet<Received>, String> {
         if buffer.len() > PACKED_LEN {
             panic!(
                 "Not handling packets that have a different len {:?} > PACKED_LEN {:?}",
@@ -339,22 +370,14 @@ impl Packet<Received> {
         let read_pos = body_buffer.len() + marker.len();
         cursor.consume(read_pos);
 
-        // TODO(alex) 2021-01-24: This should be an actual time, we need some form of global timing
-        // system to keep track of received, sent, lost connection, heartbeat timings.
-        // ADD(alex) 2021-02-05: This function requires a timing system.
-        let now = 0;
-        // let packet = RawPacket::new(header, body, Metadata::Received(now));
-        // Ok(packet)
-        unimplemented!();
+        let received = Packet::<Received>::new(header, body, time_received);
+        Ok(received)
     }
 }
 
 impl Packet<ToSend> {
-    pub(crate) fn new(header: Header, body: Vec<u8>) -> Self {
-        let state = ToSend {
-            // TODO(alex) 2021-02-05: This function requires a timing system.
-            time_enqueued: Duration::new(1, 0),
-        };
+    pub(crate) fn new(header: Header, body: Vec<u8>, time_enqueued: Duration) -> Self {
+        let state = ToSend { time_enqueued };
         let packet = Packet {
             header,
             body,
@@ -364,11 +387,10 @@ impl Packet<ToSend> {
         packet
     }
 
-    pub(crate) fn sent(self) -> Packet<Sent> {
+    pub(crate) fn sent(self, time_sent: Duration) -> Packet<Sent> {
         let state = Sent {
             time_enqueued: self.state.time_enqueued,
-            // TODO(alex) 2021-02-05: This function requires a timing system.
-            time_sent: Duration::new(0, 0),
+            time_sent,
         };
         let packet = Packet {
             header: self.header,
@@ -440,12 +462,11 @@ impl Packet<ToSend> {
 }
 
 impl Packet<Sent> {
-    pub(crate) fn acked(self) -> Packet<Acked> {
+    pub(crate) fn acked(self, time_acked: Duration) -> Packet<Acked> {
         let state = Acked {
             time_enqueued: self.state.time_enqueued,
             time_sent: self.state.time_sent,
-            // TODO(alex) 2021-02-05: This function requires a timing system.
-            time_acked: Duration::new(0, 0),
+            time_acked,
         };
         let packet = Packet {
             header: self.header,

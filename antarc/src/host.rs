@@ -2,11 +2,15 @@ use std::{
     marker::PhantomData,
     net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32},
+    time::{Duration, Instant},
 };
 
 use crate::{
-    packet::{Acked, Header, Internal, Packet, Received, Retrieved, Sent, ToSend},
-    CONNECTION_REQUEST,
+    exponential_moving_average,
+    packet::{
+        Acked, Header, Internal, Packet, Received, Retrieved, Sent, ToSend, CONNECTION_ACCEPTED,
+        CONNECTION_REQUEST,
+    },
 };
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
@@ -24,6 +28,10 @@ pub struct Disconnected;
 #[derive(Debug)]
 pub(crate) struct Host<ConnectionState> {
     pub(crate) address: SocketAddr,
+    /// TODO(alex) 2021-02-26: Should each `Host` have its own `Instant` to keep track of timings?
+    /// This is not a hard requirement, but many functions will end up using the `Instant` to
+    /// calculate time related things, so it might as well be in the struct.
+    pub(crate) timer: Instant,
     pub(crate) sequence: NonZeroU32,
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
@@ -42,15 +50,8 @@ impl<State> Host<State> {
     ///    doesn't match this host's address);
     ///    - the packet validity is checked in the `Packet<Received>::decode` function.
     /// 2. Decode `buffer` into a `Packet<Received>`;
-    ///
-    /// TODO(alex) 2021-02-25: This step requires adding the packet meta data (`time_received`), but
-    /// there is no timer mechanism yet.
-    ///
     /// 3. Use the received packet `ack` to move a packet from `sent_list` into `acked_list`, if
     ///    there is a `Packet<Sent>` with `sent.sequence == received.ack`;
-    ///
-    /// TODO(alex) 2021-02-25: Calculate the `rtt` based on the packet that was acked, by using its
-    /// `time_sent` to `time_acked`.
     ///
     /// TODO(alex) 2021-02-25: Use the `received.past_acks` to ack multiple `Packet<Sent>` that
     /// might still be lingering in the `sent_list`.
@@ -58,6 +59,10 @@ impl<State> Host<State> {
     /// 4. Push the `Packet<Received>` into the `received_list` for further handling, either by
     /// some internal protocol mechanism (hearbeat, connection estabilishment), or for the user to
     /// retrieve.
+    ///
+    /// TODO(alex) 2021-02-26: Should each `Host` have its own `Instant` to keep track of timings?
+    /// This is not a hard requirement, but many functions will end up using the `Instant` to
+    /// calculate time related things, so it might as well be in the struct.
     pub(crate) fn handle_receive(
         &mut self,
         remote_addr: &SocketAddr,
@@ -67,6 +72,8 @@ impl<State> Host<State> {
         // 1. Check `host.received_list` for internal, connection related packets;
         //   - what happens if we received data transfers from this host before (when it was in a
         //     connected state, but lost connection)?
+        // NOTE(alex) 2021-02-26: This could be done here or in the manager `Client` part, but it
+        // would just end up as duplicated code between possible `Host` states.
         if *remote_addr != self.address {
             return Err(format!(
                 "expected {:?}, but received {:?}",
@@ -74,7 +81,7 @@ impl<State> Host<State> {
             ));
         }
 
-        let packet = Packet::decode(&buffer)?;
+        let packet = Packet::decode(&buffer, self.timer.elapsed())?;
         if let Some((index, _)) = self
             .sent
             .iter_mut()
@@ -82,7 +89,12 @@ impl<State> Host<State> {
             .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
         {
             let sent = self.sent.remove(index);
-            self.acked.push(sent.acked());
+            let acked = sent.acked(self.timer.elapsed());
+
+            let delta_rtt: Duration = acked.state.time_acked - acked.state.time_sent;
+            self.rtt = exponential_moving_average(delta_rtt.as_millis(), self.rtt);
+
+            self.acked.push(acked);
         }
 
         self.received_list.push(packet);
@@ -93,16 +105,13 @@ impl<State> Host<State> {
     /// Internal function that may only be called by one of the valid `Host<State>` where sending a
     /// packet makes sense (currently: `Host<Connecting>` and `Host<Connected>`).
     ///
-    /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
-    /// for now.
-    ///
     /// 1. Remove a `Packet<ToSend>` from the `send_queue`;
     /// 2. Encode the packet;
     /// 3. Use the `socket` actually send the packet (`[u8]` buffer) to this `Host::address`;
     /// 4. Change the `Packet<ToSend>` into `Packet<Sent>` and move it to `Host::sent_list`;
     ///
-    /// TODO(alex) 2021-02-25: Add packet meta data (`time_sent`), lacking timing mechanism.
-    ///
+    /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
+    /// for now.
     fn handle_send(&mut self, socket: &UdpSocket) -> Result<(), String> {
         if let Some(to_send) = self.send_queue.pop() {
             let to_send_raw = to_send.encode()?;
@@ -110,7 +119,7 @@ impl<State> Host<State> {
                 .send_to(&to_send_raw.buffer, self.address)
                 .map_err(|fail| fail.to_string())?;
 
-            self.sent.push(to_send.sent());
+            self.sent.push(to_send.sent(self.timer.elapsed()));
         }
 
         Ok(())
@@ -122,8 +131,11 @@ impl Host<Disconnected> {
     /// always start in disconnected mode?
     pub(crate) fn new(address: SocketAddr) -> Host<Disconnected> {
         let state = Disconnected;
+        let timer = Instant::now();
+
         let host = Host {
             address,
+            timer,
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             rtt: 0,
             received_list: Vec::with_capacity(32),
@@ -146,7 +158,8 @@ impl Host<Disconnected> {
             past_acks: 0,
             kind: CONNECTION_REQUEST,
         };
-        let connection_request = Packet::<ToSend>::new(connection_header, vec![0; 10]);
+        let connection_request =
+            Packet::<ToSend>::new(connection_header, vec![0; 10], self.timer.elapsed());
         // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
         // until the connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.
@@ -154,6 +167,7 @@ impl Host<Disconnected> {
 
         let host = Host {
             address: self.address,
+            timer: self.timer,
             sequence: self.sequence,
             rtt: self.rtt,
             received_list: self.received_list,
@@ -170,15 +184,16 @@ impl Host<Disconnected> {
 
     /// TODO(alex) 2021-02-23: This is the `server`-side of the `Disconnected -> Connecting`
     /// transformation.
-    pub(crate) fn connection_response(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
+    pub(crate) fn accept_connection(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
         let connection_header = Header {
             connection_id,
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             ack: 0,
             past_acks: 0,
-            kind: CONNECTION_REQUEST,
+            kind: CONNECTION_ACCEPTED,
         };
-        let connection_request = Packet::<ToSend>::new(connection_header, vec![0; 10]);
+        let connection_request =
+            Packet::<ToSend>::new(connection_header, vec![0; 10], self.timer.elapsed());
         // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
         // until the connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.
@@ -186,6 +201,7 @@ impl Host<Disconnected> {
 
         let host = Host {
             address: self.address,
+            timer: self.timer,
             sequence: self.sequence,
             rtt: self.rtt,
             received_list: self.received_list,
@@ -205,6 +221,7 @@ impl Host<Connecting> {
     pub(crate) fn into_connected(mut self) -> Host<Connected> {
         let host = Host {
             address: self.address,
+            timer: self.timer,
             sequence: self.sequence,
             rtt: self.rtt,
             received_list: self.received_list,

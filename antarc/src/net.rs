@@ -2,11 +2,13 @@ use std::{
     marker::PhantomData,
     net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
+    time::Instant,
 };
 
-use crate::host::{Connected, Connecting, Disconnected, Host};
-use crate::packet::{Acked, Header, Packet, Received, Retrieved, Sent, ToSend};
-use crate::CONNECTION_REQUEST;
+use crate::{
+    host::{Connected, Connecting, Disconnected, Host},
+    packet::{Acked, Header, Packet, Received, Retrieved, Sent, ToSend},
+};
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
 /// receive information about the other `Peer<Client>` that are connected to the same server. They
@@ -30,9 +32,10 @@ use crate::CONNECTION_REQUEST;
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
 #[derive(Debug)]
 pub struct NetManager<Kind> {
-    /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher level
-    /// manager thingy, as `socket.send` feels weird when used here.
+    /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher
+    /// level manager thingy, as `socket.send` feels weird when used here.
     pub(crate) socket: UdpSocket,
+    /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) connection_id_tracker: NonZeroU16,
     pub(crate) kind: Kind,

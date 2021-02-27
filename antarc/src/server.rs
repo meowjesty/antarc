@@ -1,11 +1,12 @@
 use std::{
     net::{SocketAddr, UdpSocket},
     num::NonZeroU16,
+    time::Instant,
 };
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
-    peer::NetManager,
+    net::NetManager,
 };
 
 #[derive(Debug)]
@@ -18,6 +19,7 @@ pub struct Server {
 /// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
 /// integrated into the lower parts of the protocol. It should handle the state transitions for
 /// packets, and connections, but leave the actual send/receive to the `net` crate.
+/// ADD(alex) 2021-02-25: I'm questioning this, it might belong here after all.
 impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).unwrap();
@@ -28,6 +30,7 @@ impl NetManager<Server> {
             connected: Vec::with_capacity(8),
         };
 
+        // TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
         let buffer = vec![0x0; 1024];
 
         NetManager {

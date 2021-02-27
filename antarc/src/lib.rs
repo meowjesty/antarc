@@ -1,15 +1,17 @@
-#![feature(const_panic)]
+// #![feature(const_panic)]
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
-#![feature(const_precise_live_drops)]
+// #![feature(const_precise_live_drops)]
+#![feature(const_fn_floating_point_arithmetic)]
 
 use core::mem;
-use packet::Header;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU8};
+
+use packet::Header;
 
 pub mod client;
 pub mod host;
+pub mod net;
 mod packet;
-pub mod peer;
 pub mod server;
 
 #[macro_export]
@@ -24,6 +26,16 @@ macro_rules! read_buffer_inc {
         $start = end;
         val
     }};
+}
+
+/// An exponential moving average - EMA is a type of moving average that places a greater weight and
+/// significance on the most recent data points.
+///
+/// The weighting for each **older** datum **decreases** exponentially, never reaching zero.
+pub(crate) const fn exponential_moving_average(new_value: u128, old_value: u128) -> u128 {
+    let weight = 0.1;
+    let result = weight * new_value as f64 + (1.0 - weight) * old_value as f64;
+    result as u128
 }
 
 // TODO(alex) 2021-01-25: Have separate types for `Server` and `Client`, instead of using a flag.
@@ -63,31 +75,6 @@ pub const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
 // END_OF_PACKET.to_be_bytes();
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
 pub const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
-
-/// TODO(alex): 2021-02-05: How to represent these types of packets?
-/// `ConnectionRequest<Packet<ToSend>>`, `ConnectionRequest<Packet<Received>>`? There'll be a bunch
-/// of these structs for each type, as each outer-state may contain any inner-state:
-/// `ConnectionRequest<Packet<*>>`. Could we get away with `ConnectionRequest<Packet<State>>`
-/// in a generic way?
-///
-/// Packets might be either:
-/// - FRAGMENTED or NON_FRAGMENTED;
-/// - DATA_TRANSFER or CONNECTION_REQUEST or CHALLENGE or CHALLENGE_RESPONSE;
-///
-/// this is valid:
-/// - `FRAGMENTED | DATA_TRANSFER`
-///
-/// but this is NOT:
-/// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
-pub const SPECIAL: u8 = 0;
-pub const FRAGMENTED: u8 = 1;
-pub const DATA_TRANSFER: u8 = 1 << 1;
-pub const CONNECTION_REQUEST: u8 = 1 << 2;
-pub const CHALLENGE_REQUEST: u8 = 1 << 3;
-pub const CHALLENGE_RESPONSE: u8 = 1 << 4;
-pub const CONNECTION_ACCEPTED: u8 = 1 << 5;
-pub const CONNECTION_DENIED: u8 = 1 << 6;
-pub const HEARTBEAT: u8 = 1 << 7;
 
 // TODO(alex) 2021-01-24: How does send / receive works?
 // - Packet is sent with data / client replies with either data or just ack;

@@ -1,6 +1,6 @@
 use std::net::{SocketAddr, UdpSocket};
 
-use antarc::{peer::NetManager, server::Server};
+use antarc::{net::NetManager, server::Server};
 
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
