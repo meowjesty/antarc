@@ -31,12 +31,12 @@ use crate::{
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
 #[derive(Debug)]
-pub struct NetManager<Kind> {
+pub struct NetManager<ClientOrServer> {
     /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher
     /// level manager thingy, as `socket.send` feels weird when used here.
     pub(crate) socket: UdpSocket,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) connection_id_tracker: NonZeroU16,
-    pub(crate) kind: Kind,
+    pub(crate) client_or_server: ClientOrServer,
 }

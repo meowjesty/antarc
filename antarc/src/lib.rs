@@ -38,14 +38,9 @@ pub(crate) const fn exponential_moving_average(new_value: u128, old_value: u128)
     result as u128
 }
 
-// TODO(alex) 2021-01-25: Have separate types for `Server` and `Client`, instead of using a flag.
-// Can this be an `enum Host`? `Host / Peer` distinction.
-// ADD(alex): We need 2 different `send` functions:
-// 1. a public `send` that only sends messages to connected hosts/peers;
-// 2. an inetrnal `raw_send` that is used to actually send data, including connection requests;
-// ADD(alex): There needs to be a check on the send queue, so that we don't keep sending and acking
-// packets of the same host/peer, otherwise we might end up in a situation where other peers never
-// get a message back from the server.
+// TODO(alex) 2021-02-27 There needs to be a check on the send queue, so that we don't keep sending
+// and acking packets of the same host/peer, otherwise we might end up in a situation where other
+// peers never get a message back from the server.
 
 /// Protocol id type alias that identifies a packet as part of the protocol.
 /// This won't be sent to a remote host, but it's used in the CRC32 calculation, it acts as a check

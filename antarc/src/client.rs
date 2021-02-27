@@ -8,7 +8,7 @@ use std::{
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
     net::NetManager,
-    packet::Packet,
+    packet::{Packet, CONNECTION_ACCEPTED, CONNECTION_DENIED},
 };
 
 /// TODO(alex) 2021-02-26: References for ideas about connection:
@@ -50,7 +50,7 @@ impl NetManager<Client> {
             socket,
             buffer,
             connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
-            kind: client,
+            client_or_server: client,
         }
     }
 
@@ -74,13 +74,16 @@ impl NetManager<Client> {
 
         // TODO(alex) 2021-02-23: Do I want to always `replace` or if the user calls `connect`
         // twice should it check if there is a connection already and do something else?
-        if let Some(Connection::Disconnected(disconnected)) =
-            self.kind.connection.replace(disconnected).take()
+        if let Some(Connection::Disconnected(disconnected)) = self
+            .client_or_server
+            .connection
+            .replace(disconnected)
+            .take()
         {
             // TODO(alex): 2021-02-23: `request_connection` should probably be here and not on
             // `Host`, as the `Server` and `Client` are the ones interested in this.
             let connecting = disconnected.request_connection(self.connection_id_tracker);
-            self.kind.connection = Some(Connection::Connecting(connecting));
+            self.client_or_server.connection = Some(Connection::Connecting(connecting));
 
             // TODO(alex) 2021-02-17: This is a 2-part problem:
             // 1. Here we need to check if we're wrapping the `u16::MAX` value and getting a zero
@@ -92,9 +95,18 @@ impl NetManager<Client> {
     }
 
     pub fn connected(&mut self) {
-        if let Some(Connection::Connecting(connecting)) = self.kind.connection.take() {
+        if let Some(Connection::Connecting(connecting)) = self.client_or_server.connection.take() {
             let connected = connecting.into_connected();
-            self.kind.connection = Some(Connection::Connected(connected));
+            self.client_or_server.connection = Some(Connection::Connected(connected));
+        }
+    }
+
+    pub fn denied(&mut self) {
+        let client = &mut self.client_or_server;
+
+        if let Some(Connection::Connecting(connecting)) = client.connection.take() {
+            let disconnected = connecting.into_disconnected();
+            client.connection = Some(Connection::Disconnected(disconnected));
         }
     }
 
@@ -105,13 +117,15 @@ impl NetManager<Client> {
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> Result<bool, String> {
+        let client = &mut self.client_or_server;
         let mut may_retrieve = false;
+
         let (size, remote_addr) = self
             .socket
             .recv_from(&mut self.buffer)
             .map_err(|fail| fail.to_string())?;
 
-        if let Some(connection) = self.kind.connection.take() {
+        if let Some(connection) = client.connection.take() {
             // TODO(alex) 2021-02-23: What should happen here?
             // 4. Ack packet(s) from `sent` list with the `packet.past_acks` value received;
             //   - this is done by checking the last `16` packets based on the received `ack`;
@@ -127,15 +141,39 @@ impl NetManager<Client> {
                     self.connect(&disconnected.address);
                 }
                 Connection::Connecting(mut connecting) => {
-                    // TODO(alex) 2021-02-23: What should happen here?
-                    // 1. Check `host.received_list` for internal, connection related packets;
-                    //   - what happens if we received data transfers from this host before (when it
-                    //     was in a connected state, but lost connection)?
-                    let _ = connecting.handle_receive(&remote_addr, &self.buffer)?;
-                    let _ = connecting.send(&self.socket)?;
+                    // TODO(alex) 2021-02-23:  what happens if we received data transfers from this
+                    // host before (when it was in a connected state, but lost connection)?
+                    let _ = connecting.on_receive(&remote_addr, &self.buffer)?;
+
+                    if let Some(received) = connecting.received_list.last() {
+                        match received.header.kind {
+                            CONNECTION_ACCEPTED => {
+                                let received = connecting.received_list.pop().unwrap();
+                                let internald = received.internald(connecting.timer.elapsed());
+                                connecting.internals.push(internald);
+                                self.connected();
+                            }
+                            CONNECTION_DENIED => {
+                                let received = connecting.received_list.pop().unwrap();
+                                let internald = received.internald(connecting.timer.elapsed());
+                                connecting.internals.push(internald);
+                                self.denied();
+                            }
+                            invalid => {
+                                let error = format!(
+                                    "{:?} expected either a {:?}, or a {:?}, but got {:?} instead.",
+                                    connecting, CONNECTION_ACCEPTED, CONNECTION_DENIED, invalid
+                                );
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        let _ = connecting.send(&self.socket)?;
+                    }
                 }
                 Connection::Connected(mut connected) => {
-                    let _ = connected.handle_receive(&remote_addr, &self.buffer)?;
+                    let _ = connected.on_receive(&remote_addr, &self.buffer)?;
+                    // TODO(alex) 2021-02-27: Handle the data transfer + hearbeat here.
                     let _ = connected.send(&self.socket)?;
                 }
             }

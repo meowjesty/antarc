@@ -37,7 +37,7 @@ impl NetManager<Server> {
             socket,
             buffer,
             connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
-            kind: server,
+            client_or_server: server,
         }
     }
 

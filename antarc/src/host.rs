@@ -40,8 +40,8 @@ pub(crate) struct Host<ConnectionState> {
     pub(crate) retrieved: Vec<Packet<Retrieved>>,
     pub(crate) internals: Vec<Packet<Internal>>,
     pub(crate) send_queue: Vec<Packet<ToSend>>,
-    pub(crate) sent: Vec<Packet<Sent>>,
-    pub(crate) acked: Vec<Packet<Acked>>,
+    pub(crate) sent_list: Vec<Packet<Sent>>,
+    pub(crate) acked_list: Vec<Packet<Acked>>,
     _phantom: PhantomData<ConnectionState>,
 }
 
@@ -63,7 +63,7 @@ impl<State> Host<State> {
     /// TODO(alex) 2021-02-26: Should each `Host` have its own `Instant` to keep track of timings?
     /// This is not a hard requirement, but many functions will end up using the `Instant` to
     /// calculate time related things, so it might as well be in the struct.
-    pub(crate) fn handle_receive(
+    pub(crate) fn raw_on_receive(
         &mut self,
         remote_addr: &SocketAddr,
         buffer: &[u8],
@@ -83,18 +83,18 @@ impl<State> Host<State> {
 
         let packet = Packet::decode(&buffer, self.timer.elapsed())?;
         if let Some((index, _)) = self
-            .sent
+            .sent_list
             .iter_mut()
             .enumerate()
             .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
         {
-            let sent = self.sent.remove(index);
+            let sent = self.sent_list.remove(index);
             let acked = sent.acked(self.timer.elapsed());
 
             let delta_rtt: Duration = acked.state.time_acked - acked.state.time_sent;
             self.rtt = exponential_moving_average(delta_rtt.as_millis(), self.rtt);
 
-            self.acked.push(acked);
+            self.acked_list.push(acked);
         }
 
         self.received_list.push(packet);
@@ -112,14 +112,14 @@ impl<State> Host<State> {
     ///
     /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
     /// for now.
-    fn handle_send(&mut self, socket: &UdpSocket) -> Result<(), String> {
+    fn raw_send(&mut self, socket: &UdpSocket) -> Result<(), String> {
         if let Some(to_send) = self.send_queue.pop() {
             let to_send_raw = to_send.encode()?;
             let num_sent = socket
                 .send_to(&to_send_raw.buffer, self.address)
                 .map_err(|fail| fail.to_string())?;
 
-            self.sent.push(to_send.sent(self.timer.elapsed()));
+            self.sent_list.push(to_send.sent(self.timer.elapsed()));
         }
 
         Ok(())
@@ -142,8 +142,8 @@ impl Host<Disconnected> {
             retrieved: Vec::with_capacity(32),
             internals: Vec::with_capacity(32),
             send_queue: Vec::with_capacity(32),
-            sent: Vec::with_capacity(32),
-            acked: Vec::with_capacity(32),
+            sent_list: Vec::with_capacity(32),
+            acked_list: Vec::with_capacity(32),
             _phantom: PhantomData::default(),
         };
 
@@ -174,8 +174,8 @@ impl Host<Disconnected> {
             retrieved: self.retrieved,
             internals: self.internals,
             send_queue: self.send_queue,
-            sent: self.sent,
-            acked: self.acked,
+            sent_list: self.sent_list,
+            acked_list: self.acked_list,
             _phantom: PhantomData::default(),
         };
 
@@ -208,8 +208,8 @@ impl Host<Disconnected> {
             retrieved: self.retrieved,
             internals: self.internals,
             send_queue: self.send_queue,
-            sent: self.sent,
-            acked: self.acked,
+            sent_list: self.sent_list,
+            acked_list: self.acked_list,
             _phantom: PhantomData::default(),
         };
 
@@ -228,21 +228,57 @@ impl Host<Connecting> {
             retrieved: self.retrieved,
             internals: self.internals,
             send_queue: self.send_queue,
-            sent: self.sent,
-            acked: self.acked,
+            sent_list: self.sent_list,
+            acked_list: self.acked_list,
             _phantom: PhantomData::default(),
         };
 
         host
     }
 
+    pub(crate) fn into_disconnected(mut self) -> Host<Disconnected> {
+        let host = Host {
+            address: self.address,
+            timer: self.timer,
+            sequence: self.sequence,
+            rtt: self.rtt,
+            received_list: self.received_list,
+            retrieved: self.retrieved,
+            internals: self.internals,
+            send_queue: self.send_queue,
+            sent_list: self.sent_list,
+            acked_list: self.acked_list,
+            _phantom: PhantomData::default(),
+        };
+
+        host
+    }
+
+    pub(crate) fn on_receive(
+        &mut self,
+        remote_addr: &SocketAddr,
+        buffer: &[u8],
+    ) -> Result<(), String> {
+        self.raw_on_receive(&remote_addr, buffer)
+    }
+
     pub(crate) fn send(&mut self, socket: &UdpSocket) -> Result<(), String> {
-        self.handle_send(&socket)
+        self.raw_send(&socket)
     }
 }
 
 impl Host<Connected> {
+    pub(crate) fn on_receive(
+        &mut self,
+        remote_addr: &SocketAddr,
+        buffer: &[u8],
+    ) -> Result<(), String> {
+        self.raw_on_receive(&remote_addr, buffer)?;
+
+        Ok(())
+    }
+
     pub(crate) fn send(&mut self, socket: &UdpSocket) -> Result<(), String> {
-        self.handle_send(&socket)
+        self.raw_send(&socket)
     }
 }
