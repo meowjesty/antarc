@@ -9,8 +9,8 @@ use std::{
 use crc32fast::Hasher;
 
 use crate::{
-    read_buffer_inc, PacketInfo, PacketKind, PacketMarker, BUFFER_CAP, END_OF_PACKET_BYTES,
-    PACKED_LEN, PROTOCOL_ID_BYTES,
+    read_buffer_inc, AntarcResult, PacketInfo, PacketKind, PacketMarker, BUFFER_CAP,
+    END_OF_PACKET_BYTES, PACKED_LEN, PROTOCOL_ID_BYTES,
 };
 
 /// TODO(alex): 2021-02-05: How to represent these types of packets?
@@ -28,16 +28,16 @@ use crate::{
 ///
 /// but this is NOT:
 /// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
-type KindFlag = u16;
-pub(crate) const SPECIAL: KindFlag = 0;
-pub(crate) const FRAGMENTED: KindFlag = 1;
-pub(crate) const DATA_TRANSFER: KindFlag = 1 << 1;
-pub(crate) const CONNECTION_REQUEST: KindFlag = 1 << 2;
-pub(crate) const CHALLENGE_REQUEST: KindFlag = 1 << 3;
-pub(crate) const CHALLENGE_RESPONSE: KindFlag = 1 << 4;
-pub(crate) const CONNECTION_ACCEPTED: KindFlag = 1 << 5;
-pub(crate) const CONNECTION_DENIED: KindFlag = 1 << 6;
-pub(crate) const HEARTBEAT: KindFlag = 1 << 7;
+type StatusCode = u16;
+pub(crate) const SPECIAL: StatusCode = 0;
+pub(crate) const FRAGMENTED: StatusCode = 1;
+pub(crate) const DATA_TRANSFER: StatusCode = 1 << 1;
+pub(crate) const CONNECTION_REQUEST: StatusCode = 1 << 2;
+pub(crate) const CHALLENGE_REQUEST: StatusCode = 1 << 3;
+pub(crate) const CHALLENGE_RESPONSE: StatusCode = 1 << 4;
+pub(crate) const CONNECTION_ACCEPTED: StatusCode = 1 << 5;
+pub(crate) const CONNECTION_DENIED: StatusCode = 1 << 6;
+pub(crate) const HEARTBEAT: StatusCode = 1 << 7;
 
 /// TODO(alex) 2021-02-09: Improve terminology:
 /// http://www.tcpipguide.com/free/t_MessagesPacketsFramesDatagramsandCells-2.htm
@@ -54,6 +54,9 @@ pub(crate) struct RawPacket {
 /// NOTE(alex): Valid `Packet` state transitions:
 /// - Received -> Retrieved;
 /// - ToSend -> Sent -> Acked;
+pub type ConnectionId = NonZeroU16;
+pub type Sequence = NonZeroU32;
+pub type Ack = u32;
 
 /// ### Network Component
 /// --> `Packet` entity.
@@ -93,11 +96,14 @@ pub(crate) struct Header {
 
     /// Identifies the connection, this enables network switching from either side without having
     /// to slowly re-estabilish the connection.
-    pub(crate) connection_id: NonZeroU16,
+    /// TODO(alex) 2021-02-28: This won't work as-is, a `Host<Connecting>` won't have a value for
+    /// this until the `Server` receives the connection attempt, generates a `connection_id` and
+    /// sends it back go the `Client`. We need a more flexible `Header` pattern for this.
+    pub(crate) connection_id: ConnectionId,
     /// Incremented individually for each `Host`.
-    pub(crate) sequence: NonZeroU32,
+    pub(crate) sequence: Sequence,
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
-    pub(crate) ack: u32,
+    pub(crate) ack: Ack,
     /// Represents the ack bitfields to send previous acked state in a compact manner.
     /// TODO(alex): Use this.
     pub(crate) past_acks: u16,
@@ -113,7 +119,15 @@ pub(crate) struct Header {
     /// response, maybe a data transfer, and each is handled differently, for example, the protocol
     /// will read the `body` of a connection request, and of a fragment, but it just passes it in
     /// the case of a data transfer.
-    pub(crate) kind: KindFlag,
+    /// ADD(alex) 2021-02-28: Borrow this from http's status code, so `100 to 199` indicates a
+    /// connection request of some sort (fragment, not-fragmented, first attempt, not first
+    /// attempt, this is a reconnection, ...), same for other codes.
+    pub(crate) status_code: StatusCode,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct Footer {
+    crc32: NonZeroU32,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -132,13 +146,13 @@ impl Header {
     /// TODO(alex) 2021-02-26: This will encode based on the `Header<Kind>` so we need different
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
-    fn encode(&self) -> Result<Vec<u8>, String> {
+    fn encode(&self) -> AntarcResult<Vec<u8>> {
         let b_protocol_id = PROTOCOL_ID_BYTES;
         let b_connection_id = self.connection_id.get().to_be_bytes();
         let b_sequence = self.sequence.get().to_be_bytes();
         let b_ack = self.ack.to_be_bytes();
         let b_past_acks = self.past_acks.to_be_bytes();
-        let b_kind = self.kind.to_be_bytes();
+        let b_kind = self.status_code.to_be_bytes();
 
         // NOTE(alex): Protocol Id will be overwritten and discarded after crc32 is calculated.
         let write_buffers = [
@@ -169,7 +183,7 @@ impl Header {
     /// TODO(alex) 2021-02-26: This will decode based on the `Header<Kind>` so we need different
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::decode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
-    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self, String> {
+    fn decode(cursor: &mut Cursor<&[u8]>) -> AntarcResult<Self> {
         let mut read_pos = 0;
         let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
 
@@ -177,7 +191,7 @@ impl Header {
         let sequence = NonZeroU32::new(read_buffer_inc!(u32, read_buffer, read_pos)).unwrap();
         let ack = read_buffer_inc!(u32, read_buffer, read_pos);
         let past_acks = read_buffer_inc!(u16, read_buffer, read_pos);
-        let kind = read_buffer_inc!(KindFlag, read_buffer, read_pos).into();
+        let kind = read_buffer_inc!(StatusCode, read_buffer, read_pos).into();
 
         cursor.consume(read_pos);
 
@@ -186,7 +200,7 @@ impl Header {
             sequence,
             ack,
             past_acks,
-            kind,
+            status_code: kind,
         };
 
         Ok(header)
@@ -272,15 +286,25 @@ pub(crate) struct Packet<State> {
     pub(crate) header: Header,
     pub(crate) body: Vec<u8>,
     pub(crate) state: State,
+    /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
+    /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
+    /// packet (when encoded), but doesn't exist as an actual type here?
+    pub(crate) footer: Footer,
 }
 
 impl Packet<Received> {
-    pub(crate) fn new(header: Header, body: Vec<u8>, time_received: Duration) -> Self {
+    pub(crate) fn new(
+        header: Header,
+        body: Vec<u8>,
+        footer: Footer,
+        time_received: Duration,
+    ) -> Self {
         let state = Received { time_received };
         let packet = Packet {
             header,
             body,
             state,
+            footer,
         };
 
         packet
@@ -291,12 +315,7 @@ impl Packet<Received> {
             time_received: self.state.time_received,
             time_retrieved,
         };
-        let packet = Packet {
-            header: self.header,
-            body: self.body,
-            state,
-        };
-
+        let packet = self.into_new_state(state);
         packet
     }
 
@@ -305,18 +324,13 @@ impl Packet<Received> {
             time_received: self.state.time_received,
             time_internal,
         };
-        let packet = Packet {
-            header: self.header,
-            body: self.body,
-            state,
-        };
-
+        let packet = self.into_new_state(state);
         packet
     }
 
     /// TODO(alex) 2021-02-05: Decoding only makes sense in a `Packet<Received>` context, why would
     /// I want to decode any other state of a packet?
-    pub fn decode(buffer: &[u8], time_received: Duration) -> Result<Packet<Received>, String> {
+    pub fn decode(buffer: &[u8], time_received: Duration) -> AntarcResult<Packet<Received>> {
         if buffer.len() > PACKED_LEN {
             panic!(
                 "Not handling packets that have a different len {:?} > PACKED_LEN {:?}",
@@ -370,18 +384,25 @@ impl Packet<Received> {
         let read_pos = body_buffer.len() + marker.len();
         cursor.consume(read_pos);
 
+        // TODO(alex) 2021-02-28: Footer handling.
         let received = Packet::<Received>::new(header, body, time_received);
         Ok(received)
     }
 }
 
 impl Packet<ToSend> {
-    pub(crate) fn new(header: Header, body: Vec<u8>, time_enqueued: Duration) -> Self {
+    pub(crate) fn new(
+        header: Header,
+        body: Vec<u8>,
+        footer: Footer,
+        time_enqueued: Duration,
+    ) -> Self {
         let state = ToSend { time_enqueued };
         let packet = Packet {
             header,
             body,
             state,
+            footer,
         };
 
         packet
@@ -392,12 +413,7 @@ impl Packet<ToSend> {
             time_enqueued: self.state.time_enqueued,
             time_sent,
         };
-        let packet = Packet {
-            header: self.header,
-            body: self.body,
-            state,
-        };
-
+        let packet = self.into_new_state(state);
         packet
     }
 
@@ -405,7 +421,7 @@ impl Packet<ToSend> {
     /// send), I can't see any reason to having this function be more generic (and be used by other
     /// states). Is there a point to having this in any other state? Why would I want to encode
     /// a `Packet<Acked>`?
-    pub(crate) fn encode(&self) -> Result<RawPacket, String> {
+    pub(crate) fn encode(&self) -> AntarcResult<RawPacket> {
         if self.body.len() > BUFFER_CAP {
             return Err("Serialization error: over buffer capacity.".to_string());
         }
@@ -468,12 +484,7 @@ impl Packet<Sent> {
             time_sent: self.state.time_sent,
             time_acked,
         };
-        let packet = Packet {
-            header: self.header,
-            body: self.body,
-            state,
-        };
-
+        let packet = self.into_new_state(state);
         packet
     }
 }
@@ -482,6 +493,15 @@ impl Packet<Sent> {
 /// ADD(alex) 2021-02-05: Functions defined here conflict with functions in every other state, so
 /// a `fn new` here won't allow any other state to have an `fn new`, you must use the most generic.
 impl<State> Packet<State> {
+    const fn into_new_state<NewState>(self, state: NewState) -> Packet<NewState> {
+        Packet {
+            header: self.header,
+            body: self.body,
+            state,
+            footer: self.footer,
+        }
+    }
+
     /// TODO(alex) 2021-02-05: Hash the buffer to have a fixed size.
     pub fn pack(mut buffer: Vec<u8>) -> u128 {
         unimplemented!()

@@ -6,9 +6,10 @@ use std::{
 };
 
 use crate::{
-    host::{Connected, Connecting, Disconnected, Host},
+    host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
-    packet::{Packet, CONNECTION_ACCEPTED, CONNECTION_DENIED},
+    packet::{Packet, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED},
+    AntarcResult,
 };
 
 /// TODO(alex) 2021-02-26: References for ideas about connection:
@@ -116,7 +117,7 @@ impl NetManager<Client> {
     /// possibilities, like `HasMessagesToRetrieve`, `ConnectionLost`. The only success cases I can
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
-    pub fn tick(&mut self) -> Result<bool, String> {
+    pub fn tick(&mut self) -> AntarcResult<bool> {
         let client = &mut self.client_or_server;
         let mut may_retrieve = false;
 
@@ -129,7 +130,6 @@ impl NetManager<Client> {
             // TODO(alex) 2021-02-23: What should happen here?
             // 4. Ack packet(s) from `sent` list with the `packet.past_acks` value received;
             //   - this is done by checking the last `16` packets based on the received `ack`;
-            // 5. Calculate `rtt` based on how long it took from sending the packet to its ack;
             // 8. If last packet sent time > live connection threshold, drop the connection;
             //
             match connection {
@@ -141,12 +141,17 @@ impl NetManager<Client> {
                     self.connect(&disconnected.address);
                 }
                 Connection::Connecting(mut connecting) => {
+                    if connecting.rtt > CONNECTION_TIMEOUT_THRESHOLD.as_millis() {
+                        connection = Connection::Disconnected(connecting.into_disconnected());
+                        return Err("Connection timeout.".to_string());
+                    }
+
                     // TODO(alex) 2021-02-23:  what happens if we received data transfers from this
                     // host before (when it was in a connected state, but lost connection)?
                     let _ = connecting.on_receive(&remote_addr, &self.buffer)?;
 
                     if let Some(received) = connecting.received_list.last() {
-                        match received.header.kind {
+                        match received.header.status_code {
                             CONNECTION_ACCEPTED => {
                                 let received = connecting.received_list.pop().unwrap();
                                 let internald = received.internald(connecting.timer.elapsed());
@@ -186,7 +191,15 @@ impl NetManager<Client> {
         todo!();
     }
 
-    pub fn enqueue(&self, data: Vec<u8>) {
+    /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user
+    /// may use it to remove the packet (if wanted). It'll be an API for users that might want to
+    /// clear older packets that were never sent, and to allow users to check for packets that were
+    /// actually sent.
+    pub fn enqueue(&self, data: Vec<u8>) -> Sequence {
+        todo!();
+    }
+
+    pub fn enqueue_priority(&self, data: Vec<u8>) -> Sequence {
         todo!();
     }
 }

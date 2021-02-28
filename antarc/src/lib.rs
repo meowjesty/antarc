@@ -28,6 +28,8 @@ macro_rules! read_buffer_inc {
     }};
 }
 
+pub type AntarcResult<T> = Result<T, String>;
+
 /// An exponential moving average - EMA is a type of moving average that places a greater weight and
 /// significance on the most recent data points.
 ///
