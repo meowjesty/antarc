@@ -9,8 +9,8 @@ use std::{
 use crc32fast::Hasher;
 
 use crate::{
-    read_buffer_inc, AntarcResult, PacketInfo, PacketKind, PacketMarker, BUFFER_CAP,
-    END_OF_PACKET_BYTES, PACKED_LEN, PROTOCOL_ID_BYTES,
+    read_buffer_inc, AntarcResult, PacketMarker, ProtocolId, BUFFER_CAP, END_OF_PACKET_BYTES,
+    PACKED_LEN, PROTOCOL_ID_BYTES,
 };
 
 /// TODO(alex): 2021-02-05: How to represent these types of packets?
@@ -78,28 +78,53 @@ pub type Ack = u32;
 /// makes everything simpler to handle when encoding/decoding, we already know where the `Header`
 /// ends (`size_of::<Header>`), with this field we get to just offset `buffer[payload_len]` to get
 /// the `Footer` (with the `crc32`), keeping the `Footer` out of crc32 calculation.
+///
 /// ADD(alex) 2021-02-26: `kind` is a limited set of variants, so maybe `Header<Kind>` makes sense?
+///
+/// ADD(alex) 2021-03-01: The `Header must be set with the following order:
+/// 0. protocol id (during encoding / decoding, not sent / received);
+/// 1. type of header;
+///   - the type of header will contain the extra data, also indicating the lack of some fields
+/// 2. connection id;
+/// 3. rest of the fields that are common for every header type;
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct Header {
-    /// WARNING(alex): This must always be the first bytes of the `Header` when converting it
-    /// into (and from) buffers.
-    /// TODO(alex) 2021-02-03: How to initialize this? I want a non-default value, but this won't
-    /// be calculated until the `Header` is encoded. If the crc32 is not stored in the `Header`,
-    /// it'll be lost, the same issue happens when moving it into the `Packet`? Maybe this is
-    /// stored separately, in the packet's meta structures?
-    ///
-    /// This is also part of a bigger question, where do we store the encoded packets (do I even
-    /// want to store them?)? If stored, then the crc32 may simply be coupled there like
-    /// `(crc32, Vec<u8>)`, but if not, then it would be something similar `(crc32, Packet<Sent>)`.
-    /// It seems like the place for the crc32 is not in here.
-    // pub(crate) crc32: NonZeroU32,
+pub(crate) struct ConnectionRequestInfo {
+    pub(crate) status_code: StatusCode,
+    pub(crate) header_info: HeaderInfo,
+}
 
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct ConnectionDeniedInfo {
+    pub(crate) status_code: StatusCode,
+    pub(crate) header_info: HeaderInfo,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct ConnectionAcceptedInfo {
+    pub(crate) status_code: StatusCode,
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) header_info: HeaderInfo,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct DataTransferInfo {
+    status_code: StatusCode,
     /// Identifies the connection, this enables network switching from either side without having
     /// to slowly re-estabilish the connection.
-    /// TODO(alex) 2021-02-28: This won't work as-is, a `Host<Connecting>` won't have a value for
-    /// this until the `Server` receives the connection attempt, generates a `connection_id` and
-    /// sends it back go the `Client`. We need a more flexible `Header` pattern for this.
-    pub(crate) connection_id: ConnectionId,
+    connection_id: ConnectionId,
+    header_info: HeaderInfo,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct HeaderInfo {
+    /// TODO(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
+    /// response, maybe a data transfer, and each is handled differently, for example, the protocol
+    /// will read the `body` of a connection request, and of a fragment, but it just passes it in
+    /// the case of a data transfer.
+    /// ADD(alex) 2021-02-28: Borrow this from http's status code, so `100 to 199` indicates a
+    /// connection request of some sort (fragment, not-fragmented, first attempt, not first
+    /// attempt, this is a reconnection, ...), same for other codes.
+
     /// Incremented individually for each `Host`.
     pub(crate) sequence: Sequence,
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
@@ -107,27 +132,19 @@ pub(crate) struct Header {
     /// Represents the ack bitfields to send previous acked state in a compact manner.
     /// TODO(alex): Use this.
     pub(crate) past_acks: u16,
-    /// TODO(alex) 2021-01-29: I need this to differentiate between packets, having separate
-    /// `Packet` structs (union) won't cover the case when the user sends an empty packet vs the
-    /// protocol sending an ack-only packet, as both would have a zero-length body.
-    /// ADD(alex) 2021-01-29: The above is talking about the lower level header, that is
-    /// transmitted through the network, but here, I could use the type system to encode the
-    /// correct state, and convert it into a `u16` only at `send` and `recv` time. Similar to
-    /// how the crc32 and sentinel values are not present in this struct, the kind also doesn't
-    /// have to be, I just need to handle it in a sort of just-in-time way (encode/decode).
-    /// ADD(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
-    /// response, maybe a data transfer, and each is handled differently, for example, the protocol
-    /// will read the `body` of a connection request, and of a fragment, but it just passes it in
-    /// the case of a data transfer.
-    /// ADD(alex) 2021-02-28: Borrow this from http's status code, so `100 to 199` indicates a
-    /// connection request of some sort (fragment, not-fragmented, first attempt, not first
-    /// attempt, this is a reconnection, ...), same for other codes.
-    pub(crate) status_code: StatusCode,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) enum Header {
+    ConnectionRequest(ConnectionRequestInfo),
+    ConnectionDenied(ConnectionDeniedInfo),
+    ConnectionAccepted(ConnectionAcceptedInfo),
+    DataTransfer(DataTransferInfo),
 }
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Footer {
-    crc32: NonZeroU32,
+    pub(crate) crc32: NonZeroU32,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -139,71 +156,42 @@ pub(crate) struct Footer {
 /// just have an `impl` block for the relevant meta-state part of each struct that feeds the
 /// `Header.kind` field during encoding / decoding.
 impl Header {
+    pub(crate) const PROTOCOL_ID: ProtocolId = crate::PROTOCOL_ID;
+
     /// NOTE(alex): This is the size of the `Header` for the fields that are **encoded** and
     /// transmitted via the network, `Self + ProtocolId`, even though the crc32 substitutes it.
-    pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Self>() + mem::size_of::<u32>();
+    pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Self>() + mem::size_of::<ProtocolId>();
+
+    pub(crate) const fn get_ack(&self) -> Ack {
+        match self {
+            Header::ConnectionRequest(request) => request.header_info.ack,
+            Header::ConnectionDenied(denied) => denied.header_info.ack,
+            Header::ConnectionAccepted(accepted) => accepted.header_info.ack,
+            Header::DataTransfer(transfer) => transfer.header_info.ack,
+        }
+    }
+
+    pub(crate) const fn get_sequence(&self) -> Sequence {
+        match self {
+            Header::ConnectionRequest(request) => request.header_info.sequence,
+            Header::ConnectionDenied(denied) => denied.header_info.sequence,
+            Header::ConnectionAccepted(accepted) => accepted.header_info.sequence,
+            Header::DataTransfer(transfer) => transfer.header_info.sequence,
+        }
+    }
 
     /// TODO(alex) 2021-02-26: This will encode based on the `Header<Kind>` so we need different
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn encode(&self) -> AntarcResult<Vec<u8>> {
-        let b_protocol_id = PROTOCOL_ID_BYTES;
-        let b_connection_id = self.connection_id.get().to_be_bytes();
-        let b_sequence = self.sequence.get().to_be_bytes();
-        let b_ack = self.ack.to_be_bytes();
-        let b_past_acks = self.past_acks.to_be_bytes();
-        let b_kind = self.status_code.to_be_bytes();
-
-        // NOTE(alex): Protocol Id will be overwritten and discarded after crc32 is calculated.
-        let write_buffers = [
-            IoSlice::new(&b_protocol_id),
-            IoSlice::new(&b_connection_id),
-            IoSlice::new(&b_sequence),
-            IoSlice::new(&b_ack),
-            IoSlice::new(&b_past_acks),
-            IoSlice::new(&b_kind),
-        ];
-        let mut cursor = Cursor::new(Vec::with_capacity(mem::size_of::<Header>()));
-        // NOTE(alex): Move cursor to after crc32 position.
-        let num_written = cursor
-            .write_vectored(&write_buffers)
-            .map_err(|fail| fail.to_string())?;
-        // TODO(alex): Create an error for a failed written packet.
-        // This also requires us to have a more uniform size for a packet, right now it may have any
-        // size, this will stop when a packet becomes a hash_packet.
-        if num_written == 0 {
-            return Err("Serialization error: wrote zero size.".to_string());
-        }
-        assert!(num_written <= (mem::size_of::<Header>() + PROTOCOL_ID_BYTES.len()));
-
-        cursor.flush().map_err(|fail| fail.to_string())?;
-        Ok(cursor.into_inner())
+        todo!()
     }
 
     /// TODO(alex) 2021-02-26: This will decode based on the `Header<Kind>` so we need different
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::decode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn decode(cursor: &mut Cursor<&[u8]>) -> AntarcResult<Self> {
-        let mut read_pos = 0;
-        let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
-
-        let connection_id = NonZeroU16::new(read_buffer_inc!(u16, read_buffer, read_pos)).unwrap();
-        let sequence = NonZeroU32::new(read_buffer_inc!(u32, read_buffer, read_pos)).unwrap();
-        let ack = read_buffer_inc!(u32, read_buffer, read_pos);
-        let past_acks = read_buffer_inc!(u16, read_buffer, read_pos);
-        let kind = read_buffer_inc!(StatusCode, read_buffer, read_pos).into();
-
-        cursor.consume(read_pos);
-
-        let header = Header {
-            connection_id,
-            sequence,
-            ack,
-            past_acks,
-            status_code: kind,
-        };
-
-        Ok(header)
+        todo!()
     }
 }
 
@@ -289,14 +277,14 @@ pub(crate) struct Packet<State> {
     /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
     /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
     /// packet (when encoded), but doesn't exist as an actual type here?
-    pub(crate) footer: Footer,
+    pub(crate) footer: Option<Footer>,
 }
 
 impl Packet<Received> {
     pub(crate) fn new(
         header: Header,
         body: Vec<u8>,
-        footer: Footer,
+        footer: Option<Footer>,
         time_received: Duration,
     ) -> Self {
         let state = Received { time_received };
@@ -331,78 +319,18 @@ impl Packet<Received> {
     /// TODO(alex) 2021-02-05: Decoding only makes sense in a `Packet<Received>` context, why would
     /// I want to decode any other state of a packet?
     pub fn decode(buffer: &[u8], time_received: Duration) -> AntarcResult<Packet<Received>> {
-        if buffer.len() > PACKED_LEN {
-            panic!(
-                "Not handling packets that have a different len {:?} > PACKED_LEN {:?}",
-                buffer.len(),
-                PACKED_LEN
-            );
-        }
-
-        let skip_crc32 = mem::size_of::<u32>();
-        // NOTE(alex): New buffer that has a `ProtocolId` at the start, instead of the crc32.
-        // TODO(alex): Check if this is allocating a vec, then converting it into a slice.
-        let challenge_buffer = &[&PROTOCOL_ID_BYTES, &buffer[skip_crc32..]].concat();
-        // NOTE(alex): Calculate crc32 and check it against the received packet.
-        let mut hasher = Hasher::new();
-        hasher.update(challenge_buffer);
-        let expected_crc32 = hasher.finalize();
-
-        // NOTE(alex): Deserialize `Header` and retrieve number of bytes written.
-        // TODO(alex) 2021-02-05: Can't we read the crc32 from the buffer, then pass a cursor
-        // (or a read_buf) to Header::deserialize, to keep the cursor position synchronized?
-        let mut cursor = Cursor::new(buffer);
-        let mut read_pos = 0;
-        let mut read_buffer = cursor.fill_buf().map_err(|fail| fail.to_string())?;
-
-        let received_crc32 = read_buffer_inc!(u32, read_buffer, read_pos);
-        cursor.consume(read_pos);
-        if expected_crc32 != received_crc32 {
-            return Err(format!(
-                "CRC32 error: invalid crc32, expected {:?}, but got {:?}.",
-                expected_crc32, received_crc32
-            ));
-        }
-
-        let header = Header::decode(&mut cursor)?;
-        let pos_after_header = cursor.position() as usize;
-
-        // NOTE(alex): Cursor skips the decoded `Header` (which does not have the same number of
-        // bytes as `size_of::<Header>()`).
-        let mut cursor = Cursor::new(&buffer[pos_after_header..]);
-        let body_buffer_with_marker = cursor.fill_buf().map_err(|fail| fail.to_string())?;
-
-        // NOTE(alex): Check for a valid packet end marker.
-        let offset_to_marker = body_buffer_with_marker.len() - mem::size_of::<PacketMarker>();
-        let (body_buffer, marker) = body_buffer_with_marker.split_at(offset_to_marker);
-        if marker != END_OF_PACKET_BYTES {
-            return Err("Serialization error: wrong packet marker.".to_string());
-        }
-
-        let body = body_buffer.to_vec();
-
-        let read_pos = body_buffer.len() + marker.len();
-        cursor.consume(read_pos);
-
-        // TODO(alex) 2021-02-28: Footer handling.
-        let received = Packet::<Received>::new(header, body, time_received);
-        Ok(received)
+        todo!()
     }
 }
 
 impl Packet<ToSend> {
-    pub(crate) fn new(
-        header: Header,
-        body: Vec<u8>,
-        footer: Footer,
-        time_enqueued: Duration,
-    ) -> Self {
+    pub(crate) fn new(header: Header, body: Vec<u8>, time_enqueued: Duration) -> Self {
         let state = ToSend { time_enqueued };
         let packet = Packet {
             header,
             body,
             state,
-            footer,
+            footer: None,
         };
 
         packet
@@ -422,58 +350,7 @@ impl Packet<ToSend> {
     /// states). Is there a point to having this in any other state? Why would I want to encode
     /// a `Packet<Acked>`?
     pub(crate) fn encode(&self) -> AntarcResult<RawPacket> {
-        if self.body.len() > BUFFER_CAP {
-            return Err("Serialization error: over buffer capacity.".to_string());
-        }
-
-        let header = self.header.encode()?;
-        let write_buffers = [
-            // NOTE(alex): Header buffer contains the `ProtocolId` value at its start.
-            IoSlice::new(&header),
-            IoSlice::new(&self.body),
-            IoSlice::new(&END_OF_PACKET_BYTES),
-        ];
-
-        // TODO(alex) 2021-02-05: Consider `ptr::copy_nonoverlapping` as an alternative to `Cursor`,
-        //  this is a potential performance consideration, but we're not in that phase yet
-        // (`memcpy`).
-        let mut cursor = Cursor::new(Vec::with_capacity(PACKED_LEN));
-        let num_written = cursor
-            .write_vectored(&write_buffers)
-            .map_err(|fail| fail.to_string())?;
-        assert!(num_written > 0);
-        assert!(num_written < PACKED_LEN);
-        if num_written == 0 {
-            return Err("Serialization error: wrote zero size.".to_string());
-        } else if num_written > PACKED_LEN - mem::size_of::<PacketMarker>() {
-            panic!(
-                "No space left for writing the end packet marker {:?}!",
-                num_written
-            );
-        }
-
-        // NOTE(alex): Calculate crc32 and add it into the packet.
-        let mut hasher = Hasher::new();
-        hasher.update(cursor.get_ref());
-        let crc32 = NonZeroU32::new(hasher.finalize()).unwrap();
-
-        println!("written crc32 {:?}", crc32);
-
-        // NOTE(alex): This overwrites the Protocol Id with crc32.
-        cursor.set_position(0);
-        cursor
-            .write(&crc32.get().to_be_bytes())
-            .map_err(|fail| fail.to_string())?;
-
-        cursor.flush().map_err(|fail| fail.to_string())?;
-
-        let buffer = cursor.into_inner();
-        assert!(buffer.len() > 0);
-        assert!(buffer.len() <= PACKED_LEN);
-
-        let raw_packet = RawPacket { crc32, buffer };
-
-        Ok(raw_packet)
+        todo!()
     }
 }
 
@@ -493,7 +370,7 @@ impl Packet<Sent> {
 /// ADD(alex) 2021-02-05: Functions defined here conflict with functions in every other state, so
 /// a `fn new` here won't allow any other state to have an `fn new`, you must use the most generic.
 impl<State> Packet<State> {
-    const fn into_new_state<NewState>(self, state: NewState) -> Packet<NewState> {
+    fn into_new_state<NewState>(self, state: NewState) -> Packet<NewState> {
         Packet {
             header: self.header,
             body: self.body,

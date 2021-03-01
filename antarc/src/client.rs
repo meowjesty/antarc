@@ -1,5 +1,4 @@
 use std::{
-    cell::Cell,
     net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32},
     time::Instant,
@@ -8,7 +7,7 @@ use std::{
 use crate::{
     host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
-    packet::{Packet, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED},
+    packet::{Header, Sequence},
     AntarcResult,
 };
 
@@ -126,7 +125,7 @@ impl NetManager<Client> {
             .recv_from(&mut self.buffer)
             .map_err(|fail| fail.to_string())?;
 
-        if let Some(connection) = client.connection.take() {
+        if let Some(mut connection) = client.connection.take() {
             // TODO(alex) 2021-02-23: What should happen here?
             // 4. Ack packet(s) from `sent` list with the `packet.past_acks` value received;
             //   - this is done by checking the last `16` packets based on the received `ack`;
@@ -151,14 +150,14 @@ impl NetManager<Client> {
                     let _ = connecting.on_receive(&remote_addr, &self.buffer)?;
 
                     if let Some(received) = connecting.received_list.last() {
-                        match received.header.status_code {
-                            CONNECTION_ACCEPTED => {
+                        match &received.header {
+                            Header::ConnectionRequest(request) => {
                                 let received = connecting.received_list.pop().unwrap();
                                 let internald = received.internald(connecting.timer.elapsed());
                                 connecting.internals.push(internald);
                                 self.connected();
                             }
-                            CONNECTION_DENIED => {
+                            Header::ConnectionDenied(denied) => {
                                 let received = connecting.received_list.pop().unwrap();
                                 let internald = received.internald(connecting.timer.elapsed());
                                 connecting.internals.push(internald);
@@ -166,8 +165,9 @@ impl NetManager<Client> {
                             }
                             invalid => {
                                 let error = format!(
-                                    "{:?} expected either a {:?}, or a {:?}, but got {:?} instead.",
-                                    connecting, CONNECTION_ACCEPTED, CONNECTION_DENIED, invalid
+                                    "{:?} expected either a connection accepted \
+                                    or denied, but got {:?} instead.",
+                                    connecting, invalid
                                 );
                                 return Err(error);
                             }

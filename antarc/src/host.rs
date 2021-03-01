@@ -9,10 +9,10 @@ use std::{
 use crate::{
     exponential_moving_average,
     packet::{
-        Acked, Footer, Header, Internal, Packet, Received, Retrieved, Sent, ToSend,
-        CONNECTION_ACCEPTED, CONNECTION_REQUEST,
+        Acked, ConnectionAcceptedInfo, ConnectionRequestInfo, Footer, Header, HeaderInfo, Internal,
+        Packet, Received, Retrieved, Sent, ToSend, CONNECTION_ACCEPTED, CONNECTION_REQUEST,
     },
-    AntarcResult,
+    AntarcResult, PROTOCOL_ID,
 };
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
@@ -112,7 +112,7 @@ impl<State> Host<State> {
             .sent_list
             .iter_mut()
             .enumerate()
-            .find(|(_, sent)| packet.header.ack == sent.header.sequence.get())
+            .find(|(_, sent)| packet.header.get_ack() == sent.header.get_sequence().get())
         {
             let sent = self.sent_list.remove(index);
             let acked = sent.acked(self.timer.elapsed());
@@ -139,8 +139,6 @@ impl<State> Host<State> {
     /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
     /// for now.
     fn raw_send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        // FIXME(alex) 2021-02-28: Should remove the first packet from the queue, so `pop` is wrong.
-        // Check other places where queue behaviour should apply!
         if let Some(to_send) = self
             .priority_queue
             .pop_front()
@@ -186,29 +184,27 @@ impl Host<Disconnected> {
     }
 
     pub(crate) fn request_connection(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
-        let connection_header = Header {
-            connection_id,
+        let header_info = HeaderInfo {
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             ack: 0,
             past_acks: 0,
+        };
+        let connection_request_info = ConnectionRequestInfo {
+            header_info,
             status_code: CONNECTION_REQUEST,
         };
+        let header = Header::ConnectionRequest(connection_request_info);
         // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
         // encoding time, as there's no crc32 calculation done yet.
         let connection_footer = Footer {
             crc32: NonZeroU32::new(0).unwrap(),
         };
 
-        let connection_request = Packet::<ToSend>::new(
-            connection_header,
-            vec![0; 10],
-            connection_footer,
-            self.timer.elapsed(),
-        );
+        let connection_request = Packet::<ToSend>::new(header, vec![0; 10], self.timer.elapsed());
         // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
         // until the connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.
-        self.send_queue.push_back(connection_request);
+        self.priority_queue.push_back(connection_request);
 
         let host = self.into_new_state::<Connecting>();
         host
@@ -217,25 +213,19 @@ impl Host<Disconnected> {
     /// TODO(alex) 2021-02-23: This is the `server`-side of the `Disconnected -> Connecting`
     /// transformation.
     pub(crate) fn accept_connection(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
-        let connection_header = Header {
-            connection_id,
+        let header_info = HeaderInfo {
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             ack: 0,
             past_acks: 0,
+        };
+        let connection_accepted_info = ConnectionAcceptedInfo {
+            header_info,
             status_code: CONNECTION_ACCEPTED,
+            connection_id,
         };
-        // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
-        // encoding time, as there's no crc32 calculation done yet.
-        let connection_footer = Footer {
-            crc32: NonZeroU32::new(0).unwrap(),
-        };
+        let header = Header::ConnectionAccepted(connection_accepted_info);
 
-        let connection_request = Packet::<ToSend>::new(
-            connection_header,
-            vec![0; 10],
-            connection_footer,
-            self.timer.elapsed(),
-        );
+        let connection_request = Packet::<ToSend>::new(header, vec![0; 10], self.timer.elapsed());
         // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
         // until the connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.

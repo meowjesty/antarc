@@ -2,6 +2,7 @@
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]
+#![feature(duration_consts_2)]
 
 use core::mem;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU8};
@@ -48,30 +49,24 @@ pub(crate) const fn exponential_moving_average(new_value: u128, old_value: u128)
 /// This won't be sent to a remote host, but it's used in the CRC32 calculation, it acts as a check
 /// between hosts that the CRC32 is correct, as the receiver will take the CRC32 out of the packet,
 /// insert the `ProtocolId`, calculate the packet CRC32 and check against what they received.
-pub type ProtocolId = u32;
+pub(crate) type ProtocolId = NonZeroU32;
 
-/// Type alias for the data which is used to implement the `Taube` protocol.
-pub type PacketInfo = u32;
+pub(crate) type PacketMarker = NonZeroU16;
 
-pub type PacketMarker = u16;
-
-pub type TimeData = u128;
-
-pub type PacketKind = u16;
-
-pub const PROTOCOL_ID: NonZeroU32 = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
-pub const PROTOCOL_ID_BYTES: [u8; mem::size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
-pub const BUFFER_CAP: usize = Header::ENCODED_SIZE + 128;
-pub const PADDING: NonZeroU8 = unsafe { NonZeroU8::new_unchecked(0xe0) };
+pub(crate) const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
+pub(crate) const PROTOCOL_ID_BYTES: [u8; mem::size_of::<ProtocolId>()] =
+    PROTOCOL_ID.get().to_be_bytes();
+pub(crate) const BUFFER_CAP: usize = Header::ENCODED_SIZE + 128;
+pub(crate) const PADDING: NonZeroU8 = unsafe { NonZeroU8::new_unchecked(0xe0) };
 /// Marks the end of useful data, anything past this can be skipped.
-pub const END_OF_PACKET: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(0x31f6) };
-pub const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
+pub(crate) const END_OF_PACKET: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(0x31f6) };
+pub(crate) const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
     END_OF_PACKET.get().to_be_bytes();
 // pub const END_OF_PACKET: PacketMarker = 0xa43a;
 // pub const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
 // END_OF_PACKET.to_be_bytes();
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
-pub const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
+pub(crate) const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
 
 // TODO(alex) 2021-01-24: How does send / receive works?
 // - Packet is sent with data / client replies with either data or just ack;
