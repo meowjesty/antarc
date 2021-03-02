@@ -9,8 +9,9 @@ use std::{
 use crate::{
     exponential_moving_average,
     packet::{
-        Acked, ConnectionAcceptedInfo, ConnectionRequestInfo, Footer, Header, HeaderInfo, Internal,
-        Packet, Received, Retrieved, Sent, ToSend, CONNECTION_ACCEPTED, CONNECTION_REQUEST,
+        Acked, ConnectionAcceptedInfo, ConnectionId, ConnectionRequestInfo, DataTransferInfo,
+        Footer, Header, HeaderInfo, Internal, Packet, Payload, Received, Retrieved, Sent, Sequence,
+        ToSend, CONNECTION_ACCEPTED, CONNECTION_REQUEST, DATA_TRANSFER,
     },
     AntarcResult, PROTOCOL_ID,
 };
@@ -19,13 +20,13 @@ use crate::{
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 #[derive(Debug)]
-pub struct Connecting;
+pub(crate) struct Connecting;
 
 #[derive(Debug)]
-pub struct Connected;
+pub(crate) struct Connected(ConnectionId);
 
 #[derive(Debug)]
-pub struct Disconnected;
+pub(crate) struct Disconnected;
 
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
 
@@ -36,30 +37,39 @@ pub(crate) struct Host<ConnectionState> {
     /// This is not a hard requirement, but many functions will end up using the `Instant` to
     /// calculate time related things, so it might as well be in the struct.
     pub(crate) timer: Instant,
-    pub(crate) sequence: NonZeroU32,
+
+    /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
+    /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets
+    /// were lost, even in the case of them never being sent.
+    pub(crate) sequence: Sequence,
+    pub(crate) ack: u32,
+    pub(crate) past_acks: u16,
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
     /// ADD(alex) 2021-02-13: Can this be a `Duration`? Probably yes.
-    pub(crate) rtt: u128,
+    pub(crate) rtt: Duration,
     pub(crate) received_list: Vec<Packet<Received>>,
     pub(crate) retrieved: Vec<Packet<Retrieved>>,
     pub(crate) internals: Vec<Packet<Internal>>,
-    pub(crate) send_queue: VecDeque<Packet<ToSend>>,
+    pub(crate) send_queue: VecDeque<Payload>,
     /// TODO(alex) 2021-02-28: This behaves pretty much like the `send_queue`, except it takes
     /// priority everytime we check for a `Packet<ToSend>` to send. We're lacking an API to allow
     /// the user to mark a packet with priority to be put in here.
-    pub(crate) priority_queue: VecDeque<Packet<ToSend>>,
+    pub(crate) priority_queue: VecDeque<Payload>,
     pub(crate) sent_list: Vec<Packet<Sent>>,
     pub(crate) acked_list: Vec<Packet<Acked>>,
-    _phantom: PhantomData<ConnectionState>,
+    pub(crate) connection: ConnectionState,
 }
 
 impl<State> Host<State> {
-    fn into_new_state<NewState>(self) -> Host<NewState> {
+    #[inline]
+    fn into_new_state<NewState>(self, connection: NewState) -> Host<NewState> {
         Host {
             address: self.address,
             timer: self.timer,
             sequence: self.sequence,
+            ack: self.ack,
+            past_acks: self.past_acks,
             rtt: self.rtt,
             received_list: self.received_list,
             retrieved: self.retrieved,
@@ -68,7 +78,7 @@ impl<State> Host<State> {
             priority_queue: self.priority_queue,
             sent_list: self.sent_list,
             acked_list: self.acked_list,
-            _phantom: PhantomData::default(),
+            connection,
         }
     }
 
@@ -118,7 +128,7 @@ impl<State> Host<State> {
             let acked = sent.acked(self.timer.elapsed());
 
             let delta_rtt: Duration = acked.state.time_acked - acked.state.time_sent;
-            self.rtt = exponential_moving_average(delta_rtt.as_millis(), self.rtt);
+            self.rtt = exponential_moving_average(delta_rtt, self.rtt);
 
             self.acked_list.push(acked);
         }
@@ -139,22 +149,7 @@ impl<State> Host<State> {
     /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
     /// for now.
     fn raw_send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        if let Some(to_send) = self
-            .priority_queue
-            .pop_front()
-            .or(self.send_queue.pop_front())
-        {
-            let to_send_raw = to_send.encode()?;
-            let num_sent = socket
-                .send_to(&to_send_raw.buffer, self.address)
-                .map_err(|fail| fail.to_string())?;
-
-            self.sent_list.push(to_send.sent(self.timer.elapsed()));
-
-            return Ok(num_sent);
-        }
-
-        Ok(0)
+        todo!()
     }
 }
 
@@ -169,7 +164,9 @@ impl Host<Disconnected> {
             address,
             timer,
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
-            rtt: 0,
+            ack: 0,
+            past_acks: 0,
+            rtt: Duration::new(0, 0),
             received_list: Vec::with_capacity(32),
             retrieved: Vec::with_capacity(32),
             internals: Vec::with_capacity(32),
@@ -177,7 +174,7 @@ impl Host<Disconnected> {
             priority_queue: VecDeque::with_capacity(32),
             sent_list: Vec::with_capacity(32),
             acked_list: Vec::with_capacity(32),
-            _phantom: PhantomData::default(),
+            connection: Disconnected,
         };
 
         host
@@ -200,13 +197,12 @@ impl Host<Disconnected> {
             crc32: NonZeroU32::new(0).unwrap(),
         };
 
-        let connection_request = Packet::<ToSend>::new(header, vec![0; 10], self.timer.elapsed());
-        // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
-        // until the connection is estabilished, and the user cannot be able to put packets into
+        // TODO(alex) 2021-02-17: This should be marked as reliable, we can't move on until the
+        // connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.
-        self.priority_queue.push_back(connection_request);
+        self.priority_queue.push_back(Payload(vec![0; 10]));
 
-        let host = self.into_new_state::<Connecting>();
+        let host = self.into_new_state(Connecting);
         host
     }
 
@@ -225,25 +221,24 @@ impl Host<Disconnected> {
         };
         let header = Header::ConnectionAccepted(connection_accepted_info);
 
-        let connection_request = Packet::<ToSend>::new(header, vec![0; 10], self.timer.elapsed());
-        // TODO(alex) 2021-02-17: This should be marked as priority and reliable, we can't move on
-        // until the connection is estabilished, and the user cannot be able to put packets into
+        // TODO(alex) 2021-02-17: This should be marked as reliable, we can't move on until the
+        // connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.
-        self.send_queue.push_back(connection_request);
+        self.send_queue.push_back(Payload(vec![1; 10]));
 
-        let host = self.into_new_state::<Connecting>();
+        let host = self.into_new_state(Connecting);
         host
     }
 }
 
 impl Host<Connecting> {
-    pub(crate) fn into_connected(self) -> Host<Connected> {
-        let host = self.into_new_state::<Connected>();
+    pub(crate) fn into_connected(self, connection_id: ConnectionId) -> Host<Connected> {
+        let host = self.into_new_state(Connected(connection_id));
         host
     }
 
     pub(crate) fn into_disconnected(self) -> Host<Disconnected> {
-        let host = self.into_new_state::<Disconnected>();
+        let host = self.into_new_state(Disconnected);
         host
     }
 
@@ -256,7 +251,44 @@ impl Host<Connecting> {
     }
 
     pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        self.raw_send(&socket)
+        if let Some(payload) = self
+            .priority_queue
+            .pop_front()
+            .or(self.send_queue.pop_front())
+        {
+            let header_info = HeaderInfo {
+                sequence: self.sequence,
+                ack: self.ack,
+                past_acks: self.past_acks,
+            };
+            let connection_request_info = ConnectionRequestInfo {
+                status_code: CONNECTION_REQUEST,
+                header_info,
+            };
+            let header = Header::ConnectionRequest(connection_request_info);
+
+            {
+                let to_send = Packet::<ToSend>::new(header, payload, self.timer.elapsed());
+                let to_send_raw = to_send.encode()?;
+
+                let num_sent = socket
+                    .send_to(&to_send_raw.buffer, self.address)
+                    .map_err(|fail| fail.to_string())?;
+
+                self.sent_list.push(to_send.sent(self.timer.elapsed()));
+
+                // NOTE(alex) 2021-03-02: Sequence is only incremented if a packet was successfully
+                // sent, otherwise the protocol could end up in an incosistent state with a remote
+                // `Host` thinking that some packets were lost, even though these packets were never
+                // actually sent. This is why a `Packet<ToSend>` is created in this function and not
+                // stored anywhere else, to prevent these inconsistencies.
+                self.sequence = Sequence::new(self.sequence.get() + 1).unwrap();
+
+                return Ok(num_sent);
+            }
+        }
+
+        Ok(0)
     }
 }
 
@@ -272,6 +304,51 @@ impl Host<Connected> {
     }
 
     pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        self.raw_send(&socket)
+        if let Some(payload) = self
+            .priority_queue
+            .pop_front()
+            .or(self.send_queue.pop_front())
+        {
+            let Connected(connection_id) = self.connection;
+            let header_info = HeaderInfo {
+                sequence: self.sequence,
+                ack: self.ack,
+                past_acks: self.past_acks,
+            };
+            let data_transfer_info = DataTransferInfo {
+                status_code: DATA_TRANSFER,
+                connection_id,
+                header_info,
+            };
+            let header = Header::DataTransfer(data_transfer_info);
+
+            {
+                let to_send = Packet::<ToSend>::new(header, payload, self.timer.elapsed());
+                let to_send_raw = to_send.encode()?;
+
+                let num_sent = socket
+                    .send_to(&to_send_raw.buffer, self.address)
+                    .map_err(|fail| fail.to_string())?;
+
+                self.sent_list.push(to_send.sent(self.timer.elapsed()));
+
+                // NOTE(alex) 2021-03-02: Sequence is only incremented if a packet was successfully
+                // sent, otherwise the protocol could end up in an incosistent state with a remote
+                // `Host` thinking that some packets were lost, even though these packets were never
+                // actually sent. This is why a `Packet<ToSend>` is created in this function and not
+                // stored anywhere else, to prevent these inconsistencies.
+                self.sequence = Sequence::new(self.sequence.get() + 1).unwrap();
+
+                return Ok(num_sent);
+            }
+        }
+
+        Ok(0)
+    }
+
+    pub(crate) fn enqueue(&mut self, data: Vec<u8>) -> Sequence {
+        self.send_queue.push_back(Payload(data));
+
+        self.sequence
     }
 }

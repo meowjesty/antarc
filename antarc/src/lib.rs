@@ -2,10 +2,14 @@
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]
+#![feature(duration_saturating_ops)]
 #![feature(duration_consts_2)]
 
 use core::mem;
-use std::num::{NonZeroU16, NonZeroU32, NonZeroU8};
+use std::{
+    num::{NonZeroU16, NonZeroU32, NonZeroU8},
+    time::Duration,
+};
 
 use packet::Header;
 
@@ -35,10 +39,17 @@ pub type AntarcResult<T> = Result<T, String>;
 /// significance on the most recent data points.
 ///
 /// The weighting for each **older** datum **decreases** exponentially, never reaching zero.
-pub(crate) const fn exponential_moving_average(new_value: u128, old_value: u128) -> u128 {
+pub(crate) const fn exponential_moving_average(
+    new_value: Duration,
+    old_value: Duration,
+) -> Duration {
     let weight = 0.1;
-    let result = weight * new_value as f64 + (1.0 - weight) * old_value as f64;
-    result as u128
+    // TODO(alex): `const fn` complains without `saturating_add`, maybe `+` operator is not marked
+    // as const fn for `Duration`?
+    let result = new_value
+        .mul_f64(weight)
+        .saturating_add(old_value.mul_f64(1.0 - weight));
+    result
 }
 
 // TODO(alex) 2021-02-27 There needs to be a check on the send queue, so that we don't keep sending

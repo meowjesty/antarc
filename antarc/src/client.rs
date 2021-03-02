@@ -7,7 +7,7 @@ use std::{
 use crate::{
     host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
-    packet::{Header, Sequence},
+    packet::{ConnectionId, DataTransferInfo, Header, Sequence, DATA_TRANSFER},
     AntarcResult,
 };
 
@@ -96,8 +96,9 @@ impl NetManager<Client> {
 
     pub fn connected(&mut self) {
         if let Some(Connection::Connecting(connecting)) = self.client_or_server.connection.take() {
-            let connected = connecting.into_connected();
+            let connected = connecting.into_connected(ConnectionId::new(1).unwrap());
             self.client_or_server.connection = Some(Connection::Connected(connected));
+            todo!();
         }
     }
 
@@ -140,7 +141,7 @@ impl NetManager<Client> {
                     self.connect(&disconnected.address);
                 }
                 Connection::Connecting(mut connecting) => {
-                    if connecting.rtt > CONNECTION_TIMEOUT_THRESHOLD.as_millis() {
+                    if connecting.rtt > CONNECTION_TIMEOUT_THRESHOLD {
                         connection = Connection::Disconnected(connecting.into_disconnected());
                         return Err("Connection timeout.".to_string());
                     }
@@ -195,8 +196,16 @@ impl NetManager<Client> {
     /// may use it to remove the packet (if wanted). It'll be an API for users that might want to
     /// clear older packets that were never sent, and to allow users to check for packets that were
     /// actually sent.
-    pub fn enqueue(&self, data: Vec<u8>) -> Sequence {
-        todo!();
+    pub fn enqueue(&mut self, data: Vec<u8>) -> AntarcResult<Sequence> {
+        let client = &mut self.client_or_server;
+        if let Some(connected) = client.connection.as_mut() {
+            match connected {
+                Connection::Connected(host) => host.enqueue(data),
+                fail_state => panic!("Tried to enqueue a data transfer in a non-connected client."),
+            };
+        }
+
+        Ok(unsafe { Sequence::new_unchecked(1) })
     }
 
     pub fn enqueue_priority(&self, data: Vec<u8>) -> Sequence {

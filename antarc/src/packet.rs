@@ -108,11 +108,11 @@ pub(crate) struct ConnectionAcceptedInfo {
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct DataTransferInfo {
-    status_code: StatusCode,
+    pub(crate) status_code: StatusCode,
     /// Identifies the connection, this enables network switching from either side without having
     /// to slowly re-estabilish the connection.
-    connection_id: ConnectionId,
-    header_info: HeaderInfo,
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) header_info: HeaderInfo,
 }
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
@@ -255,6 +255,9 @@ pub(crate) struct Acked {
     pub(crate) time_acked: Duration,
 }
 
+#[derive(Debug)]
+pub(crate) struct Payload(pub(crate) Vec<u8>);
+
 /// TODO(alex) 2021-02-09: There must be a way to mark a packet as `Reliable` and/or `Priority`.
 /// The `Reliable` packet will keep retrying until it is acked, how the algorithm will actually work
 /// I'm still unsure, should it keep bumping itself into being the first to send, until it's acked?
@@ -272,7 +275,7 @@ pub(crate) struct Acked {
 #[derive(Debug)]
 pub(crate) struct Packet<State> {
     pub(crate) header: Header,
-    pub(crate) body: Vec<u8>,
+    pub(crate) payload: Payload,
     pub(crate) state: State,
     /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
     /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
@@ -283,14 +286,14 @@ pub(crate) struct Packet<State> {
 impl Packet<Received> {
     pub(crate) fn new(
         header: Header,
-        body: Vec<u8>,
+        payload: Payload,
         footer: Option<Footer>,
         time_received: Duration,
     ) -> Self {
         let state = Received { time_received };
         let packet = Packet {
             header,
-            body,
+            payload,
             state,
             footer,
         };
@@ -324,11 +327,11 @@ impl Packet<Received> {
 }
 
 impl Packet<ToSend> {
-    pub(crate) fn new(header: Header, body: Vec<u8>, time_enqueued: Duration) -> Self {
+    pub(crate) fn new(header: Header, payload: Payload, time_enqueued: Duration) -> Self {
         let state = ToSend { time_enqueued };
         let packet = Packet {
             header,
-            body,
+            payload,
             state,
             footer: None,
         };
@@ -373,7 +376,7 @@ impl<State> Packet<State> {
     fn into_new_state<NewState>(self, state: NewState) -> Packet<NewState> {
         Packet {
             header: self.header,
-            body: self.body,
+            payload: self.payload,
             state,
             footer: self.footer,
         }

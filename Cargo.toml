@@ -3,5 +3,4 @@
 members = [
     "antarc",
     "experimental",
-    "net"
 ]
