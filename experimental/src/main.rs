@@ -27,7 +27,7 @@ fn client_main() {
         // to the different packet structs idea.
         // let new_connections? = server.connection_requests();
         // server.deny_connection(new_connections[1]);
-        net_client.tick();
+        net_client.poll();
 
         let data = vec![0x1; 32];
         // TODO(alex) 2021-01-28: Is this the exact same as the server? Do we need multiple ids?
@@ -42,29 +42,30 @@ fn client_main() {
         // leaking into user code.
         //
         // What I'm doing here is basically what the `NetworkManager` will have to do.
-        let received_world_changes = net_client.retrieve(); // .await ??
-        for (id, world_change) in received_world_changes {
-            // TODO(alex) 2021-01-28: This is different from a simple `update` function, as this
-            // exists to prevent networked update problems (packets out of order making the user
-            // move to a wrong position, then come back, and move again).
-            // This also highlights a flaw in the protocol, it has no mechanism to tell the user
-            // which message is the freshest. The protocol will keep a `Timer` coupled with each
-            // `Packet`, but should I put this in the API and let the user check this data, or
-            // should the user insert a sequence into the `Body` of a packet and keep track of this
-            // themselves? Be careful that this is not just about having a timer, as we could end up
-            // getting a fresh packet with `05:30` but `sequence: 120`, and another with time
-            // `05:31` and `sequence: 119`, making the 'newest' (by time) packet not being the
-            // actual latest packet.
-            // It ties in with the foundational aspects of the protocol, as in, do resends update
-            // packet `sequence`, or does resending means copy + send again?
+        // .await ??
+        let received_world_changes = net_client.receive();
+        // for (id, world_change) in received_world_changes {
+        // TODO(alex) 2021-01-28: This is different from a simple `update` function, as this
+        // exists to prevent networked update problems (packets out of order making the user
+        // move to a wrong position, then come back, and move again).
+        // This also highlights a flaw in the protocol, it has no mechanism to tell the user
+        // which message is the freshest. The protocol will keep a `Timer` coupled with each
+        // `Packet`, but should I put this in the API and let the user check this data, or
+        // should the user insert a sequence into the `Body` of a packet and keep track of this
+        // themselves? Be careful that this is not just about having a timer, as we could end up
+        // getting a fresh packet with `05:30` but `sequence: 120`, and another with time
+        // `05:31` and `sequence: 119`, making the 'newest' (by time) packet not being the
+        // actual latest packet.
+        // It ties in with the foundational aspects of the protocol, as in, do resends update
+        // packet `sequence`, or does resending means copy + send again?
 
-            // world_state.sync(world_change);
-        }
+        // world_state.sync(world_change);
+        // }
 
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
-        net_client.enqueue(data); // .await ??
+        net_client.send(data); // .await ??
     }
 }
 

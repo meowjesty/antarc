@@ -82,6 +82,23 @@ impl<State> Host<State> {
         }
     }
 
+    fn on_receive(&mut self, packet: &Packet<Received>) {
+        if let Some((index, _)) = self
+            .sent_list
+            .iter_mut()
+            .enumerate()
+            .find(|(_, sent)| packet.header.get_ack() == sent.header.get_sequence().get())
+        {
+            let sent = self.sent_list.remove(index);
+            let acked = sent.acked(self.timer.elapsed());
+
+            let delta_rtt: Duration = acked.state.time_acked - acked.state.time_sent;
+            self.rtt = exponential_moving_average(delta_rtt, self.rtt);
+
+            self.acked_list.push(acked);
+        }
+    }
+
     /// 1. Check if the address is expected (this function returns an `Error` if the `remote_addr`
     ///    doesn't match this host's address);
     ///    - the packet validity is checked in the `Packet<Received>::decode` function.
@@ -193,14 +210,11 @@ impl Host<Disconnected> {
         let header = Header::ConnectionRequest(connection_request_info);
         // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
         // encoding time, as there's no crc32 calculation done yet.
-        let connection_footer = Footer {
-            crc32: NonZeroU32::new(0).unwrap(),
-        };
 
-        // TODO(alex) 2021-02-17: This should be marked as reliable, we can't move on until the
-        // connection is estabilished, and the user cannot be able to put packets into
+        // TODO(alex) 2021-02-17: This should be marked as reliable priority, we can't move on until
+        // the connection is estabilished, and the user cannot be able to put packets into
         // the `send_queue` until the protocol is done handling it.
-        self.priority_queue.push_back(Payload(vec![0; 10]));
+        self.send_queue.push_back(Payload(vec![0; 10]));
 
         let host = self.into_new_state(Connecting);
         host
@@ -240,14 +254,6 @@ impl Host<Connecting> {
     pub(crate) fn into_disconnected(self) -> Host<Disconnected> {
         let host = self.into_new_state(Disconnected);
         host
-    }
-
-    pub(crate) fn on_receive(
-        &mut self,
-        remote_addr: &SocketAddr,
-        buffer: &[u8],
-    ) -> AntarcResult<()> {
-        self.raw_on_receive(&remote_addr, buffer)
     }
 
     pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
@@ -293,16 +299,25 @@ impl Host<Connecting> {
 }
 
 impl Host<Connected> {
-    pub(crate) fn on_receive(
-        &mut self,
-        remote_addr: &SocketAddr,
-        buffer: &[u8],
-    ) -> AntarcResult<()> {
-        self.raw_on_receive(&remote_addr, buffer)?;
+    /// NOTE(alex) 2021-03-03: `receive` cannot be done in the `Host`, as the remote address is
+    /// unknown until `socket.recv_from` is called, rendering it impossible to do here. From the
+    /// `Client` perspective, it would still be doable, as it only has to check if it belongs to
+    /// the unique server `Host`, but from the `Server`'s side, it's neccessary to find the correct
+    /// `Host::address` for the received address.
+    ///
+    /// TODO(alex) 2021-03-03: I'm thinking that every `Host::receive` will be the same, or at least
+    /// they are for now, so migrating it into the more generic `impl<State> Host<State>` might be
+    /// fine.
+    pub(crate) fn receive(&mut self, buffer: &[u8]) -> AntarcResult<()> {
+        let packet = Packet::decode(buffer, self.timer.elapsed())?;
+        self.on_receive(&packet);
 
+        self.received_list.push(packet);
         Ok(())
     }
 
+    /// TODO(alex) 2021-03-03: In contrast, `Host::send` looks perfectly doable, as the protocol
+    /// only wants to send packets to hosts it knows of.
     pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         if let Some(payload) = self
             .priority_queue
@@ -322,6 +337,8 @@ impl Host<Connected> {
             };
             let header = Header::DataTransfer(data_transfer_info);
 
+            // TODO(alex) 2021-03-03: This part will be the same for every `Host<State>`, it makes
+            // sense to move in into the `impl<State> Host<State>` as a private part.
             {
                 let to_send = Packet::<ToSend>::new(header, payload, self.timer.elapsed());
                 let to_send_raw = to_send.encode()?;
@@ -344,11 +361,5 @@ impl Host<Connected> {
         }
 
         Ok(0)
-    }
-
-    pub(crate) fn enqueue(&mut self, data: Vec<u8>) -> Sequence {
-        self.send_queue.push_back(Payload(data));
-
-        self.sequence
     }
 }

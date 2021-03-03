@@ -7,7 +7,7 @@ use std::{
 use crate::{
     host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
-    packet::{ConnectionId, DataTransferInfo, Header, Sequence, DATA_TRANSFER},
+    packet::{ConnectionId, DataTransferInfo, Header, Packet, Payload, Sequence, DATA_TRANSFER},
     AntarcResult,
 };
 
@@ -43,7 +43,8 @@ impl NetManager<Client> {
             connection: None,
         };
 
-        // TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
+        // TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the
+        // `timer`.
         let buffer = vec![0x0; 1024];
 
         NetManager {
@@ -69,7 +70,7 @@ impl NetManager<Client> {
     ///
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
-    pub fn connect(&mut self, server_addr: &SocketAddr) {
+    pub fn connect(&mut self, server_addr: &SocketAddr) -> AntarcResult<()> {
         let disconnected = Connection::Disconnected(Host::new(*server_addr));
 
         // TODO(alex) 2021-02-23: Do I want to always `replace` or if the user calls `connect`
@@ -80,18 +81,13 @@ impl NetManager<Client> {
             .replace(disconnected)
             .take()
         {
-            // TODO(alex): 2021-02-23: `request_connection` should probably be here and not on
-            // `Host`, as the `Server` and `Client` are the ones interested in this.
-            let connecting = disconnected.request_connection(self.connection_id_tracker);
-            self.client_or_server.connection = Some(Connection::Connecting(connecting));
+            let mut connecting = disconnected.request_connection(self.connection_id_tracker);
+            connecting.send(&self.socket)?;
 
-            // TODO(alex) 2021-02-17: This is a 2-part problem:
-            // 1. Here we need to check if we're wrapping the `u16::MAX` value and getting a zero
-            // back, if so, then we need to clean the `connection_id` sequencer from
-            // old values, find an unused value for it by searching through `disconnected` hosts;
-            self.connection_id_tracker =
-                NonZeroU16::new(self.connection_id_tracker.get() + 1).unwrap();
+            self.client_or_server.connection = Some(Connection::Connecting(connecting));
         }
+
+        Err(format!("Connection not implemented yet properly!"))
     }
 
     pub fn connected(&mut self) {
@@ -117,7 +113,7 @@ impl NetManager<Client> {
     /// possibilities, like `HasMessagesToRetrieve`, `ConnectionLost`. The only success cases I can
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
-    pub fn tick(&mut self) -> AntarcResult<bool> {
+    pub fn poll(&mut self) -> AntarcResult<bool> {
         let client = &mut self.client_or_server;
         let mut may_retrieve = false;
 
@@ -148,7 +144,7 @@ impl NetManager<Client> {
 
                     // TODO(alex) 2021-02-23:  what happens if we received data transfers from this
                     // host before (when it was in a connected state, but lost connection)?
-                    let _ = connecting.on_receive(&remote_addr, &self.buffer)?;
+                    // let _ = connecting.on_receive(&remote_addr, &self.buffer)?;
 
                     if let Some(received) = connecting.received_list.last() {
                         match &received.header {
@@ -178,7 +174,7 @@ impl NetManager<Client> {
                     }
                 }
                 Connection::Connected(mut connected) => {
-                    let _ = connected.on_receive(&remote_addr, &self.buffer)?;
+                    // let _ = connected.on_receive(&remote_addr, &self.buffer)?;
                     // TODO(alex) 2021-02-27: Handle the data transfer + hearbeat here.
                     let _ = connected.send(&self.socket)?;
                 }
@@ -188,27 +184,83 @@ impl NetManager<Client> {
         Ok(may_retrieve)
     }
 
-    pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {
-        todo!();
+    pub fn receive(&mut self) -> AntarcResult<()> {
+        let client = &mut self.client_or_server;
+        if let Some(connected) = self.client_or_server.connection.as_mut() {
+            match connected {
+                Connection::Connected(host) => {
+                    let (num_recv, remote_addr) = self
+                        .socket
+                        .recv_from(&mut self.buffer)
+                        .map_err(|fail| fail.to_string())?;
+
+                    if remote_addr != host.address {
+                        Err(format!(
+                            "Expected packet from {:?}, but received from {:?}",
+                            host.address, remote_addr
+                        ))
+                    } else {
+                        host.receive(&self.buffer)
+                    }
+                }
+                fail_state => panic!(
+                    "{}",
+                    format!(
+                        "Tried to enqueue a data transfer in a non-connected client {:?}.",
+                        fail_state
+                    )
+                ),
+            }
+        } else {
+            Err(format!(
+                "`Client::receive` called on non-connected client {:?}.",
+                self
+            ))
+        }
     }
 
     /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user
     /// may use it to remove the packet (if wanted). It'll be an API for users that might want to
     /// clear older packets that were never sent, and to allow users to check for packets that were
     /// actually sent.
-    pub fn enqueue(&mut self, data: Vec<u8>) -> AntarcResult<Sequence> {
+    ///
+    /// ADD(alex) 2021-03-03: This function is `async` when I think about it. The whole idea of
+    /// queueing the packets to send, instead of sending them directly comes from the need to check
+    /// if the `socket` is writable, so we enqueue the packets instead of just calling
+    /// `socket.send` here, creating an async version of `socket.send` basically. `Client::tick`
+    /// is very similar to what I think `poll` would look like.
+    ///
+    /// Using `Future` would simplify the API, as it would remove the need for the `Client::tick`
+    /// function, so `Client::connect -> Future<ConnectedClient>` would do the connection handling
+    /// that `Client::tick` is doing, while `Client::send` and `Client::receive` would do the rest
+    /// (data transfer handling). `Client::receive` acts like the "update" function, as it will be
+    /// called all the time (with some user tickrate), being equivalent to a "listen" function.
+    pub fn send(&mut self, data: Vec<u8>) -> AntarcResult<Sequence> {
         let client = &mut self.client_or_server;
         if let Some(connected) = client.connection.as_mut() {
             match connected {
-                Connection::Connected(host) => host.enqueue(data),
-                fail_state => panic!("Tried to enqueue a data transfer in a non-connected client."),
+                Connection::Connected(host) => {
+                    // TODO(alex) 2021-03-03: Enqueue here is temporary, when `Host::send` is async
+                    // this should probably be there.
+                    host.send_queue.push_back(Payload(data));
+                    let sent = host.send(&self.socket)?;
+
+                    return Ok(host.sequence);
+                }
+                fail_state => panic!(
+                    "{}",
+                    format!(
+                        "Tried to enqueue a data transfer in a non-connected client {:?}.",
+                        fail_state
+                    )
+                ),
             };
         }
 
-        Ok(unsafe { Sequence::new_unchecked(1) })
+        Err(format!("Send failed for client {:?}.", self))
     }
 
-    pub fn enqueue_priority(&self, data: Vec<u8>) -> Sequence {
+    pub fn send_priority(&self, data: Vec<u8>) -> Sequence {
         todo!();
     }
 }
