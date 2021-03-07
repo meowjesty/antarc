@@ -1,6 +1,15 @@
-use std::net::{SocketAddr, UdpSocket};
+use std::{
+    convert::TryFrom,
+    future::Future,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    task::{Poll, Waker},
+    thread,
+    time::Duration,
+};
 
 use antarc::{net::NetManager, server::Server};
+use smol::net::UdpSocket;
 
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
@@ -8,7 +17,7 @@ fn client_main() {
     let mut net_client = NetManager::new_client(&client_addr);
 
     // .await ?
-    net_client.connect(&server_addr);
+    // net_client.connect(&server_addr);
     // TODO(alex): 2021-02-20: This is part of the network manager side of things. When getting a
     // `Peer<Client<Connecting>>`, it keeps ticking until the client is actually connected to the
     // server. The user API won't be calling these inner `tick` functions, it'll call a
@@ -27,7 +36,7 @@ fn client_main() {
         // to the different packet structs idea.
         // let new_connections? = server.connection_requests();
         // server.deny_connection(new_connections[1]);
-        net_client.poll();
+        // net_client.poll();
 
         let data = vec![0x1; 32];
         // TODO(alex) 2021-01-28: Is this the exact same as the server? Do we need multiple ids?
@@ -43,7 +52,7 @@ fn client_main() {
         //
         // What I'm doing here is basically what the `NetworkManager` will have to do.
         // .await ??
-        let received_world_changes = net_client.receive();
+        // let received_world_changes = net_client.receive();
         // for (id, world_change) in received_world_changes {
         // TODO(alex) 2021-01-28: This is different from a simple `update` function, as this
         // exists to prevent networked update problems (packets out of order making the user
@@ -65,15 +74,15 @@ fn client_main() {
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
-        net_client.send(data); // .await ??
+        // net_client.send(data); // .await ??
     }
 }
 
 fn server_main() {
-    let server_addr = "127.0.0.1:7777".parse().unwrap();
+    // let server_addr = "127.0.0.1:7777".parse().unwrap();
     let client_addr = "127.0.0.1:8888";
 
-    let mut server: NetManager<Server> = NetManager::<Server>::new_server(&server_addr);
+    // let mut server: NetManager<Server> = NetManager::<Server>::new_server(&server_addr);
     let world_state = vec![0x0; 32];
 
     'running: loop {
@@ -84,21 +93,21 @@ fn server_main() {
         // a ban list, so accepting connections will be part of the protocol API.
         // let new_connections? = server.connection_requests();
         // server.deny_connection(new_connections[1]);
-        server.tick();
+        // server.tick();
 
         let new_world_state = vec![0x1; 32];
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
-        server.enqueue(new_world_state); // .await ??
+        // server.enqueue(new_world_state); // .await ??
 
         // TODO(alex) 2021-01-28: Receive retrieves all messages that the underlying protocol has
         // stored, but it also needs to move these messages into some form of `Retrieved(Packet)`
         // state, otherwise calling it again would keep returning the same packets.
-        let received_world_changes = server.retrieve(); // .await ??
-        for (_, world_change) in received_world_changes {
-            // world_state.update(world_change);
-        }
+        // let received_world_changes = server.retrieve(); // .await ??
+        // for (_, world_change) in received_world_changes {
+        // world_state.update(world_change);
+        // }
         // let (player_1_id, player_1_changes) =
         //     received_world_changes.find(|(id, world_changes)| world_changes.player_id == 1)?;
         // if player_1_changes.health < 0 {
@@ -107,15 +116,142 @@ fn server_main() {
         // `ConnectionRequest` handling should have a special case to check if the host is in
         // a ban list, and ignore the connection request, or whatever.
         let player_1 = 1;
-        server.ban_host(player_1);
+        // server.ban_host(player_1);
         // }
         // let world_state_changes = world_state.delta().serialize();
         // TODO(alex) 2021-01-27: Work priority in the future, right now I would rather not
         // deal with handling this.
         // server.send_with_priority(Priority::High, id, dead_player_world_state);
         let world_state_changes = vec![0x2; 32];
-        server.enqueue(world_state_changes); // .await
+        // server.enqueue(world_state_changes); // .await
     }
 }
 
-fn main() {}
+#[derive(Debug)]
+struct NumberFuture {
+    /// TODO(alex) 2021-03-05: Is this the only way to have mutable state in the `poll`?
+    value: i32,
+    waker: Option<Arc<Mutex<Waker>>>,
+}
+
+impl NumberFuture {
+    fn new() -> Self {
+        Self {
+            value: 15,
+            waker: None,
+        }
+    }
+    async fn pair(&self) -> f32 {
+        1.0
+    }
+}
+
+impl Future for NumberFuture {
+    type Output = f32;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // First, if this is the first time the future is called, spawn the
+        // timer thread. If the timer thread is already running, ensure the
+        // stored `Waker` matches the current task's waker.
+        if let Some(waker) = &self.waker {
+            let mut waker = waker.lock().unwrap();
+
+            // Check if the stored waker matches the current task's waker.
+            // This is necessary as the `Delay` future instance may move to
+            // a different task between calls to `poll`. If this happens, the
+            // waker contained by the given `Context` will differ and we
+            // must update our stored waker to reflect this change.
+            if !waker.will_wake(cx.waker()) {
+                *waker = cx.waker().clone();
+            }
+        } else {
+            // This is the first time `poll` is called.
+            let value = self.value;
+            let waker = Arc::new(Mutex::new(cx.waker().clone()));
+            self.waker = Some(waker.clone());
+
+            thread::spawn(move || {
+                if value % 2 != 0 {
+                    thread::sleep(Duration::from_millis(150));
+                    println!("Value {:?} not pair yet.", value)
+                }
+
+                let waker = waker.lock().unwrap();
+                waker.wake_by_ref();
+            });
+        }
+        // Once the waker is stored and the timer thread is started, it is
+        // time to check if the delay has completed. This is done by
+        // checking the current instant. If the duration has elapsed, then
+        // the future has completed and `Poll::Ready` is returned.
+        if self.value % 2 == 0 {
+            println!("Value is pair now {:?}", self.value);
+            Poll::Ready(self.value as f32)
+        } else {
+            self.value += 1;
+
+            // The duration has not elapsed, the future has not completed so
+            // return `Poll::Pending`.
+            //
+            // The `Future` trait contract requires that when `Pending` is
+            // returned, the future ensures that the given waker is signalled
+            // once the future should be polled again. In our case, by
+            // returning `Pending` here, we are promising that we will
+            // invoke the given waker included in the `Context` argument
+            // once the requested duration has elapsed. We ensure this by
+            // spawning the timer thread above.
+            //
+            // If we forget to invoke the waker, the task will hang
+            // indefinitely.
+            Poll::Pending
+        }
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    let mut buffer = vec![0; 128];
+    println!("Before spawn");
+    let task = smol::spawn(async move {
+        println!("Before socket");
+        let socket = std::net::UdpSocket::bind("127.0.0.1:7777").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let socket: UdpSocket = UdpSocket::try_from(socket).unwrap();
+        println!("socket bound");
+        let foo = socket.recv_from(&mut buffer).await.unwrap();
+        // TODO(alex) 2021-03-07: We never reach this, must find a way to tell smol to
+        // stop listening after a timeout, otherwise we would be blocked here forever. Looks like
+        // smol doesn't have a `set_timeout` handle.
+        println!("socket received");
+    });
+    println!("after spawn");
+
+    println!("Before block");
+
+    smol::block_on(async {
+        println!("Before task");
+        task.await;
+        println!("After task");
+    });
+
+    println!("After block");
+
+    Ok(())
+
+    /*
+    smol::block_on(async {
+        let manager = NumberFuture::new();
+        manager.pair().await;
+        manager.await;
+
+        Ok(())
+    })
+    */
+}

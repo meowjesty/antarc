@@ -1,10 +1,12 @@
 use std::{
     collections::VecDeque,
     marker::PhantomData,
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
     time::{Duration, Instant},
 };
+
+use smol::net::UdpSocket;
 
 use crate::{
     exponential_moving_average,
@@ -28,6 +30,7 @@ pub(crate) struct Connected(ConnectionId);
 #[derive(Debug)]
 pub(crate) struct Disconnected;
 
+pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
 
 #[derive(Debug)]
@@ -82,7 +85,12 @@ impl<State> Host<State> {
         }
     }
 
-    fn on_receive(&mut self, packet: &Packet<Received>) {
+    pub(crate) fn on_internal(&mut self, packet: Packet<Received>) {
+        let internal = packet.internald(self.timer.elapsed());
+        self.internals.push(internal);
+    }
+
+    pub(crate) fn on_receive_ack(&mut self, packet: &Packet<Received>) -> bool {
         if let Some((index, _)) = self
             .sent_list
             .iter_mut()
@@ -96,6 +104,10 @@ impl<State> Host<State> {
             self.rtt = exponential_moving_average(delta_rtt, self.rtt);
 
             self.acked_list.push(acked);
+
+            true
+        } else {
+            false
         }
     }
 
@@ -197,7 +209,7 @@ impl Host<Disconnected> {
         host
     }
 
-    pub(crate) fn request_connection(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
+    pub(crate) async fn connect(mut self, socket: &UdpSocket) -> AntarcResult<Host<Connecting>> {
         let header_info = HeaderInfo {
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             ack: 0,
@@ -208,16 +220,21 @@ impl Host<Disconnected> {
             status_code: CONNECTION_REQUEST,
         };
         let header = Header::ConnectionRequest(connection_request_info);
+        let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
         // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
         // encoding time, as there's no crc32 calculation done yet.
 
-        // TODO(alex) 2021-02-17: This should be marked as reliable priority, we can't move on until
-        // the connection is estabilished, and the user cannot be able to put packets into
-        // the `send_queue` until the protocol is done handling it.
-        self.send_queue.push_back(Payload(vec![0; 10]));
+        let num_sent = socket
+            .send_to(&packet.encode()?.buffer, self.address)
+            .await
+            .map_err(|fail| fail.to_string())?;
+        assert!(num_sent > 0);
+
+        let sent = packet.sent(self.timer.elapsed());
+        self.sent_list.push(sent);
 
         let host = self.into_new_state(Connecting);
-        host
+        Ok(host)
     }
 
     /// TODO(alex) 2021-02-23: This is the `server`-side of the `Disconnected -> Connecting`
@@ -246,55 +263,60 @@ impl Host<Disconnected> {
 }
 
 impl Host<Connecting> {
-    pub(crate) fn into_connected(self, connection_id: ConnectionId) -> Host<Connected> {
-        let host = self.into_new_state(Connected(connection_id));
-        host
+    pub(crate) fn on_receive(&mut self, buffer: &[u8]) -> AntarcResult<Packet<Received>> {
+        let packet = Packet::decode(buffer, self.timer.elapsed())?;
+        self.on_receive_ack(&packet);
+
+        // self.received_list.push(packet);
+        Ok(packet)
     }
 
-    pub(crate) fn into_disconnected(self) -> Host<Disconnected> {
+    pub(crate) fn connection_denied(self) -> Host<Disconnected> {
         let host = self.into_new_state(Disconnected);
         host
     }
 
-    pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        if let Some(payload) = self
-            .priority_queue
-            .pop_front()
-            .or(self.send_queue.pop_front())
-        {
-            let header_info = HeaderInfo {
-                sequence: self.sequence,
-                ack: self.ack,
-                past_acks: self.past_acks,
-            };
-            let connection_request_info = ConnectionRequestInfo {
-                status_code: CONNECTION_REQUEST,
-                header_info,
-            };
-            let header = Header::ConnectionRequest(connection_request_info);
+    pub(crate) fn connection_accepted(self, connection_id: ConnectionId) -> Host<Connected> {
+        let host = self.into_new_state(Connected(connection_id));
+        host
+    }
 
-            {
-                let to_send = Packet::<ToSend>::new(header, payload, self.timer.elapsed());
-                let to_send_raw = to_send.encode()?;
+    pub(crate) async fn retry(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+        // NOTE(alex) 2021-03-07: Discard the lost packet, we don't care to keep data about lost
+        // internals during connection phase.
+        self.sent_list.pop();
 
-                let num_sent = socket
-                    .send_to(&to_send_raw.buffer, self.address)
-                    .map_err(|fail| fail.to_string())?;
+        let header_info = HeaderInfo {
+            sequence: unsafe { NonZeroU32::new_unchecked(1) },
+            ack: 0,
+            past_acks: 0,
+        };
+        let connection_request_info = ConnectionRequestInfo {
+            header_info,
+            status_code: CONNECTION_REQUEST,
+        };
+        let header = Header::ConnectionRequest(connection_request_info);
+        let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
+        // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
+        // encoding time, as there's no crc32 calculation done yet.
 
-                self.sent_list.push(to_send.sent(self.timer.elapsed()));
+        let num_sent = socket
+            .send_to(&packet.encode()?.buffer, self.address)
+            .await
+            .map_err(|fail| fail.to_string())?;
+        assert!(num_sent > 0);
 
-                // NOTE(alex) 2021-03-02: Sequence is only incremented if a packet was successfully
-                // sent, otherwise the protocol could end up in an incosistent state with a remote
-                // `Host` thinking that some packets were lost, even though these packets were never
-                // actually sent. This is why a `Packet<ToSend>` is created in this function and not
-                // stored anywhere else, to prevent these inconsistencies.
-                self.sequence = Sequence::new(self.sequence.get() + 1).unwrap();
+        let sent = packet.sent(self.timer.elapsed());
+        self.sent_list.push(sent);
 
-                return Ok(num_sent);
-            }
-        }
+        Ok(num_sent)
+    }
 
-        Ok(0)
+    /// TODO(alex) 2021-03-04: Having a `receive` in the `Host` complicates things too much, we end
+    /// up having to do state transformations, so can't take `self` reference. It's easier to do it
+    /// on the `Client`.
+    pub(crate) fn receive(&mut self, buffer: &[u8]) -> AntarcResult<Host<Connected>> {
+        unimplemented!()
     }
 }
 
@@ -308,9 +330,9 @@ impl Host<Connected> {
     /// TODO(alex) 2021-03-03: I'm thinking that every `Host::receive` will be the same, or at least
     /// they are for now, so migrating it into the more generic `impl<State> Host<State>` might be
     /// fine.
-    pub(crate) fn receive(&mut self, buffer: &[u8]) -> AntarcResult<()> {
+    pub(crate) fn on_receive(&mut self, buffer: &[u8]) -> AntarcResult<()> {
         let packet = Packet::decode(buffer, self.timer.elapsed())?;
-        self.on_receive(&packet);
+        self.on_receive_ack(&packet);
 
         self.received_list.push(packet);
         Ok(())
@@ -318,7 +340,7 @@ impl Host<Connected> {
 
     /// TODO(alex) 2021-03-03: In contrast, `Host::send` looks perfectly doable, as the protocol
     /// only wants to send packets to hosts it knows of.
-    pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub(crate) async fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         if let Some(payload) = self
             .priority_queue
             .pop_front()
@@ -345,6 +367,7 @@ impl Host<Connected> {
 
                 let num_sent = socket
                     .send_to(&to_send_raw.buffer, self.address)
+                    .await
                     .map_err(|fail| fail.to_string())?;
 
                 self.sent_list.push(to_send.sent(self.timer.elapsed()));

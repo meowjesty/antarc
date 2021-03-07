@@ -78,6 +78,7 @@ pub(crate) const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
 // END_OF_PACKET.to_be_bytes();
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
 pub(crate) const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
+pub(crate) const MTU_LENGTH: usize = 1500;
 
 // TODO(alex) 2021-01-24: How does send / receive works?
 // - Packet is sent with data / client replies with either data or just ack;

@@ -1,8 +1,6 @@
-use std::{
-    net::{SocketAddr, UdpSocket},
-    num::NonZeroU16,
-    time::Instant,
-};
+use std::{net::SocketAddr, num::NonZeroU16, time::Instant};
+
+use smol::net::UdpSocket;
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
@@ -21,8 +19,8 @@ pub struct Server {
 /// packets, and connections, but leave the actual send/receive to the `net` crate.
 /// ADD(alex) 2021-02-25: I'm questioning this, it might belong here after all.
 impl NetManager<Server> {
-    pub fn new_server(address: &SocketAddr) -> Self {
-        let socket = UdpSocket::bind(address).unwrap();
+    pub async fn new_server(address: &SocketAddr) -> Self {
+        let socket = UdpSocket::bind(address).await.unwrap();
 
         let server = Server {
             disconnected: Vec::with_capacity(8),

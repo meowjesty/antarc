@@ -1,14 +1,16 @@
 use std::{
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
     time::Instant,
 };
+
+use smol::net::UdpSocket;
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
     packet::{ConnectionId, DataTransferInfo, Header, Packet, Payload, Sequence, DATA_TRANSFER},
-    AntarcResult,
+    AntarcResult, MTU_LENGTH,
 };
 
 /// TODO(alex) 2021-02-26: References for ideas about connection:
@@ -17,35 +19,32 @@ use crate::{
 #[derive(Debug)]
 pub(crate) enum Connection {
     Disconnected(Host<Disconnected>),
+    /// TODO(alex) 2021-03-04: Prevent flooding of connecting state attack.
     Connecting(Host<Connecting>),
     Connected(Host<Connected>),
 }
 
-/// TODO(alex) 2021-02-22: Change this to `Box<Host<Disconnected>>, ...` to mimick the `Server`
-/// struct. The approach of `enum Connection` will work, but its benefits are hard to notice (if
-/// they even exist). Substitute `Client` with `ClientBox` (keep the name `Client`).
+/// TODO(alex) 2021-03-04: Client and Server are different beasts right now, I'm thinking about
+/// ways of allowing some sort of peer-to-peer communication, so a `Client` would have to track
+/// connection (`Host<State>`) for multiple other clients. To to this we would need something
+/// that looks more like the `Server`, and some way to keep one node of the network as the main
+/// server? This idea is not clear yet.
 #[derive(Debug)]
 pub struct Client {
     other_clients: Vec<Host<Disconnected>>,
     connection: Option<Connection>,
 }
 
-/// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
-/// integrated into the lower parts of the protocol. It should handle the state transitions for
-/// packets, and connections, but leave the actual send/receive to the `net` crate.
-/// ADD(alex) 2021-02-25: I'm questioning this, it might belong here after all.
 impl NetManager<Client> {
-    pub fn new_client(address: &SocketAddr) -> Self {
-        let socket = UdpSocket::bind(address).unwrap();
+    pub async fn new_client(address: &SocketAddr) -> Self {
+        let socket = UdpSocket::bind(address).await.unwrap();
 
         let client = Client {
             other_clients: Vec::with_capacity(8),
             connection: None,
         };
 
-        // TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the
-        // `timer`.
-        let buffer = vec![0x0; 1024];
+        let buffer = vec![0x0; MTU_LENGTH];
 
         NetManager {
             socket,
@@ -70,30 +69,76 @@ impl NetManager<Client> {
     ///
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
-    pub fn connect(&mut self, server_addr: &SocketAddr) -> AntarcResult<()> {
-        let disconnected = Connection::Disconnected(Host::new(*server_addr));
+    pub async fn connect(&mut self, server_addr: &SocketAddr) -> AntarcResult<()> {
+        let client = &mut self.client_or_server;
 
         // TODO(alex) 2021-02-23: Do I want to always `replace` or if the user calls `connect`
-        // twice should it check if there is a connection already and do something else?
-        if let Some(Connection::Disconnected(disconnected)) = self
-            .client_or_server
-            .connection
-            .replace(disconnected)
-            .take()
-        {
-            let mut connecting = disconnected.request_connection(self.connection_id_tracker);
-            connecting.send(&self.socket)?;
+        // twice should it check if there is a `Host<Disconnected>` already and do something else?
+        let disconnected = Host::new(*server_addr);
+        let mut connecting = disconnected.connect(&self.socket).await?;
 
-            self.client_or_server.connection = Some(Connection::Connecting(connecting));
+        loop {
+            // TODO(alex) 2021-03-07: I'm not entirely sure how the `recv_from` will work in case we
+            // never receive a packet (with the `await`), a timeout is required and will probably
+            // end up being returned, so we never get the chance to retry the connection.
+            let (size, remote_addr) = match self.socket.recv_from(&mut self.buffer).await {
+                Ok(ok) => ok,
+                Err(fail) => match fail.kind() {
+                    // TODO(alex) 2021-03-07: We never reach this, must find a way to tell smol to
+                    // stop listening after a timeout, otherwise we would be blocked here forever.
+                    std::io::ErrorKind::TimedOut => {
+                        if let Some(last_sent) = connecting.sent_list.last() {
+                            if last_sent.state.time_sent > CONNECTION_TIMEOUT_THRESHOLD {
+                                connecting.retry(&self.socket).await?;
+                            }
+                        }
+                        continue;
+                    }
+                    _ => return Err(fail.to_string()),
+                },
+            };
+
+            if remote_addr != connecting.address {
+                return Err(format!(
+                    "Expected packet from {:?}, but received from {:?}",
+                    connecting.address, remote_addr
+                ));
+            }
+
+            let packet = connecting.on_receive(&self.buffer)?;
+            if connecting
+                .acked_list
+                .iter()
+                .any(|acked| acked.header.get_sequence().get() == packet.header.get_ack())
+            {
+                match &packet.header {
+                    Header::ConnectionAccepted(accepted_info) => {
+                        let mut connected =
+                            connecting.connection_accepted(accepted_info.connection_id);
+                        connected.on_internal(packet);
+                        client.connection = Some(Connection::Connected(connected));
+
+                        return Ok(());
+                    }
+                    Header::ConnectionDenied(denied_info) => {
+                        let fail = Err(format!("Connection failed {:?}.", denied_info));
+
+                        let mut disconnected = connecting.connection_denied();
+                        disconnected.on_internal(packet);
+                        client.connection = Some(Connection::Disconnected(disconnected));
+
+                        return fail;
+                    }
+                    fail_header => {
+                        return Err(format!("Unexpected `Header` type of {:?}.", fail_header))
+                    }
+                }
+            }
         }
-
-        Err(format!("Connection not implemented yet properly!"))
     }
 
     pub fn connected(&mut self) {
         if let Some(Connection::Connecting(connecting)) = self.client_or_server.connection.take() {
-            let connected = connecting.into_connected(ConnectionId::new(1).unwrap());
-            self.client_or_server.connection = Some(Connection::Connected(connected));
             todo!();
         }
     }
@@ -102,8 +147,9 @@ impl NetManager<Client> {
         let client = &mut self.client_or_server;
 
         if let Some(Connection::Connecting(connecting)) = client.connection.take() {
-            let disconnected = connecting.into_disconnected();
+            let disconnected = connecting.connection_denied();
             client.connection = Some(Connection::Disconnected(disconnected));
+            todo!()
         }
     }
 
@@ -113,13 +159,14 @@ impl NetManager<Client> {
     /// possibilities, like `HasMessagesToRetrieve`, `ConnectionLost`. The only success cases I can
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
-    pub fn poll(&mut self) -> AntarcResult<bool> {
+    pub async fn poll(&mut self) -> AntarcResult<bool> {
         let client = &mut self.client_or_server;
         let mut may_retrieve = false;
 
         let (size, remote_addr) = self
             .socket
             .recv_from(&mut self.buffer)
+            .await
             .map_err(|fail| fail.to_string())?;
 
         if let Some(mut connection) = client.connection.take() {
@@ -134,28 +181,40 @@ impl NetManager<Client> {
                     // for whatever reason, then try to reconnect here. Should we keep the host
                     // information, or just discard (current behavior is discard)?
                     dbg!("Attempting to reconnect to {:?}", &disconnected);
-                    self.connect(&disconnected.address);
+                    // self.connect(&disconnected.address)?;
                 }
                 Connection::Connecting(mut connecting) => {
+                    connecting.on_receive(&self.buffer)?;
                     if connecting.rtt > CONNECTION_TIMEOUT_THRESHOLD {
-                        connection = Connection::Disconnected(connecting.into_disconnected());
-                        return Err("Connection timeout.".to_string());
+                        connection = Connection::Disconnected(connecting.connection_denied());
+                        client.connection = Some(connection);
+
+                        return Err(format!("Connection timeout for {:?}.", client.connection));
                     }
 
                     // TODO(alex) 2021-02-23:  what happens if we received data transfers from this
                     // host before (when it was in a connected state, but lost connection)?
                     // let _ = connecting.on_receive(&remote_addr, &self.buffer)?;
 
-                    if let Some(received) = connecting.received_list.last() {
+                    if let Some(received) = connecting.received_list.pop() {
                         match &received.header {
-                            Header::ConnectionRequest(request) => {
-                                let received = connecting.received_list.pop().unwrap();
-                                let internald = received.internald(connecting.timer.elapsed());
-                                connecting.internals.push(internald);
-                                self.connected();
+                            Header::ConnectionRequest(connection_request_info) => {
+                                if connecting.acked_list.iter().any(|acked| {
+                                    acked.header.get_sequence().get()
+                                        == connection_request_info.header_info.ack
+                                }) {
+                                    let internald = received.internald(connecting.timer.elapsed());
+                                    connecting.internals.push(internald);
+                                    self.connected();
+                                } else {
+                                    // TODO(alex) 2021-03-04: Noone acked our connection request
+                                    // packet yet, so we must resend the packet. The connection
+                                    // request has to be reliable, so we need a way to not increment
+                                    // its sequence value, as this could make connecting more
+                                    // complex than it has to be.
+                                }
                             }
-                            Header::ConnectionDenied(denied) => {
-                                let received = connecting.received_list.pop().unwrap();
+                            Header::ConnectionDenied(connection_denied_info) => {
                                 let internald = received.internald(connecting.timer.elapsed());
                                 connecting.internals.push(internald);
                                 self.denied();
@@ -170,13 +229,13 @@ impl NetManager<Client> {
                             }
                         }
                     } else {
-                        let _ = connecting.send(&self.socket)?;
+                        // let _ = connecting.send(&self.socket)?;
                     }
                 }
                 Connection::Connected(mut connected) => {
                     // let _ = connected.on_receive(&remote_addr, &self.buffer)?;
                     // TODO(alex) 2021-02-27: Handle the data transfer + hearbeat here.
-                    let _ = connected.send(&self.socket)?;
+                    let _ = connected.send(&self.socket).await?;
                 }
             }
         }
@@ -184,32 +243,49 @@ impl NetManager<Client> {
         Ok(may_retrieve)
     }
 
-    pub fn receive(&mut self) -> AntarcResult<()> {
+    /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,
+    /// instead of manually calling `receive`.
+    pub async fn receive(&mut self) -> AntarcResult<()> {
         let client = &mut self.client_or_server;
-        if let Some(connected) = self.client_or_server.connection.as_mut() {
-            match connected {
-                Connection::Connected(host) => {
-                    let (num_recv, remote_addr) = self
-                        .socket
-                        .recv_from(&mut self.buffer)
-                        .map_err(|fail| fail.to_string())?;
 
-                    if remote_addr != host.address {
+        let (num_recv, remote_addr) = self
+            .socket
+            .recv_from(&mut self.buffer)
+            .await
+            .map_err(|fail| fail.to_string())?;
+
+        if let Some(connection) = client.connection.as_mut() {
+            match connection {
+                Connection::Connected(connected) => {
+                    if remote_addr != connected.address {
                         Err(format!(
                             "Expected packet from {:?}, but received from {:?}",
-                            host.address, remote_addr
+                            connected.address, remote_addr
                         ))
                     } else {
-                        host.receive(&self.buffer)
+                        connected.on_receive(&self.buffer)
                     }
                 }
-                fail_state => panic!(
-                    "{}",
-                    format!(
-                        "Tried to enqueue a data transfer in a non-connected client {:?}.",
-                        fail_state
+                Connection::Connecting(connecting) => {
+                    if remote_addr != connecting.address {
+                        Err(format!(
+                            "Expected packet from {:?}, but received from {:?}",
+                            connecting.address, remote_addr
+                        ))
+                    } else {
+                        todo!()
+                        // connecting.on_receive(&self.buffer)
+                    }
+                }
+                fail_state => {
+                    panic!(
+                        "{}",
+                        format!(
+                            "Received a packet from a host in an unexpected state {:?}.",
+                            fail_state
+                        )
                     )
-                ),
+                }
             }
         } else {
             Err(format!(
@@ -235,7 +311,7 @@ impl NetManager<Client> {
     /// that `Client::tick` is doing, while `Client::send` and `Client::receive` would do the rest
     /// (data transfer handling). `Client::receive` acts like the "update" function, as it will be
     /// called all the time (with some user tickrate), being equivalent to a "listen" function.
-    pub fn send(&mut self, data: Vec<u8>) -> AntarcResult<Sequence> {
+    pub async fn send(&mut self, data: Vec<u8>) -> AntarcResult<Sequence> {
         let client = &mut self.client_or_server;
         if let Some(connected) = client.connection.as_mut() {
             match connected {
@@ -243,7 +319,7 @@ impl NetManager<Client> {
                     // TODO(alex) 2021-03-03: Enqueue here is temporary, when `Host::send` is async
                     // this should probably be there.
                     host.send_queue.push_back(Payload(data));
-                    let sent = host.send(&self.socket)?;
+                    let sent = host.send(&self.socket).await?;
 
                     return Ok(host.sequence);
                 }

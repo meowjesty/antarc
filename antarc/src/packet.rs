@@ -87,6 +87,8 @@ pub type Ack = u32;
 ///   - the type of header will contain the extra data, also indicating the lack of some fields
 /// 2. connection id;
 /// 3. rest of the fields that are common for every header type;
+/// TODO(alex) 2021-03-07: `status_code` does not represent `CONNECTION_ACCEPTED`,
+/// `CONNECTION_DENIED`, it should represent `Success`, `Failed`, `Refused`, ...
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct ConnectionRequestInfo {
     pub(crate) status_code: StatusCode,

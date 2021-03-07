@@ -1,9 +1,11 @@
 use std::{
     marker::PhantomData,
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Instant,
 };
+
+use smol::net::UdpSocket;
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},

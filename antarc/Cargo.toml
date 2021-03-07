@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 crc32fast = { version = "*", features = ["std", "nightly"] }
+smol = "*"
 
 [[example]]
 name="hello_antarc"
