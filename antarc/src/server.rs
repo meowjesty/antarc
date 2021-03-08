@@ -1,41 +1,107 @@
-use std::{net::SocketAddr, num::NonZeroU16, time::Instant};
+use std::{
+    net::SocketAddr,
+    num::NonZeroU16,
+    time::{Duration, Instant},
+};
 
-use smol::net::UdpSocket;
+use async_std::{future, net::UdpSocket};
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
     net::NetManager,
+    packet::{ConnectionId, Packet, Payload, Received},
+    AntarcResult, MTU_LENGTH,
 };
 
 #[derive(Debug)]
 pub struct Server {
+    connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
     connecting: Vec<Host<Connecting>>,
     connected: Vec<Host<Connected>>,
 }
 
-/// TODO(alex) 2021-02-14: This should be in the `net` crate, I want to avoid having sockets
-/// integrated into the lower parts of the protocol. It should handle the state transitions for
-/// packets, and connections, but leave the actual send/receive to the `net` crate.
-/// ADD(alex) 2021-02-25: I'm questioning this, it might belong here after all.
 impl NetManager<Server> {
     pub async fn new_server(address: &SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).await.unwrap();
 
         let server = Server {
+            connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
             disconnected: Vec::with_capacity(8),
             connecting: Vec::with_capacity(8),
             connected: Vec::with_capacity(8),
         };
 
-        // TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
-        let buffer = vec![0x0; 1024];
+        let buffer = vec![0x0; MTU_LENGTH];
 
         NetManager {
             socket,
             buffer,
-            connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
             client_or_server: server,
+        }
+    }
+
+    /// TODO(alex) 2021-03-08: We need an API like `get('/{:id}')` route, but for `Host`s.
+    pub async fn listen(&mut self) -> AntarcResult<()> {
+        let server = &mut self.client_or_server;
+
+        loop {
+            let (size_recv, remote_addr) = future::timeout(
+                Duration::from_millis(1000),
+                self.socket.recv_from(&mut self.buffer),
+            )
+            .await
+            .map_err(|timed_out| timed_out.to_string())?
+            .map_err(|fail| fail.to_string())?;
+
+            if let Some(disconnected) = server
+                .disconnected
+                .iter()
+                .find(|host| host.address == remote_addr)
+            {
+            } else if let Some(connecting) = server
+                .connecting
+                .iter()
+                .find(|host| host.address == remote_addr)
+            {
+            } else if let Some(connected) = server
+                .connected
+                .iter()
+                .find(|host| host.address == remote_addr)
+            {
+            } else {
+                let mut disconnected = Host::new(remote_addr);
+                let packet =
+                    Packet::<Received>::decode(&self.buffer, disconnected.timer.elapsed())?;
+                disconnected.ack_tracker = packet.header.get_ack();
+                disconnected.received_list.push(packet);
+
+                let mut connecting = match disconnected
+                    .ack_connection(&self.socket, server.connection_id_tracker)
+                    .await
+                {
+                    Ok(_) => {
+                        let connecting = disconnected.connecting();
+                        connecting
+                    }
+                    // TODO(alex) 2021-03-08: We end up eating the error here, this is not good for
+                    // composition and recovery, but how to change host connection state on success,
+                    // or keep it the same on failure in a nice composable way?
+                    Err(failed) => {
+                        server.disconnected.push(disconnected);
+                        continue;
+                    }
+                };
+
+                let packet = connecting.received_list.pop().unwrap();
+                connecting
+                    .internals
+                    .push(packet.internald(connecting.timer.elapsed()));
+                server.connection_id_tracker =
+                    unsafe { ConnectionId::new_unchecked(server.connection_id_tracker.get() + 1) };
+                server.connecting.push(connecting);
+                continue;
+            }
         }
     }
 

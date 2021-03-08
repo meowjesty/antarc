@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use smol::net::UdpSocket;
+use async_std::net::UdpSocket;
 
 use crate::{
     exponential_moving_average,
@@ -18,17 +18,22 @@ use crate::{
     AntarcResult, PROTOCOL_ID,
 };
 
+#[derive(Debug)]
+pub(crate) struct Disconnected;
+
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
+#[derive(Debug, Default)]
+pub(crate) struct Connecting {
+    attempts: u32,
+}
+
 #[derive(Debug)]
-pub(crate) struct Connecting;
+pub(crate) struct AckingConnect;
 
 #[derive(Debug)]
 pub(crate) struct Connected(ConnectionId);
-
-#[derive(Debug)]
-pub(crate) struct Disconnected;
 
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
@@ -44,9 +49,9 @@ pub(crate) struct Host<ConnectionState> {
     /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
     /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets
     /// were lost, even in the case of them never being sent.
-    pub(crate) sequence: Sequence,
-    pub(crate) ack: u32,
-    pub(crate) past_acks: u16,
+    pub(crate) sequence_tracker: Sequence,
+    pub(crate) ack_tracker: u32,
+    pub(crate) past_acks_tracker: u16,
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
     /// ADD(alex) 2021-02-13: Can this be a `Duration`? Probably yes.
@@ -70,9 +75,9 @@ impl<State> Host<State> {
         Host {
             address: self.address,
             timer: self.timer,
-            sequence: self.sequence,
-            ack: self.ack,
-            past_acks: self.past_acks,
+            sequence_tracker: self.sequence_tracker,
+            ack_tracker: self.ack_tracker,
+            past_acks_tracker: self.past_acks_tracker,
             rtt: self.rtt,
             received_list: self.received_list,
             retrieved: self.retrieved,
@@ -109,6 +114,11 @@ impl<State> Host<State> {
         } else {
             false
         }
+    }
+
+    pub(crate) fn on_sent(&mut self, packet: Packet<ToSend>) {
+        let sent = packet.sent(self.timer.elapsed());
+        self.sent_list.push(sent);
     }
 
     /// 1. Check if the address is expected (this function returns an `Error` if the `remote_addr`
@@ -192,9 +202,9 @@ impl Host<Disconnected> {
         let host = Host {
             address,
             timer,
-            sequence: unsafe { NonZeroU32::new_unchecked(1) },
-            ack: 0,
-            past_acks: 0,
+            sequence_tracker: unsafe { NonZeroU32::new_unchecked(1) },
+            ack_tracker: 0,
+            past_acks_tracker: 0,
             rtt: Duration::new(0, 0),
             received_list: Vec::with_capacity(32),
             retrieved: Vec::with_capacity(32),
@@ -209,7 +219,7 @@ impl Host<Disconnected> {
         host
     }
 
-    pub(crate) async fn connect(mut self, socket: &UdpSocket) -> AntarcResult<Host<Connecting>> {
+    pub(crate) async fn request_connection(&mut self, socket: &UdpSocket) -> AntarcResult<()> {
         let header_info = HeaderInfo {
             sequence: unsafe { NonZeroU32::new_unchecked(1) },
             ack: 0,
@@ -221,8 +231,6 @@ impl Host<Disconnected> {
         };
         let header = Header::ConnectionRequest(connection_request_info);
         let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
-        // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
-        // encoding time, as there's no crc32 calculation done yet.
 
         let num_sent = socket
             .send_to(&packet.encode()?.buffer, self.address)
@@ -233,8 +241,41 @@ impl Host<Disconnected> {
         let sent = packet.sent(self.timer.elapsed());
         self.sent_list.push(sent);
 
-        let host = self.into_new_state(Connecting);
-        Ok(host)
+        Ok(())
+    }
+
+    pub(crate) fn connecting(self) -> Host<Connecting> {
+        self.into_new_state(Connecting { attempts: 1 })
+    }
+
+    pub(crate) async fn ack_connection(
+        &mut self,
+        socket: &UdpSocket,
+        connection_id: ConnectionId,
+    ) -> AntarcResult<()> {
+        let header_info = HeaderInfo {
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            ack: self.ack_tracker,
+            past_acks: self.past_acks_tracker,
+        };
+        let connection_accepted_info = ConnectionAcceptedInfo {
+            connection_id,
+            header_info,
+            status_code: CONNECTION_REQUEST,
+        };
+        let header = Header::ConnectionAccepted(connection_accepted_info);
+        let packet = Packet::<ToSend>::new(header, Payload(vec![0xb; 10]), self.timer.elapsed());
+
+        let num_sent = socket
+            .send_to(&packet.encode()?.buffer, self.address)
+            .await
+            .map_err(|fail| fail.to_string())?;
+        assert!(num_sent > 0);
+
+        let sent = packet.sent(self.timer.elapsed());
+        self.sent_list.push(sent);
+
+        Ok(())
     }
 
     /// TODO(alex) 2021-02-23: This is the `server`-side of the `Disconnected -> Connecting`
@@ -257,7 +298,7 @@ impl Host<Disconnected> {
         // the `send_queue` until the protocol is done handling it.
         self.send_queue.push_back(Payload(vec![1; 10]));
 
-        let host = self.into_new_state(Connecting);
+        let host = self.into_new_state(Connecting::default());
         host
     }
 }
@@ -282,6 +323,12 @@ impl Host<Connecting> {
     }
 
     pub(crate) async fn retry(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+        if self.connection.attempts > 10 {
+            return Err(format!(
+                "Maximum number of connection retries reached {:?}.",
+                self
+            ));
+        }
         // NOTE(alex) 2021-03-07: Discard the lost packet, we don't care to keep data about lost
         // internals during connection phase.
         self.sent_list.pop();
@@ -297,8 +344,6 @@ impl Host<Connecting> {
         };
         let header = Header::ConnectionRequest(connection_request_info);
         let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
-        // TODO(alex) 2021-02-28: This won't work, we can't create the packet `Footer` until
-        // encoding time, as there's no crc32 calculation done yet.
 
         let num_sent = socket
             .send_to(&packet.encode()?.buffer, self.address)
@@ -306,8 +351,8 @@ impl Host<Connecting> {
             .map_err(|fail| fail.to_string())?;
         assert!(num_sent > 0);
 
-        let sent = packet.sent(self.timer.elapsed());
-        self.sent_list.push(sent);
+        self.on_sent(packet);
+        self.connection.attempts += 1;
 
         Ok(num_sent)
     }
@@ -348,9 +393,9 @@ impl Host<Connected> {
         {
             let Connected(connection_id) = self.connection;
             let header_info = HeaderInfo {
-                sequence: self.sequence,
-                ack: self.ack,
-                past_acks: self.past_acks,
+                sequence: self.sequence_tracker,
+                ack: self.ack_tracker,
+                past_acks: self.past_acks_tracker,
             };
             let data_transfer_info = DataTransferInfo {
                 status_code: DATA_TRANSFER,
@@ -377,7 +422,7 @@ impl Host<Connected> {
                 // `Host` thinking that some packets were lost, even though these packets were never
                 // actually sent. This is why a `Packet<ToSend>` is created in this function and not
                 // stored anywhere else, to prevent these inconsistencies.
-                self.sequence = Sequence::new(self.sequence.get() + 1).unwrap();
+                self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
 
                 return Ok(num_sent);
             }

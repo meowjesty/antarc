@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use smol::net::UdpSocket;
+use async_std::net::UdpSocket;
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host},
@@ -39,6 +39,5 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) socket: UdpSocket,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
-    pub(crate) connection_id_tracker: NonZeroU16,
     pub(crate) client_or_server: ClientOrServer,
 }

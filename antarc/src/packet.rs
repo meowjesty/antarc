@@ -216,6 +216,8 @@ impl Header {
 /// is to have the most help possible from the compiler to prevent incorrect states from being
 /// representable.
 
+/// TODO(alex) 2021-03-07: Add `num_recvd` to know the number of bytes that were received.
+/// This will be quite common among all packets, so maybe having a `num_bytes` is more appropriate?
 #[derive(Debug)]
 pub(crate) struct Received {
     pub(crate) time_received: Duration,
@@ -239,6 +241,7 @@ pub(crate) struct Internal {
     pub(crate) time_internal: Duration,
 }
 
+/// TODO(alex) 2021-03-07: Add `num_sent` to know the number of bytes that were actually sent.
 #[derive(Debug)]
 pub(crate) struct Sent {
     pub(crate) time_enqueued: Duration,

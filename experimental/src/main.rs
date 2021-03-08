@@ -1,15 +1,15 @@
 use std::{
     convert::TryFrom,
     future::Future,
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
     sync::{Arc, Mutex},
     task::{Poll, Waker},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use antarc::{net::NetManager, server::Server};
-use smol::net::UdpSocket;
+use async_std::prelude::*;
 
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
@@ -213,40 +213,58 @@ impl Future for NumberFuture {
 
 fn main() -> std::io::Result<()> {
     let mut buffer = vec![0; 128];
-    println!("Before spawn");
-    let task = smol::spawn(async move {
-        println!("Before socket");
-        let socket = std::net::UdpSocket::bind("127.0.0.1:7777").unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(250)))
+    let mut buffer2 = vec![0; 128];
+    let timer = Instant::now();
+    println!("create task");
+    let task = async_std::task::spawn(async move {
+        println!("begin task");
+        let socket = async_std::net::UdpSocket::bind("127.0.0.1:7777")
+            .await
             .unwrap();
-        socket
-            .set_write_timeout(Some(Duration::from_millis(250)))
-            .unwrap();
-        let socket: UdpSocket = UdpSocket::try_from(socket).unwrap();
         println!("socket bound");
-        let foo = socket.recv_from(&mut buffer).await.unwrap();
-        // TODO(alex) 2021-03-07: We never reach this, must find a way to tell smol to
-        // stop listening after a timeout, otherwise we would be blocked here forever. Looks like
-        // smol doesn't have a `set_timeout` handle.
-        println!("socket received");
+        println!("before receive");
+        let read =
+            async_std::future::timeout(Duration::from_millis(1000), socket.recv_from(&mut buffer))
+                .await;
+        println!("after received, got {:?}", read);
+        // println!("{:?}", read_with.await);
+        // let foo = socket.recv_from(&mut buffer2).await;
+        println!("end task");
+        32
     });
-    println!("after spawn");
+    println!("task created");
 
-    println!("Before block");
-
-    smol::block_on(async {
-        println!("Before task");
-        task.await;
+    println!("create block");
+    let block = async_std::task::block_on(async {
+        println!("await task");
+        let x = task.await;
         println!("After task");
     });
+    println!("block created");
 
-    println!("After block");
+    let mut x = false;
+    let mut y = 0;
+    let foo = loop {
+        break match x {
+            true => true,
+            false => {
+                println!("x is false, continue");
+                println!("y {:?}", y);
+                y += 1;
+                if y > 3000 {
+                    x = true;
+                }
+                continue;
+            }
+        };
+    };
+
+    println!("Foo is {:?}", foo);
 
     Ok(())
 
     /*
-    smol::block_on(async {
+    async_std::block_on(async {
         let manager = NumberFuture::new();
         manager.pair().await;
         manager.await;

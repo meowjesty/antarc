@@ -1,10 +1,11 @@
 use std::{
+    iter,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use smol::net::UdpSocket;
+use async_std::{future, net::UdpSocket};
 
 use crate::{
     host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
@@ -49,7 +50,6 @@ impl NetManager<Client> {
         NetManager {
             socket,
             buffer,
-            connection_id_tracker: unsafe { NonZeroU16::new_unchecked(1) },
             client_or_server: client,
         }
     }
@@ -74,66 +74,74 @@ impl NetManager<Client> {
 
         // TODO(alex) 2021-02-23: Do I want to always `replace` or if the user calls `connect`
         // twice should it check if there is a `Host<Disconnected>` already and do something else?
-        let disconnected = Host::new(*server_addr);
-        let mut connecting = disconnected.connect(&self.socket).await?;
+        let mut disconnected = Host::new(*server_addr);
+        let _ = disconnected.request_connection(&self.socket).await?;
+        let mut connecting = disconnected.connecting();
 
-        loop {
-            // TODO(alex) 2021-03-07: I'm not entirely sure how the `recv_from` will work in case we
-            // never receive a packet (with the `await`), a timeout is required and will probably
-            // end up being returned, so we never get the chance to retry the connection.
-            let (size, remote_addr) = match self.socket.recv_from(&mut self.buffer).await {
-                Ok(ok) => ok,
-                Err(fail) => match fail.kind() {
-                    // TODO(alex) 2021-03-07: We never reach this, must find a way to tell smol to
-                    // stop listening after a timeout, otherwise we would be blocked here forever.
-                    std::io::ErrorKind::TimedOut => {
-                        if let Some(last_sent) = connecting.sent_list.last() {
-                            if last_sent.state.time_sent > CONNECTION_TIMEOUT_THRESHOLD {
-                                connecting.retry(&self.socket).await?;
-                            }
-                        }
-                        continue;
-                    }
-                    _ => return Err(fail.to_string()),
-                },
-            };
-
-            if remote_addr != connecting.address {
-                return Err(format!(
-                    "Expected packet from {:?}, but received from {:?}",
-                    connecting.address, remote_addr
-                ));
-            }
-
-            let packet = connecting.on_receive(&self.buffer)?;
-            if connecting
-                .acked_list
-                .iter()
-                .any(|acked| acked.header.get_sequence().get() == packet.header.get_ack())
+        let (size_recv, remote_addr) = loop {
+            break match future::timeout(
+                Duration::from_millis(1000),
+                self.socket.recv_from(&mut self.buffer),
+            )
+            .await
             {
-                match &packet.header {
-                    Header::ConnectionAccepted(accepted_info) => {
-                        let mut connected =
-                            connecting.connection_accepted(accepted_info.connection_id);
-                        connected.on_internal(packet);
-                        client.connection = Some(Connection::Connected(connected));
-
-                        return Ok(());
+                Ok(result) => result,
+                Err(timed_out) => {
+                    if let Some(last_sent) = connecting.sent_list.last() {
+                        if last_sent.state.time_sent > CONNECTION_TIMEOUT_THRESHOLD {
+                            connecting.retry(&self.socket).await?;
+                        }
                     }
-                    Header::ConnectionDenied(denied_info) => {
-                        let fail = Err(format!("Connection failed {:?}.", denied_info));
-
-                        let mut disconnected = connecting.connection_denied();
-                        disconnected.on_internal(packet);
-                        client.connection = Some(Connection::Disconnected(disconnected));
-
-                        return fail;
-                    }
-                    fail_header => {
-                        return Err(format!("Unexpected `Header` type of {:?}.", fail_header))
-                    }
+                    continue;
                 }
             }
+            .map_err(|fail| fail.to_string())?;
+        };
+
+        if remote_addr != connecting.address {
+            return Err(format!(
+                "Expected packet from {:?}, but received from {:?}",
+                connecting.address, remote_addr
+            ));
+        }
+
+        let packet = connecting.on_receive(&self.buffer[..size_recv])?;
+        if connecting
+            .acked_list
+            .iter()
+            .any(|acked| acked.header.get_sequence().get() == packet.header.get_ack())
+        {
+            match &packet.header {
+                Header::ConnectionAccepted(accepted_info) => {
+                    let mut connected = connecting.connection_accepted(accepted_info.connection_id);
+                    connected.on_internal(packet);
+                    client.connection = Some(Connection::Connected(connected));
+
+                    return Ok(());
+                }
+                Header::ConnectionDenied(denied_info) => {
+                    let fail = Err(format!("Connection failed {:?}.", denied_info));
+
+                    let mut disconnected = connecting.connection_denied();
+                    disconnected.on_internal(packet);
+                    client.connection = Some(Connection::Disconnected(disconnected));
+
+                    return fail;
+                }
+                fail_header => {
+                    return Err(format!("Unexpected `Header` type of {:?}.", fail_header))
+                }
+            }
+        } else {
+            // TODO(alex) 2021-03-08: Do we need to loop here, what are the potential causes of
+            // getting in here?
+            let mut disconnected = connecting.connection_denied();
+            disconnected.on_internal(packet);
+            client.connection = Some(Connection::Disconnected(disconnected));
+            Err(format!(
+                "Connection packet not acked, aborting connection for {:?}.",
+                self
+            ))
         }
     }
 
@@ -321,7 +329,7 @@ impl NetManager<Client> {
                     host.send_queue.push_back(Payload(data));
                     let sent = host.send(&self.socket).await?;
 
-                    return Ok(host.sequence);
+                    return Ok(host.sequence_tracker);
                 }
                 fail_state => panic!(
                     "{}",
