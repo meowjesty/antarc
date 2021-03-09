@@ -19,11 +19,11 @@ use crate::{
 };
 
 macro_rules! host_error {
-    ($kind: ident, $result: expr, $this: expr) => {{
+    ($result: expr, $this: expr) => {{
         match $result {
             Ok(success) => success,
             Err(fail) => {
-                return Err($kind {
+                return Err(HostError {
                     err: fail.to_string(),
                     unchanged_host: $this,
                 })
@@ -190,17 +190,9 @@ impl Host<Disconnected> {
         let header = Header::ConnectionRequest(connection_request_info);
         let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
 
-        let raw_packet = host_error!(HostError, packet.encode(), self);
+        let raw_packet = host_error!(packet.encode(), self);
 
-        let num_sent = match socket.send_to(&raw_packet.buffer, self.address).await {
-            Ok(num_sent) => num_sent,
-            Err(fail) => {
-                return Err(HostError {
-                    err: fail.to_string(),
-                    unchanged_host: self,
-                })
-            }
-        };
+        let num_sent = host_error!(socket.send_to(&raw_packet.buffer, self.address).await, self);
         assert!(num_sent > 0);
         self.sequence_tracker = unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
 
@@ -226,15 +218,7 @@ impl Host<Disconnected> {
         buffer: &[u8],
         connetion_id: ConnectionId,
     ) -> Result<Host<AckingConnection>, HostError<Disconnected>> {
-        let packet = match Packet::decode(buffer, self.timer.elapsed()) {
-            Ok(packet) => packet,
-            Err(fail) => {
-                return Err(HostError {
-                    err: fail.to_string(),
-                    unchanged_host: self,
-                })
-            }
-        };
+        let packet = host_error!(Packet::decode(buffer, self.timer.elapsed()), self);
 
         if let Header::ConnectionRequest(connection_request_info) = &packet.header {
             self.ack_tracker = connection_request_info.header_info.sequence.get();
@@ -260,15 +244,7 @@ impl Host<AwaitingConnectionAck> {
         mut self,
         buffer: &[u8],
     ) -> Result<Host<Connected>, HostError<AwaitingConnectionAck>> {
-        let packet = match Packet::decode(buffer, self.timer.elapsed()) {
-            Ok(packet) => packet,
-            Err(fail) => {
-                return Err(HostError {
-                    err: fail.to_string(),
-                    unchanged_host: self,
-                })
-            }
-        };
+        let packet = host_error!(Packet::decode(buffer, self.timer.elapsed()), self);
 
         if let Header::ConnectionAccepted(connection_accepted_info) = &packet.header {
             if self.on_receive_ack(&packet) {
@@ -374,15 +350,7 @@ impl Host<AckingConnection> {
         mut self,
         buffer: &[u8],
     ) -> Result<Host<Connected>, HostError<AckingConnection>> {
-        let packet = match Packet::decode(buffer, self.timer.elapsed()) {
-            Ok(packet) => packet,
-            Err(fail) => {
-                return Err(HostError {
-                    err: fail.to_string(),
-                    unchanged_host: self,
-                })
-            }
-        };
+        let packet = host_error!(Packet::decode(buffer, self.timer.elapsed()), self);
 
         if let Header::DataTransfer(data_transfer_info) = &packet.header {
             self.ack_tracker = data_transfer_info.header_info.sequence.get();
