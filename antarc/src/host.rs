@@ -18,6 +18,20 @@ use crate::{
     AntarcResult, PROTOCOL_ID,
 };
 
+macro_rules! host_error {
+    ($kind: ident, $result: expr, $this: expr) => {{
+        match $result {
+            Ok(success) => success,
+            Err(fail) => {
+                return Err($kind {
+                    err: fail.to_string(),
+                    unchanged_host: $this,
+                })
+            }
+        }
+    }};
+}
+
 #[derive(Debug)]
 pub(crate) struct Disconnected;
 
@@ -25,12 +39,15 @@ pub(crate) struct Disconnected;
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 #[derive(Debug, Default)]
-pub(crate) struct Connecting {
+pub(crate) struct AwaitingConnectionAck {
     attempts: u32,
 }
 
+/// TODO(alex) 2021-03-08: Is it possible to delegate more responsibility to the `Host`? We need to
+/// use these connection state values better, but how exactly? `AckingConnect` in particular is new,
+/// and not used anywhere yet.
 #[derive(Debug)]
-pub(crate) struct AckingConnect;
+pub(crate) struct AckingConnection(ConnectionId);
 
 #[derive(Debug)]
 pub(crate) struct Connected(ConnectionId);
@@ -69,6 +86,12 @@ pub(crate) struct Host<ConnectionState> {
     pub(crate) connection: ConnectionState,
 }
 
+#[derive(Debug)]
+pub(crate) struct HostError<ConnectionState> {
+    err: String,
+    unchanged_host: Host<ConnectionState>,
+}
+
 impl<State> Host<State> {
     #[inline]
     fn into_new_state<NewState>(self, connection: NewState) -> Host<NewState> {
@@ -90,15 +113,14 @@ impl<State> Host<State> {
         }
     }
 
-    pub(crate) fn on_internal(&mut self, packet: Packet<Received>) {
-        let internal = packet.internald(self.timer.elapsed());
-        self.internals.push(internal);
-    }
-
+    /// TODO(alex) 2021-02-25: Use the `received.past_acks` to ack multiple `Packet<Sent>` that
+    /// might still be lingering in the `sent_list`.
     pub(crate) fn on_receive_ack(&mut self, packet: &Packet<Received>) -> bool {
+        self.ack_tracker = packet.header.get_sequence().get();
+
         if let Some((index, _)) = self
             .sent_list
-            .iter_mut()
+            .iter()
             .enumerate()
             .find(|(_, sent)| packet.header.get_ack() == sent.header.get_sequence().get())
         {
@@ -114,81 +136,6 @@ impl<State> Host<State> {
         } else {
             false
         }
-    }
-
-    pub(crate) fn on_sent(&mut self, packet: Packet<ToSend>) {
-        let sent = packet.sent(self.timer.elapsed());
-        self.sent_list.push(sent);
-    }
-
-    /// 1. Check if the address is expected (this function returns an `Error` if the `remote_addr`
-    ///    doesn't match this host's address);
-    ///    - the packet validity is checked in the `Packet<Received>::decode` function.
-    /// 2. Decode `buffer` into a `Packet<Received>`;
-    /// 3. Use the received packet `ack` to move a packet from `sent_list` into `acked_list`, if
-    ///    there is a `Packet<Sent>` with `sent.sequence == received.ack`;
-    ///
-    /// TODO(alex) 2021-02-25: Use the `received.past_acks` to ack multiple `Packet<Sent>` that
-    /// might still be lingering in the `sent_list`.
-    ///
-    /// 4. Push the `Packet<Received>` into the `received_list` for further handling, either by
-    /// some internal protocol mechanism (hearbeat, connection estabilishment), or for the user to
-    /// retrieve.
-    ///
-    /// TODO(alex) 2021-02-26: Should each `Host` have its own `Instant` to keep track of timings?
-    /// This is not a hard requirement, but many functions will end up using the `Instant` to
-    /// calculate time related things, so it might as well be in the struct.
-    pub(crate) fn raw_on_receive(
-        &mut self,
-        remote_addr: &SocketAddr,
-        buffer: &[u8],
-    ) -> AntarcResult<()> {
-        // TODO(alex) 2021-02-23: What should happen here?
-        // 1. Check `host.received_list` for internal, connection related packets;
-        //   - what happens if we received data transfers from this host before (when it was in a
-        //     connected state, but lost connection)?
-        // NOTE(alex) 2021-02-26: This could be done here or in the manager `Client` part, but it
-        // would just end up as duplicated code between possible `Host` states.
-        if *remote_addr != self.address {
-            return Err(format!(
-                "expected {:?}, but received {:?}",
-                self.address, remote_addr
-            ));
-        }
-
-        let packet = Packet::decode(&buffer, self.timer.elapsed())?;
-        if let Some((index, _)) = self
-            .sent_list
-            .iter_mut()
-            .enumerate()
-            .find(|(_, sent)| packet.header.get_ack() == sent.header.get_sequence().get())
-        {
-            let sent = self.sent_list.remove(index);
-            let acked = sent.acked(self.timer.elapsed());
-
-            let delta_rtt: Duration = acked.state.time_acked - acked.state.time_sent;
-            self.rtt = exponential_moving_average(delta_rtt, self.rtt);
-
-            self.acked_list.push(acked);
-        }
-
-        self.received_list.push(packet);
-
-        Ok(())
-    }
-
-    /// Internal function that may only be called by one of the valid `Host<State>` where sending a
-    /// packet makes sense (currently: `Host<Connecting>` and `Host<Connected>`).
-    ///
-    /// 1. Remove a `Packet<ToSend>` from the `send_queue`;
-    /// 2. Encode the packet;
-    /// 3. Use the `socket` actually send the packet (`[u8]` buffer) to this `Host::address`;
-    /// 4. Change the `Packet<ToSend>` into `Packet<Sent>` and move it to `Host::sent_list`;
-    ///
-    /// TODO(alex) 2021-02-25: There may be an alternative to this by using `Trait`s, but this works
-    /// for now.
-    fn raw_send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        todo!()
     }
 }
 
@@ -219,9 +166,152 @@ impl Host<Disconnected> {
         host
     }
 
-    pub(crate) async fn request_connection(&mut self, socket: &UdpSocket) -> AntarcResult<()> {
+    /// TODO(alex) 2021-03-09: `Client`-side only function.
+    /// I can move this into a new host state like `RequestingConnection`, just like the server
+    /// `AckingConnection`.
+    ///
+    /// TODO(alex) 2021-03-09: This `move` on success or failure makes me feel like I'm digging my
+    /// own grave, when I think about what the higher level code will have to do to handle these
+    /// moves. It begs some serious consideration on whether this FSM pattern is usable, or if I
+    /// should drop it in favor of enums.
+    pub(crate) async fn request_connection(
+        mut self,
+        socket: &UdpSocket,
+    ) -> Result<Host<AwaitingConnectionAck>, HostError<Disconnected>> {
         let header_info = HeaderInfo {
-            sequence: unsafe { NonZeroU32::new_unchecked(1) },
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            ack: 0,
+            past_acks: 0,
+        };
+        let connection_request_info = ConnectionRequestInfo {
+            header_info,
+            status_code: CONNECTION_REQUEST,
+        };
+        let header = Header::ConnectionRequest(connection_request_info);
+        let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
+
+        let raw_packet = host_error!(HostError, packet.encode(), self);
+
+        let num_sent = match socket.send_to(&raw_packet.buffer, self.address).await {
+            Ok(num_sent) => num_sent,
+            Err(fail) => {
+                return Err(HostError {
+                    err: fail.to_string(),
+                    unchanged_host: self,
+                })
+            }
+        };
+        assert!(num_sent > 0);
+        self.sequence_tracker = unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
+
+        let sent = packet.sent(self.timer.elapsed());
+        self.sent_list.push(sent);
+
+        let awaiting_connection_ack = self.into_new_state(AwaitingConnectionAck::default());
+        Ok(awaiting_connection_ack)
+    }
+
+    /**
+    NOTE(alex) 2021-03-09: Can't use `?` for error handling, as the `map_err` closure will
+    consume `self`, the borrow-checker doesn't understand that the value is only moved on failure.
+    ```
+        let packet = Packet::decode(buffer, self.timer.elapsed()).map_err(|fail| HostError {
+            err: fail.to_string(),
+            unchanged_host: self,
+        })?;
+    ```
+    */
+    pub(crate) fn on_received_connection_request(
+        mut self,
+        buffer: &[u8],
+        connetion_id: ConnectionId,
+    ) -> Result<Host<AckingConnection>, HostError<Disconnected>> {
+        let packet = match Packet::decode(buffer, self.timer.elapsed()) {
+            Ok(packet) => packet,
+            Err(fail) => {
+                return Err(HostError {
+                    err: fail.to_string(),
+                    unchanged_host: self,
+                })
+            }
+        };
+
+        if let Header::ConnectionRequest(connection_request_info) = &packet.header {
+            self.ack_tracker = connection_request_info.header_info.sequence.get();
+
+            self.internals.push(packet.internald(self.timer.elapsed()));
+            let acking_connection = self.into_new_state(AckingConnection(connetion_id));
+            // TODO(alex) 2021-03-09: Ack the connection (send connection accepted).
+            Ok(acking_connection)
+        } else {
+            Err(HostError {
+                err: format!(
+                    "Received packet {:#?}, but expected `ConnectionRequest` for {:#?}",
+                    packet, self
+                ),
+                unchanged_host: self,
+            })
+        }
+    }
+}
+
+impl Host<AwaitingConnectionAck> {
+    pub(crate) fn on_received_connection_ack(
+        mut self,
+        buffer: &[u8],
+    ) -> Result<Host<Connected>, HostError<AwaitingConnectionAck>> {
+        let packet = match Packet::decode(buffer, self.timer.elapsed()) {
+            Ok(packet) => packet,
+            Err(fail) => {
+                return Err(HostError {
+                    err: fail.to_string(),
+                    unchanged_host: self,
+                })
+            }
+        };
+
+        if let Header::ConnectionAccepted(connection_accepted_info) = &packet.header {
+            if self.on_receive_ack(&packet) {
+                self.internals.push(packet.internald(self.timer.elapsed()));
+
+                let connected =
+                    self.into_new_state(Connected(connection_accepted_info.connection_id));
+                Ok(connected)
+            } else {
+                let error = Err(HostError {
+                    err: format!(
+                    "Received a packet {:#?} that does not ack the connection attempt for {:#?}.",
+                    packet, self
+                ),
+                    unchanged_host: self,
+                });
+                error
+            }
+        } else {
+            panic!(
+                "{}",
+                format!(
+                    "Something went wrong when acking connection for {:#?}",
+                    self
+                )
+            );
+        }
+    }
+
+    pub(crate) async fn retry_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+        self.sequence_tracker = unsafe { Sequence::new_unchecked(1) };
+        if self.connection.attempts > 10 {
+            return Err(format!(
+                "Maximum number of connection retries {:#?} reached for {:#?}.",
+                self.connection.attempts, self
+            ));
+        }
+        // NOTE(alex) 2021-03-07: Discard the lost packet, we don't care to keep data about lost
+        // internals during connection phase.
+        self.sent_list.pop();
+
+        let header_info = HeaderInfo {
+            sequence: unsafe { Sequence::new_unchecked(1) },
             ack: 0,
             past_acks: 0,
         };
@@ -237,29 +327,25 @@ impl Host<Disconnected> {
             .await
             .map_err(|fail| fail.to_string())?;
         assert!(num_sent > 0);
+        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
 
-        let sent = packet.sent(self.timer.elapsed());
-        self.sent_list.push(sent);
+        // self.on_sent(packet);
+        self.connection.attempts += 1;
 
-        Ok(())
+        Ok(num_sent)
     }
+}
 
-    pub(crate) fn connecting(self) -> Host<Connecting> {
-        self.into_new_state(Connecting { attempts: 1 })
-    }
-
-    pub(crate) async fn ack_connection(
-        &mut self,
-        socket: &UdpSocket,
-        connection_id: ConnectionId,
-    ) -> AntarcResult<()> {
+impl Host<AckingConnection> {
+    /// TODO(alex) 2021-03-09: `Server`-side only function.
+    pub(crate) async fn ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         let header_info = HeaderInfo {
-            sequence: unsafe { Sequence::new_unchecked(1) },
+            sequence: self.sequence_tracker,
             ack: self.ack_tracker,
             past_acks: self.past_acks_tracker,
         };
         let connection_accepted_info = ConnectionAcceptedInfo {
-            connection_id,
+            connection_id: self.connection.0,
             header_info,
             status_code: CONNECTION_REQUEST,
         };
@@ -271,92 +357,65 @@ impl Host<Disconnected> {
             .await
             .map_err(|fail| fail.to_string())?;
         assert!(num_sent > 0);
+        self.sequence_tracker = unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
 
         let sent = packet.sent(self.timer.elapsed());
         self.sent_list.push(sent);
 
-        Ok(())
-    }
-
-    /// TODO(alex) 2021-02-23: This is the `server`-side of the `Disconnected -> Connecting`
-    /// transformation.
-    pub(crate) fn accept_connection(mut self, connection_id: NonZeroU16) -> Host<Connecting> {
-        let header_info = HeaderInfo {
-            sequence: unsafe { NonZeroU32::new_unchecked(1) },
-            ack: 0,
-            past_acks: 0,
-        };
-        let connection_accepted_info = ConnectionAcceptedInfo {
-            header_info,
-            status_code: CONNECTION_ACCEPTED,
-            connection_id,
-        };
-        let header = Header::ConnectionAccepted(connection_accepted_info);
-
-        // TODO(alex) 2021-02-17: This should be marked as reliable, we can't move on until the
-        // connection is estabilished, and the user cannot be able to put packets into
-        // the `send_queue` until the protocol is done handling it.
-        self.send_queue.push_back(Payload(vec![1; 10]));
-
-        let host = self.into_new_state(Connecting::default());
-        host
-    }
-}
-
-impl Host<Connecting> {
-    pub(crate) fn on_receive(&mut self, buffer: &[u8]) -> AntarcResult<Packet<Received>> {
-        let packet = Packet::decode(buffer, self.timer.elapsed())?;
-        self.on_receive_ack(&packet);
-
-        // self.received_list.push(packet);
-        Ok(packet)
-    }
-
-    pub(crate) fn connection_denied(self) -> Host<Disconnected> {
-        let host = self.into_new_state(Disconnected);
-        host
-    }
-
-    pub(crate) fn connection_accepted(self, connection_id: ConnectionId) -> Host<Connected> {
-        let host = self.into_new_state(Connected(connection_id));
-        host
-    }
-
-    pub(crate) async fn retry(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
-        if self.connection.attempts > 10 {
-            return Err(format!(
-                "Maximum number of connection retries reached {:?}.",
-                self
-            ));
-        }
-        // NOTE(alex) 2021-03-07: Discard the lost packet, we don't care to keep data about lost
-        // internals during connection phase.
-        self.sent_list.pop();
-
-        let header_info = HeaderInfo {
-            sequence: unsafe { NonZeroU32::new_unchecked(1) },
-            ack: 0,
-            past_acks: 0,
-        };
-        let connection_request_info = ConnectionRequestInfo {
-            header_info,
-            status_code: CONNECTION_REQUEST,
-        };
-        let header = Header::ConnectionRequest(connection_request_info);
-        let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
-
-        let num_sent = socket
-            .send_to(&packet.encode()?.buffer, self.address)
-            .await
-            .map_err(|fail| fail.to_string())?;
-        assert!(num_sent > 0);
-
-        self.on_sent(packet);
-        self.connection.attempts += 1;
-
         Ok(num_sent)
     }
 
+    pub(crate) async fn retry_ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+        self.sequence_tracker = unsafe { Sequence::new_unchecked(1) };
+        self.ack_connection(socket).await
+    }
+
+    pub(crate) async fn on_received_connection_acked_from_client(
+        mut self,
+        buffer: &[u8],
+    ) -> Result<Host<Connected>, HostError<AckingConnection>> {
+        let packet = match Packet::decode(buffer, self.timer.elapsed()) {
+            Ok(packet) => packet,
+            Err(fail) => {
+                return Err(HostError {
+                    err: fail.to_string(),
+                    unchanged_host: self,
+                })
+            }
+        };
+
+        if let Header::DataTransfer(data_transfer_info) = &packet.header {
+            self.ack_tracker = data_transfer_info.header_info.sequence.get();
+
+            if self.on_receive_ack(&packet) {
+                self.internals.push(packet.internald(self.timer.elapsed()));
+                let connection_id = self.connection.0;
+
+                let connected = self.into_new_state(Connected(connection_id));
+                Ok(connected)
+            } else {
+                let error = Err(HostError {
+                    err: format!(
+                    "Received a packet {:#?} that does not ack the connection attempt for {:#?}.",
+                    packet, self
+                ),
+                    unchanged_host: self,
+                });
+                error
+            }
+        } else {
+            panic!(
+                "{}",
+                format!(
+                    "Something went wrong when acking connection for {:#?}",
+                    self
+                )
+            );
+        }
+    }
+}
+
+impl Host<Connected> {
     /// TODO(alex) 2021-03-04: Having a `receive` in the `Host` complicates things too much, we end
     /// up having to do state transformations, so can't take `self` reference. It's easier to do it
     /// on the `Client`.

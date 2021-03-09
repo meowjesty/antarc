@@ -8,7 +8,7 @@ use std::{
 use async_std::{future, net::UdpSocket};
 
 use crate::{
-    host::{Connected, Connecting, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
+    host::{Connected, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
     packet::{ConnectionId, DataTransferInfo, Header, Packet, Payload, Sequence, DATA_TRANSFER},
     AntarcResult, MTU_LENGTH,
