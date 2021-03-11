@@ -16,6 +16,32 @@ use crate::{
     AntarcResult, PROTOCOL_ID,
 };
 
+/// NOTE(alex) 2021-03-11: Macro to map from some `Error`, similar to the `Result::map_err` closure,
+/// but avoids capturing a moved value. Without this pattern, trying to call `map_err` will move
+/// `self`, and end up as a borrow of a moved value.
+///
+/// This doesn't work:
+///
+/// ```
+/// let new_state_foo = foo.to_new_state().map_err(|fail| UnmoveError {
+///     err: fail,
+///     unmoved: self,
+/// })?;
+/// ```
+///
+/// But `match`ing works:
+///
+/// ```
+/// let new_state_foo = match foo.to_new_state() {
+///     Ok(new_state) => new_state,
+///     Err(fail) => {
+///         return Err(UnmoveErr {
+///             err: fail,
+///             unmoved: self,
+///         })
+///     }
+/// };
+/// ```
 macro_rules! unmove_on_error {
     ($result: expr, $error_type: ident, $this: expr) => {{
         match $result {
@@ -38,7 +64,7 @@ pub(crate) struct Disconnected;
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 #[derive(Debug, Default)]
 pub(crate) struct AwaitingConnectionAck {
-    attempts: u32,
+    retries: u32,
 }
 
 /// TODO(alex) 2021-03-08: Is it possible to delegate more responsibility to the `Host`? We need to
@@ -205,16 +231,6 @@ impl Host<Disconnected> {
         Ok(awaiting_connection_ack)
     }
 
-    /**
-    NOTE(alex) 2021-03-09: Can't use `?` for error handling, as the `map_err` closure will
-    consume `self`, the borrow-checker doesn't understand that the value is only moved on failure.
-    ```
-        let packet = Packet::decode(buffer, self.timer.elapsed()).map_err(|fail| HostError {
-            err: fail.to_string(),
-            unchanged_host: self,
-        })?;
-    ```
-    */
     pub(crate) fn on_received_connection_request(
         mut self,
         buffer: &[u8],
@@ -286,10 +302,10 @@ impl Host<AwaitingConnectionAck> {
 
     pub(crate) fn retry_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         self.sequence_tracker = unsafe { Sequence::new_unchecked(1) };
-        if self.connection.attempts > 10 {
+        if self.connection.retries > 10 {
             return Err(format!(
                 "Maximum number of connection retries {:#?} reached for {:#?}.",
-                self.connection.attempts, self
+                self.connection.retries, self
             ));
         }
         // NOTE(alex) 2021-03-07: Discard the lost packet, we don't care to keep data about lost
@@ -315,7 +331,7 @@ impl Host<AwaitingConnectionAck> {
         self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
 
         // self.on_sent(packet);
-        self.connection.attempts += 1;
+        self.connection.retries += 1;
 
         Ok(num_sent)
     }
