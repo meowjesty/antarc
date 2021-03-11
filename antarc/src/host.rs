@@ -18,14 +18,14 @@ use crate::{
     AntarcResult, PROTOCOL_ID,
 };
 
-macro_rules! host_error {
-    ($result: expr, $this: expr) => {{
+macro_rules! unmove_on_error {
+    ($result: expr, $error_type: ident, $this: expr) => {{
         match $result {
             Ok(success) => success,
             Err(fail) => {
-                return Err(HostError {
+                return Err($error_type {
                     err: fail.to_string(),
-                    unchanged_host: $this,
+                    unmoved: $this,
                 })
             }
         }
@@ -89,7 +89,7 @@ pub(crate) struct Host<ConnectionState> {
 #[derive(Debug)]
 pub(crate) struct HostError<ConnectionState> {
     err: String,
-    unchanged_host: Host<ConnectionState>,
+    unmoved: Host<ConnectionState>,
 }
 
 impl<State> Host<State> {
@@ -190,9 +190,13 @@ impl Host<Disconnected> {
         let header = Header::ConnectionRequest(connection_request_info);
         let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
 
-        let raw_packet = host_error!(packet.encode(), self);
+        let raw_packet = unmove_on_error!(packet.encode(), HostError, self);
 
-        let num_sent = host_error!(socket.send_to(&raw_packet.buffer, self.address).await, self);
+        let num_sent = unmove_on_error!(
+            socket.send_to(&raw_packet.buffer, self.address).await,
+            HostError,
+            self
+        );
         assert!(num_sent > 0);
         self.sequence_tracker = unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
 
@@ -218,7 +222,11 @@ impl Host<Disconnected> {
         buffer: &[u8],
         connetion_id: ConnectionId,
     ) -> Result<Host<AckingConnection>, HostError<Disconnected>> {
-        let packet = host_error!(Packet::decode(buffer, self.timer.elapsed()), self);
+        let packet = unmove_on_error!(
+            Packet::decode(buffer, self.timer.elapsed()),
+            HostError,
+            self
+        );
 
         if let Header::ConnectionRequest(connection_request_info) = &packet.header {
             self.ack_tracker = connection_request_info.header_info.sequence.get();
@@ -233,7 +241,7 @@ impl Host<Disconnected> {
                     "Received packet {:#?}, but expected `ConnectionRequest` for {:#?}",
                     packet, self
                 ),
-                unchanged_host: self,
+                unmoved: self,
             })
         }
     }
@@ -244,7 +252,11 @@ impl Host<AwaitingConnectionAck> {
         mut self,
         buffer: &[u8],
     ) -> Result<Host<Connected>, HostError<AwaitingConnectionAck>> {
-        let packet = host_error!(Packet::decode(buffer, self.timer.elapsed()), self);
+        let packet = unmove_on_error!(
+            Packet::decode(buffer, self.timer.elapsed()),
+            HostError,
+            self
+        );
 
         if let Header::ConnectionAccepted(connection_accepted_info) = &packet.header {
             if self.on_receive_ack(&packet) {
@@ -259,7 +271,7 @@ impl Host<AwaitingConnectionAck> {
                     "Received a packet {:#?} that does not ack the connection attempt for {:#?}.",
                     packet, self
                 ),
-                    unchanged_host: self,
+                    unmoved: self,
                 });
                 error
             }
@@ -350,7 +362,11 @@ impl Host<AckingConnection> {
         mut self,
         buffer: &[u8],
     ) -> Result<Host<Connected>, HostError<AckingConnection>> {
-        let packet = host_error!(Packet::decode(buffer, self.timer.elapsed()), self);
+        let packet = unmove_on_error!(
+            Packet::decode(buffer, self.timer.elapsed()),
+            HostError,
+            self
+        );
 
         if let Header::DataTransfer(data_transfer_info) = &packet.header {
             self.ack_tracker = data_transfer_info.header_info.sequence.get();
@@ -367,7 +383,7 @@ impl Host<AckingConnection> {
                     "Received a packet {:#?} that does not ack the connection attempt for {:#?}.",
                     packet, self
                 ),
-                    unchanged_host: self,
+                    unmoved: self,
                 });
                 error
             }
