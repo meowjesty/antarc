@@ -1,12 +1,10 @@
 use std::{
     collections::VecDeque,
     marker::PhantomData,
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32},
     time::{Duration, Instant},
 };
-
-use async_std::net::UdpSocket;
 
 use crate::{
     exponential_moving_average,
@@ -88,8 +86,8 @@ pub(crate) struct Host<ConnectionState> {
 
 #[derive(Debug)]
 pub(crate) struct HostError<ConnectionState> {
-    err: String,
-    unmoved: Host<ConnectionState>,
+    pub(crate) err: String,
+    pub(crate) unmoved: Host<ConnectionState>,
 }
 
 impl<State> Host<State> {
@@ -174,7 +172,7 @@ impl Host<Disconnected> {
     /// own grave, when I think about what the higher level code will have to do to handle these
     /// moves. It begs some serious consideration on whether this FSM pattern is usable, or if I
     /// should drop it in favor of enums.
-    pub(crate) async fn request_connection(
+    pub(crate) fn request_connection(
         mut self,
         socket: &UdpSocket,
     ) -> Result<Host<AwaitingConnectionAck>, HostError<Disconnected>> {
@@ -193,7 +191,7 @@ impl Host<Disconnected> {
         let raw_packet = unmove_on_error!(packet.encode(), HostError, self);
 
         let num_sent = unmove_on_error!(
-            socket.send_to(&raw_packet.buffer, self.address).await,
+            socket.send_to(&raw_packet.buffer, self.address),
             HostError,
             self
         );
@@ -286,7 +284,7 @@ impl Host<AwaitingConnectionAck> {
         }
     }
 
-    pub(crate) async fn retry_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub(crate) fn retry_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         self.sequence_tracker = unsafe { Sequence::new_unchecked(1) };
         if self.connection.attempts > 10 {
             return Err(format!(
@@ -312,7 +310,6 @@ impl Host<AwaitingConnectionAck> {
 
         let num_sent = socket
             .send_to(&packet.encode()?.buffer, self.address)
-            .await
             .map_err(|fail| fail.to_string())?;
         assert!(num_sent > 0);
         self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
@@ -326,7 +323,7 @@ impl Host<AwaitingConnectionAck> {
 
 impl Host<AckingConnection> {
     /// TODO(alex) 2021-03-09: `Server`-side only function.
-    pub(crate) async fn ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub(crate) fn ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         let header_info = HeaderInfo {
             sequence: self.sequence_tracker,
             ack: self.ack_tracker,
@@ -342,7 +339,6 @@ impl Host<AckingConnection> {
 
         let num_sent = socket
             .send_to(&packet.encode()?.buffer, self.address)
-            .await
             .map_err(|fail| fail.to_string())?;
         assert!(num_sent > 0);
         self.sequence_tracker = unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
@@ -353,12 +349,12 @@ impl Host<AckingConnection> {
         Ok(num_sent)
     }
 
-    pub(crate) async fn retry_ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub(crate) fn retry_ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         self.sequence_tracker = unsafe { Sequence::new_unchecked(1) };
-        self.ack_connection(socket).await
+        self.ack_connection(socket)
     }
 
-    pub(crate) async fn on_received_connection_acked_from_client(
+    pub(crate) fn on_received_connection_acked_from_client(
         mut self,
         buffer: &[u8],
     ) -> Result<Host<Connected>, HostError<AckingConnection>> {
@@ -428,7 +424,7 @@ impl Host<Connected> {
 
     /// TODO(alex) 2021-03-03: In contrast, `Host::send` looks perfectly doable, as the protocol
     /// only wants to send packets to hosts it knows of.
-    pub(crate) async fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         if let Some(payload) = self
             .priority_queue
             .pop_front()
@@ -455,7 +451,6 @@ impl Host<Connected> {
 
                 let num_sent = socket
                     .send_to(&to_send_raw.buffer, self.address)
-                    .await
                     .map_err(|fail| fail.to_string())?;
 
                 self.sent_list.push(to_send.sent(self.timer.elapsed()));

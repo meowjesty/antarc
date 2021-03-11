@@ -1,15 +1,8 @@
 use std::{
     marker::PhantomData,
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Instant,
-};
-
-use async_std::net::UdpSocket;
-
-use crate::{
-    host::{Connected, Connecting, Disconnected, Host},
-    packet::{Acked, Header, Packet, Received, Retrieved, Sent, ToSend},
 };
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll

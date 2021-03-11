@@ -1,13 +1,11 @@
 use std::{
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
     num::NonZeroU16,
     time::{Duration, Instant},
 };
 
-use async_std::{future, net::UdpSocket};
-
 use crate::{
-    host::{Connected, Connecting, Disconnected, Host},
+    host::{AckingConnection, Connected, Disconnected, Host},
     net::NetManager,
     packet::{ConnectionId, Packet, Payload, Received},
     AntarcResult, MTU_LENGTH,
@@ -17,18 +15,18 @@ use crate::{
 pub struct Server {
     connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
-    connecting: Vec<Host<Connecting>>,
+    acking_connection: Vec<Host<AckingConnection>>,
     connected: Vec<Host<Connected>>,
 }
 
 impl NetManager<Server> {
-    pub async fn new_server(address: &SocketAddr) -> Self {
-        let socket = UdpSocket::bind(address).await.unwrap();
+    pub fn new_server(address: &SocketAddr) -> Self {
+        let socket = UdpSocket::bind(address).unwrap();
 
         let server = Server {
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
             disconnected: Vec::with_capacity(8),
-            connecting: Vec::with_capacity(8),
+            acking_connection: Vec::with_capacity(8),
             connected: Vec::with_capacity(8),
         };
 
@@ -42,17 +40,14 @@ impl NetManager<Server> {
     }
 
     /// TODO(alex) 2021-03-08: We need an API like `get('/{:id}')` route, but for `Host`s.
-    pub async fn listen(&mut self) -> AntarcResult<()> {
+    pub fn listen(&mut self) -> AntarcResult<()> {
         let server = &mut self.client_or_server;
 
         loop {
-            let (size_recv, remote_addr) = future::timeout(
-                Duration::from_millis(1000),
-                self.socket.recv_from(&mut self.buffer),
-            )
-            .await
-            .map_err(|timed_out| timed_out.to_string())?
-            .map_err(|fail| fail.to_string())?;
+            let (size_recv, remote_addr) = self
+                .socket
+                .recv_from(&mut self.buffer)
+                .map_err(|fail| fail.to_string())?;
 
             if let Some(disconnected) = server
                 .disconnected
@@ -78,7 +73,6 @@ impl NetManager<Server> {
 
                 let mut connecting = match disconnected
                     .ack_connection(&self.socket, server.connection_id_tracker)
-                    .await
                 {
                     Ok(_) => {
                         let connecting = disconnected.connecting();

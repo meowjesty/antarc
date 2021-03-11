@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 crc32fast = { version = "*", features = ["std", "nightly"] }
-async-std = "*"
+# async-std = "*"
 
 [[example]]
 name="hello_antarc"
