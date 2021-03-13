@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    host::{AwaitingConnectionAck, Connected, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
+    host::{RequestingConnection, Connected, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
     net::NetManager,
     packet::{ConnectionId, DataTransferInfo, Header, Packet, Payload, Sequence, DATA_TRANSFER},
     AntarcResult, MTU_LENGTH,
@@ -19,7 +19,7 @@ use crate::{
 pub(crate) enum Connection {
     Disconnected(Host<Disconnected>),
     /// TODO(alex) 2021-03-04: Prevent flooding of connecting state attack.
-    Connecting(Host<AwaitingConnectionAck>),
+    Connecting(Host<RequestingConnection>),
     Connected(Host<Connected>),
 }
 

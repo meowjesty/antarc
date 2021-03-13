@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    host::{AckingConnection, Connected, Disconnected, Host},
+    host::{AcceptingConnection, Connected, Disconnected, Host},
     net::NetManager,
     packet::{ConnectionId, Packet, Payload, Received},
     AntarcResult, MTU_LENGTH,
@@ -15,7 +15,7 @@ use crate::{
 pub struct Server {
     connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
-    acking_connection: Vec<Host<AckingConnection>>,
+    acking_connection: Vec<Host<AcceptingConnection>>,
     connected: Vec<Host<Connected>>,
 }
 

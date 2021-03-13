@@ -56,25 +56,54 @@ macro_rules! unmove_on_error {
     }};
 }
 
-#[derive(Debug)]
-pub(crate) struct Disconnected;
-
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
-#[derive(Debug, Default)]
-pub(crate) struct AwaitingConnectionAck {
-    retries: u32,
-}
-
+///
 /// TODO(alex) 2021-03-08: Is it possible to delegate more responsibility to the `Host`? We need to
 /// use these connection state values better, but how exactly? `AckingConnect` in particular is new,
 /// and not used anywhere yet.
 #[derive(Debug)]
-pub(crate) struct AckingConnection(ConnectionId);
+pub(crate) struct Disconnected;
+
+#[derive(Debug, Default)]
+pub(crate) struct RequestingConnection {
+    retries: u32,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct FailedToSendConnectionRequest {
+    retries: u32,
+    error: String,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct FailedToReceiveConnectionAckInTime {
+    retries: u32,
+    error: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct AcceptingConnection {
+    connection_id: ConnectionId,
+}
+
+#[derive(Debug)]
+pub(crate) struct FailedToSendConnectionAccepted {
+    connection_id: ConnectionId,
+    error: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct AwaitingConnectionAckFromHost(ConnectionId);
 
 #[derive(Debug)]
 pub(crate) struct Connected(ConnectionId);
+
+#[derive(Debug, Default)]
+pub(crate) struct FailedToConnect {
+    error: String,
+}
 
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
@@ -95,7 +124,6 @@ pub(crate) struct Host<ConnectionState> {
     pub(crate) past_acks_tracker: u16,
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
-    /// ADD(alex) 2021-02-13: Can this be a `Duration`? Probably yes.
     pub(crate) rtt: Duration,
     pub(crate) received_list: Vec<Packet<Received>>,
     pub(crate) retrieved: Vec<Packet<Retrieved>>,
@@ -201,7 +229,7 @@ impl Host<Disconnected> {
     pub(crate) fn request_connection(
         mut self,
         socket: &UdpSocket,
-    ) -> Result<Host<AwaitingConnectionAck>, HostError<Disconnected>> {
+    ) -> Result<Host<RequestingConnection>, Host<FailedToSendConnectionRequest>> {
         let header_info = HeaderInfo {
             sequence: unsafe { Sequence::new_unchecked(1) },
             ack: 0,
@@ -214,40 +242,98 @@ impl Host<Disconnected> {
         let header = Header::ConnectionRequest(connection_request_info);
         let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
 
-        let raw_packet = unmove_on_error!(packet.encode(), HostError, self);
+        let raw_packet = packet.encode().map_err(|fail| {
+            let failed_to_send_connection_request = FailedToSendConnectionRequest {
+                retries: 0,
+                error: fail,
+            };
+            let host = self.into_new_state(failed_to_send_connection_request);
+            host
+        })?;
 
-        let num_sent = unmove_on_error!(
-            socket.send_to(&raw_packet.buffer, self.address),
-            HostError,
-            self
-        );
+        let num_sent = socket
+            .send_to(&raw_packet.buffer, self.address)
+            .map_err(|fail| {
+                let failed_to_send_connection_request = FailedToSendConnectionRequest {
+                    retries: 0,
+                    error: fail.to_string(),
+                };
+                let host = self.into_new_state(failed_to_send_connection_request);
+                host
+            })?;
         assert!(num_sent > 0);
         self.sequence_tracker = unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
 
         let sent = packet.sent(self.timer.elapsed());
         self.sent_list.push(sent);
 
-        let awaiting_connection_ack = self.into_new_state(AwaitingConnectionAck::default());
-        Ok(awaiting_connection_ack)
+        let requesting_connection = self.into_new_state(RequestingConnection::default());
+        Ok(requesting_connection)
     }
 
     pub(crate) fn on_received_connection_request(
         mut self,
         buffer: &[u8],
         connetion_id: ConnectionId,
-    ) -> Result<Host<AckingConnection>, HostError<Disconnected>> {
+    ) -> Result<Host<AcceptingConnection>, HostError<Disconnected>> {
         let packet = unmove_on_error!(
             Packet::decode(buffer, self.timer.elapsed()),
             HostError,
             self
         );
 
+        unimplemented!()
+        /*
         if let Header::ConnectionRequest(connection_request_info) = &packet.header {
             self.ack_tracker = connection_request_info.header_info.sequence.get();
 
             self.internals.push(packet.internald(self.timer.elapsed()));
-            let acking_connection = self.into_new_state(AckingConnection(connetion_id));
+            let acking_connection = self.into_new_state(AcceptingConnection(connetion_id));
             // TODO(alex) 2021-03-09: Ack the connection (send connection accepted).
+            //
+            // ADD(alex) 2021-03-11: This is the hard problem, we need to `poll` the socket to check
+            // if it's ready to send, before trying to send stuff, this will require a polling
+            // `loop`, otherwise we get out of this function and have to call it again.
+            //
+            // If we don't call `socket.send` in here, then it has to be called later by the outer
+            // owner of this `Host`, which is kinda the same as the problem above. Having `socket`
+            // stuff inside the `Host` implementation complicates things, but how do I avoid it?
+            //
+            // I thought about having an intermmediate state, like `RequestingConnection` (for the
+            // `Client`), but I don't see the benefits, it ends up eating the same problem space as
+            // the `AwaitingConnectionAck` state.
+            //
+            // Let's think about it (Client):
+            // 1. client polls socket for sending connection request to `Disconnected`:
+            //  1.a if the socket is ready, then send packet, host is now `AwaitingConnectionAck`;
+            //  1.b otherwise, poll again;
+            // 2. client checks for timeout (too long since request was sent):
+            //  2.a if not long enough, then re-send the packet, and increment retries;
+            //  2.b otherwise, go back to `Disconnected`;
+            // 3. client receives an ack, and changes state to `Connected`;
+            //
+            // This shows that state changes may happen on either `send` or `receive`, it depends on
+            // the state. Disconnectd -> AwaitingConnectionAck happens on **send**, meanwhile
+            // AwaitingConnectionAck -> Connected on **receive**.
+            //
+            // For the `Server` is a bit of the opposite, where the first state transition occurs on
+            // **receive**.
+            //
+            // The main theme I'm noticing here is that I need some form of _reactive_ state
+            // transitions, when you receive this, then send this back, when you send that, then
+            // you're in a different state now.
+            //
+            // ADD(alex) 2021-03-11: To make things work, let's start by not overthinking things, do
+            // the `loop` wherever it's needed, ignore the future need for polling, if neccessary.
+            //
+            // ADD(alex) 2021-03-12: Let the `Client` handle failures, and have a `retry` or
+            // whatever method, maybe just call the same method again.
+            //
+            // ADD(alex) 2021-03-13: Instead of returning to a previous state on error, we could
+            // actually move into some error state, like
+            // `Disconnected -> AwaitingConnectionAck | // FailedToSendConnectionRequest`. Thinking
+            // about possible "branching" states might even help when dealing with these "where do
+            // we poll" questions.
             Ok(acking_connection)
         } else {
             Err(HostError {
@@ -258,19 +344,64 @@ impl Host<Disconnected> {
                 unmoved: self,
             })
         }
+        */
     }
 }
 
-impl Host<AwaitingConnectionAck> {
+impl Host<FailedToSendConnectionRequest> {
+    /// TODO(alex) 2021-03-13: This is basically the same as the initial
+    /// `Disconnected->RequestingConnection`, except it clears the host information.
+    pub(crate) fn retry(
+        mut self,
+        socket: &UdpSocket,
+    ) -> Result<Host<RequestingConnection>, Host<FailedToSendConnectionRequest>> {
+        let disconnected = Host::new(self.address);
+        disconnected.request_connection(socket)
+    }
+}
+
+impl Host<FailedToReceiveConnectionAckInTime> {
+    pub(crate) fn retry(
+        mut self,
+        socket: &UdpSocket,
+    ) -> Result<Host<RequestingConnection>, Host<FailedToSendConnectionRequest>> {
+        unimplemented!()
+    }
+}
+
+impl Host<RequestingConnection> {
+    /// TODO(alex) 2021-03-13: I think this function could be just some code in the `Client`, to
+    /// avoid further complications here.
+    pub(crate) fn poll(mut self) -> Result<Self, Host<FailedToReceiveConnectionAckInTime>> {
+        assert!(self.sent_list.last().is_some());
+        let last_sent = self.sent_list.last().unwrap();
+        if last_sent.state.time_sent < self.timer.elapsed() - Duration::from_millis(1000) {
+            let failed_to_receive_connection_ack_in_time = FailedToReceiveConnectionAckInTime {
+                retries: self.connection.retries,
+                error: format!("Failed to receive connection ack in time {:#?}.", self),
+            };
+
+            Err(self.into_new_state(failed_to_receive_connection_ack_in_time))
+        } else {
+            Ok(self)
+        }
+    }
+
+    fn retry(mut self, socket: &UdpSocket) -> Result<Host<Connected>, Host<FailedToConnect>> {
+        todo!()
+    }
+
     pub(crate) fn on_received_connection_ack(
         mut self,
         buffer: &[u8],
-    ) -> Result<Host<Connected>, HostError<AwaitingConnectionAck>> {
-        let packet = unmove_on_error!(
-            Packet::decode(buffer, self.timer.elapsed()),
-            HostError,
-            self
-        );
+    ) -> Result<Host<Connected>, Host<FailedToConnect>> {
+        let packet = Packet::decode(buffer, self.timer.elapsed()).map_err(|fail| {
+            let failed_to_connect = FailedToConnect {
+                error: format!("Failed to decode connection packet {:#?}.", self),
+            };
+
+            self.into_new_state(failed_to_connect)
+        })?;
 
         if let Header::ConnectionAccepted(connection_accepted_info) = &packet.header {
             if self.on_receive_ack(&packet) {
@@ -280,14 +411,11 @@ impl Host<AwaitingConnectionAck> {
                     self.into_new_state(Connected(connection_accepted_info.connection_id));
                 Ok(connected)
             } else {
-                let error = Err(HostError {
-                    err: format!(
-                    "Received a packet {:#?} that does not ack the connection attempt for {:#?}.",
-                    packet, self
-                ),
-                    unmoved: self,
-                });
-                error
+                let failed_to_connect = FailedToConnect {
+                    error: format!("Failed to connect to {:#?}.", self),
+                };
+
+                Err(self.into_new_state(failed_to_connect))
             }
         } else {
             panic!(
@@ -299,8 +427,18 @@ impl Host<AwaitingConnectionAck> {
             );
         }
     }
+}
 
-    pub(crate) fn retry_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+impl Host<FailedToConnect> {
+    pub(crate) fn retry(
+        mut self,
+        socket: &UdpSocket,
+    ) -> Result<Host<RequestingConnection>, Host<Disconnected>> {
+        let requesting_connection = RequestingConnection { retries: 1 };
+        let requesting_connection = self.into_new_state(requesting_connection);
+        requesting_connection.retry(socket)
+
+        /*
         self.sequence_tracker = unsafe { Sequence::new_unchecked(1) };
         if self.connection.retries > 10 {
             return Err(format!(
@@ -334,12 +472,16 @@ impl Host<AwaitingConnectionAck> {
         self.connection.retries += 1;
 
         Ok(num_sent)
+        */
     }
 }
 
-impl Host<AckingConnection> {
+impl Host<AcceptingConnection> {
     /// TODO(alex) 2021-03-09: `Server`-side only function.
-    pub(crate) fn ack_connection(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub(crate) fn ack_connection(
+        mut self,
+        socket: &UdpSocket,
+    ) -> Result<Host<AwaitingConnectionAckFromHost>, Host<FailedToSendConnectionAccepted>> {
         let header_info = HeaderInfo {
             sequence: self.sequence_tracker,
             ack: self.ack_tracker,
@@ -373,7 +515,7 @@ impl Host<AckingConnection> {
     pub(crate) fn on_received_connection_acked_from_client(
         mut self,
         buffer: &[u8],
-    ) -> Result<Host<Connected>, HostError<AckingConnection>> {
+    ) -> Result<Host<Connected>, HostError<AcceptingConnection>> {
         let packet = unmove_on_error!(
             Packet::decode(buffer, self.timer.elapsed()),
             HostError,

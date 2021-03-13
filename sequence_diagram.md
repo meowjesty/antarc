@@ -77,3 +77,14 @@ flowchart TB
     new_start --> buffer[(Buffer with 'Header' + 'Data' + 'Footer' - no 'protocol_id')]
 
 ```
+
+```mermaid
+stateDiagram-v2
+
+    [*] --> Disconnected
+    Disconnected --> RequestingConnection : request_connection
+    RequestingConnection --> AwaitingConnectionAck : send_connection_request
+    RequestingConnection --> Disconnected : too_many_retries
+    AwaitingConnectionAck --> Connected : received_connection_accepted
+    AwaitingConnectionAck --> Disconnected : connection_timed_out
+```
