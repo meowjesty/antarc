@@ -6,7 +6,12 @@ use std::{
 };
 
 use crate::{
-    host::{RequestingConnection, Connected, Disconnected, Host, CONNECTION_TIMEOUT_THRESHOLD},
+    host::{
+        connected::Connected,
+        disconnected::{self, Disconnected},
+        requesting_connection::RequestingConnection,
+        Host, CONNECTION_TIMEOUT_THRESHOLD,
+    },
     net::NetManager,
     packet::{ConnectionId, DataTransferInfo, Header, Packet, Payload, Sequence, DATA_TRANSFER},
     AntarcResult, MTU_LENGTH,
@@ -69,6 +74,8 @@ impl NetManager<Client> {
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> AntarcResult<()> {
+        todo!()
+        /*
         let client = &mut self.client_or_server;
 
         // TODO(alex) 2021-02-23: Do I want to always `replace` or if the user calls `connect`
@@ -91,7 +98,7 @@ impl NetManager<Client> {
                     std::io::ErrorKind::TimedOut => {
                         if let Some(last_sent) = awaiting_connection_ack.sent_list.last() {
                             if last_sent.state.time_sent > CONNECTION_TIMEOUT_THRESHOLD {
-                                awaiting_connection_ack.retry(&self.socket)?;
+                                // awaiting_connection_ack.retry(&self.socket)?;
                             }
                         }
                         continue;
@@ -100,8 +107,8 @@ impl NetManager<Client> {
                         return Err(fail.to_string());
                     }
                 },
-            }
-            .map_err(|fail| fail.to_string())?;
+            };
+            // .map_err(|fail| fail.to_string())?;
         };
 
         if remote_addr != awaiting_connection_ack.address {
@@ -150,6 +157,7 @@ impl NetManager<Client> {
                 self
             ))
         }
+        */
     }
 
     pub fn connected(&mut self) {
@@ -161,11 +169,12 @@ impl NetManager<Client> {
     pub fn denied(&mut self) {
         let client = &mut self.client_or_server;
 
-        if let Some(Connection::Connecting(connecting)) = client.connection.take() {
-            let disconnected = connecting.connection_denied();
-            client.connection = Some(Connection::Disconnected(disconnected));
-            todo!()
-        }
+        todo!()
+        // if let Some(Connection::Connecting(connecting)) = client.connection.take() {
+        //     let disconnected = connecting.connection_denied();
+        //     client.connection = Some(Connection::Disconnected(disconnected));
+        //     todo!()
+        // }
     }
 
     /// TODO(alex) 2021-02-23: Return some indication that the manager received new packets and the
@@ -175,6 +184,8 @@ impl NetManager<Client> {
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn poll(&mut self) -> AntarcResult<bool> {
+        todo!()
+        /*
         let client = &mut self.client_or_server;
         let mut may_retrieve = false;
 
@@ -255,6 +266,7 @@ impl NetManager<Client> {
         }
 
         Ok(may_retrieve)
+        */
     }
 
     /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,

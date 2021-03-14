@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    host::{AcceptingConnection, Connected, Disconnected, Host},
+    host::{connected::Connected, disconnected::Disconnected, AcceptingConnection, Host},
     net::NetManager,
     packet::{ConnectionId, Packet, Payload, Received},
     AntarcResult, MTU_LENGTH,
@@ -41,6 +41,8 @@ impl NetManager<Server> {
 
     /// TODO(alex) 2021-03-08: We need an API like `get('/{:id}')` route, but for `Host`s.
     pub fn listen(&mut self) -> AntarcResult<()> {
+        todo!()
+        /*
         let server = &mut self.client_or_server;
 
         loop {
@@ -97,6 +99,7 @@ impl NetManager<Server> {
                 continue;
             }
         }
+        */
     }
 
     pub fn tick(&self) {
