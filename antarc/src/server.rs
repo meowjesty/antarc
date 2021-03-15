@@ -7,7 +7,7 @@ use std::{
 use crate::{
     host::{connected::Connected, disconnected::Disconnected, AcceptingConnection, Host},
     net::NetManager,
-    packet::{ConnectionId, Packet, Payload, Received},
+    packet::ConnectionId,
     AntarcResult, MTU_LENGTH,
 };
 

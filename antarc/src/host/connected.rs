@@ -4,8 +4,9 @@ use super::Host;
 use crate::{
     host::ConnectionId,
     packet::{
-        ConnectionRequestInfo, DataTransferInfo, Header, HeaderInfo, Packet, Payload, Sequence,
-        ToSend, CONNECTION_REQUEST, DATA_TRANSFER,
+        header::{DataTransferInfo, Header, HeaderInfo},
+        to_send::ToSend,
+        Packet, Payload, Sequence, CONNECTION_REQUEST, DATA_TRANSFER,
     },
     AntarcResult,
 };

@@ -13,7 +13,7 @@ use crate::{
         Host, CONNECTION_TIMEOUT_THRESHOLD,
     },
     net::NetManager,
-    packet::{ConnectionId, DataTransferInfo, Header, Packet, Payload, Sequence, DATA_TRANSFER},
+    packet::{ConnectionId, Packet, Payload, Sequence, DATA_TRANSFER},
     AntarcResult, MTU_LENGTH,
 };
 

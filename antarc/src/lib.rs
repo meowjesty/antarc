@@ -11,12 +11,12 @@ use std::{
     time::Duration,
 };
 
-use packet::Header;
+use packet::header::Header;
 
 pub mod client;
 pub mod host;
 pub mod net;
-mod packet;
+pub mod packet;
 pub mod server;
 
 #[macro_export]

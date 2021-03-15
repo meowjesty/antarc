@@ -1,19 +1,15 @@
 use std::{
     collections::VecDeque,
-    marker::PhantomData,
-    net::{SocketAddr, UdpSocket},
-    num::{NonZeroU16, NonZeroU32},
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
 use crate::{
     exponential_moving_average,
     packet::{
-        Acked, ConnectionAcceptedInfo, ConnectionId, ConnectionRequestInfo, DataTransferInfo,
-        Footer, Header, HeaderInfo, Internal, Packet, Payload, Received, Retrieved, Sent, Sequence,
-        ToSend, CONNECTION_ACCEPTED, CONNECTION_REQUEST, DATA_TRANSFER,
+        acked::Acked, received::Received, sent::Sent, ConnectionId, Internal, Packet, Payload,
+        Retrieved, Sequence,
     },
-    AntarcResult, PROTOCOL_ID,
 };
 
 pub(crate) mod connected;

@@ -4,8 +4,9 @@ use super::{connected::Connected, Host};
 use crate::{
     host::ConnectionId,
     packet::{
-        ConnectionRequestInfo, Header, HeaderInfo, Packet, Payload, Sequence, ToSend,
-        CONNECTION_REQUEST,
+        header::{ConnectionRequestInfo, Header, HeaderInfo},
+        to_send::ToSend,
+        Packet, Payload, Sequence, CONNECTION_REQUEST,
     },
 };
 
