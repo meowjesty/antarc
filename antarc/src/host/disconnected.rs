@@ -1,34 +1,14 @@
 use std::{
     collections::VecDeque,
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
-    num::NonZeroU32,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::{Duration, Instant},
 };
 
-use super::requesting_connection::RequestingConnection;
-use crate::{
-    host::{ConnectionId, Host},
-    packet::{
-        header::{ConnectionRequestInfo, Header, HeaderInfo},
-        to_send::ToSend,
-        Packet, Payload, Sequence, CONNECTION_REQUEST,
-    },
-};
-
-#[derive(Debug)]
-enum DisconnectedStates {
-    RequestingConnection(Host<RequestingConnection>),
-    FailedToRequestConnection(Host<FailedToRequestConnection>),
-}
+use super::sending_connection_request::SendingConnectionRequest;
+use crate::{host::Host, packet::Sequence};
 
 #[derive(Debug)]
 pub(crate) struct Disconnected;
-
-#[derive(Debug, Default)]
-pub(crate) struct FailedToRequestConnection {
-    attempts: u32,
-    error: String,
-}
 
 impl Default for Host<Disconnected> {
     fn default() -> Self {
@@ -80,45 +60,8 @@ impl Host<Disconnected> {
     /// own grave, when I think about what the higher level code will have to do to handle these
     /// moves. It begs some serious consideration on whether this FSM pattern is usable, or if I
     /// should drop it in favor of enums.
-    pub(crate) fn request_connection(mut self, socket: &UdpSocket) -> DisconnectedStates {
-        let header = Header::connection_request();
-        let packet = Packet::<ToSend>::new(header, Payload(vec![0; 10]), self.timer.elapsed());
-
-        let raw_packet = packet.encode().unwrap();
-
-        match socket.send_to(&raw_packet.buffer, self.address) {
-            Ok(num_sent) => {
-                assert!(num_sent > 0);
-                self.sequence_tracker =
-                    unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) };
-
-                let sent = packet.sent(self.timer.elapsed());
-                self.sent_list.push(sent);
-
-                let requesting_connection = self.into_new_state(RequestingConnection::default());
-                DisconnectedStates::RequestingConnection(requesting_connection)
-            }
-            Err(fail) => {
-                let failed_to_send_connection_request = FailedToRequestConnection {
-                    attempts: 1,
-                    error: fail.to_string(),
-                };
-                let host = self.into_new_state(failed_to_send_connection_request);
-                DisconnectedStates::FailedToRequestConnection(host)
-            }
-        }
-    }
-}
-
-impl Host<FailedToRequestConnection> {
-    /// TODO(alex) 2021-03-13: This is basically the same as the initial
-    /// `Disconnected->RequestingConnection`, except it clears the host information.
-    pub(crate) fn retry(
-        mut self,
-        socket: &UdpSocket,
-    ) -> Result<Host<RequestingConnection>, Host<FailedToRequestConnection>> {
-        let disconnected = Host::new(self.address);
-        disconnected.request_connection(socket)
+    pub(crate) fn request_connection(self) -> Host<SendingConnectionRequest> {
+        self.into_new_state(SendingConnectionRequest { attempts: 0 })
     }
 }
 

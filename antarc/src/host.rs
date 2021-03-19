@@ -12,9 +12,11 @@ use crate::{
     },
 };
 
+pub(crate) mod awaiting_connection_ack;
 pub(crate) mod connected;
 pub(crate) mod disconnected;
 pub(crate) mod requesting_connection;
+pub(crate) mod sending_connection_request;
 
 /// NOTE(alex) 2021-03-11: Macro to map from some `Error`, similar to the `Result::map_err` closure,
 /// but avoids capturing a moved value. Without this pattern, trying to call `map_err` will move
@@ -63,12 +65,6 @@ macro_rules! unmove_on_error {
 /// TODO(alex) 2021-03-08: Is it possible to delegate more responsibility to the `Host`? We need to
 /// use these connection state values better, but how exactly? `AckingConnect` in particular is new,
 /// and not used anywhere yet.
-
-#[derive(Debug, Default)]
-pub(crate) struct FailedToReceiveConnectionAckInTime {
-    retries: u32,
-    error: String,
-}
 
 #[derive(Debug)]
 pub(crate) struct AcceptingConnection {
