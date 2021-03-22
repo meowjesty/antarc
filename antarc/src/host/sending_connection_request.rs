@@ -15,8 +15,6 @@ pub(crate) struct FailedSendingConnectionRequest {
 }
 
 impl Host<SendingConnectionRequest> {
-    /// TODO(alex) 2021-03-13: This is basically the same as the initial
-    /// `Disconnected->RequestingConnection`, except it clears the host information.
     pub(crate) fn send(
         mut self,
         socket: &UdpSocket,

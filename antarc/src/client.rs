@@ -42,7 +42,9 @@ pub struct Client {
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).unwrap();
-        socket.set_read_timeout(Some(Duration::from_millis(1000)));
+        socket
+            .set_read_timeout(Some(Duration::from_millis(1000)))
+            .unwrap();
 
         let client = Client {
             other_clients: Vec::with_capacity(8),
@@ -74,13 +76,61 @@ impl NetManager<Client> {
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> AntarcResult<()> {
-        todo!()
-        /*
         let client = &mut self.client_or_server;
+        let disconnected = Host::new(*server_addr);
+
+        let mut requesting_connection = disconnected.request_connection().send(&self.socket);
+
+        // TODO(alex) 2021-03-21: We just need 1 loop, just do continue, return.
+        'receiving: loop {
+            let (num_bytes, recv_from) = self
+                .socket
+                .recv_from(&mut self.buffer)
+                .map_err(|fail| fail.to_string())?;
+
+            match requesting_connection {
+                Ok(awaiting_connection_ack) => {
+                    let mut awaiting = awaiting_connection_ack.poll();
+
+                    match awaiting {
+                        Ok(still_awaiting) => {
+                            awaiting = still_awaiting.poll();
+                            continue 'receiving;
+                        }
+                        Err(failed_awaiting_connection_ack) => {
+                            let retrying = failed_awaiting_connection_ack.retry();
+                            match retrying {
+                                Ok(sending_connection_request) => {
+                                    requesting_connection =
+                                        sending_connection_request.send(&self.socket);
+                                    continue 'receiving;
+                                }
+                                Err(disconnected) => {
+                                    return Err(format!("Failed to connect."));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+                Err(failed_sending_connection_request) => {
+                    let retrying = failed_sending_connection_request.retry();
+                    match retrying {
+                        Ok(sending_connection_request) => {
+                            requesting_connection = sending_connection_request.send(&self.socket);
+                            continue 'receiving;
+                        }
+                        Err(disconnected) => {
+                            return Err(format!("Failed to connect."));
+                        }
+                    }
+                }
+            }
+        }
+        /*
 
         // TODO(alex) 2021-02-23: Do I want to always `replace` or if the user calls `connect`
         // twice should it check if there is a `Host<Disconnected>` already and do something else?
-        let mut disconnected = Host::new(*server_addr);
         let mut awaiting_connection_ack = match disconnected.request_connection(&self.socket) {
             Ok(connecting) => {
                 println!("`request_connection` Ok");
