@@ -1,4 +1,4 @@
-// #![feature(const_panic)]
+#![feature(const_panic)]
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]

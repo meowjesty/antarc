@@ -14,18 +14,8 @@ use crate::{
     PACKED_LEN, PROTOCOL_ID_BYTES,
 };
 
-pub(crate) mod acked;
 pub(crate) mod header;
-pub(crate) mod received;
-pub(crate) mod sent;
-pub(crate) mod to_send;
 
-/// TODO(alex): 2021-02-05: How to represent these types of packets?
-/// `ConnectionRequest<Packet<ToSend>>`, `ConnectionRequest<Packet<Received>>`? There'll be a bunch
-/// of these structs for each type, as each outer-state may contain any inner-state:
-/// `ConnectionRequest<Packet<*>>`. Could we get away with `ConnectionRequest<Packet<State>>`
-/// in a generic way?
-///
 /// Packets might be either:
 /// - FRAGMENTED or NON_FRAGMENTED;
 /// - DATA_TRANSFER or CONNECTION_REQUEST or CHALLENGE or CHALLENGE_RESPONSE;
@@ -53,10 +43,6 @@ pub(crate) const HEARTBEAT: StatusCode = 1 << 7;
 /// TODO(alex) 2021-02-26: The idea of "framing" a packet can be understood as putting it in an
 /// envelope, making it clear where the packet ends, starts, where is the message. This will help
 /// with packet fragmentation.
-pub(crate) struct RawPacket {
-    crc32: NonZeroU32,
-    pub(crate) buffer: Vec<u8>,
-}
 
 /// NOTE(alex): Valid `Packet` state transitions:
 /// - Received -> Retrieved;
@@ -64,6 +50,57 @@ pub(crate) struct RawPacket {
 pub type ConnectionId = NonZeroU16;
 pub type Sequence = NonZeroU32;
 pub type Ack = u32;
+
+// REGION(alex) 2021-03-23: Types of packet (event types).
+#[derive(Debug)]
+pub(crate) struct Received {
+    pub(crate) time_received: Duration,
+}
+
+#[derive(Debug)]
+pub(crate) struct Sent {
+    pub(crate) time_sent: Duration,
+}
+
+#[derive(Debug)]
+pub(crate) struct Acked {
+    pub(crate) time_acked: Duration,
+}
+
+/// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
+/// loaded them, so they're moved into this state.
+#[derive(Debug)]
+pub(crate) struct Retrieved {
+    pub(crate) time_retrieved: Duration,
+}
+
+/// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
+/// they cannot be retrieved by the user. Deals with connection requests (connection handling),
+/// hearbeat, fragmentation.
+/// TODO(alex) 2021-02-15: This name sucks and doesn't really convey what it does.
+#[derive(Debug)]
+pub(crate) struct Internal {
+    pub(crate) time_internal: Duration,
+}
+
+// REGION(alex) 2021-03-23: Types of packet (metadata).
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct ConnectionRequest;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct ConnectionDenied;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct ConnectionAccepted {
+    pub(crate) connection_id: ConnectionId,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct DataTransfer {
+    /// Identifies the connection, this enables network switching from either side without having
+    /// to slowly re-estabilish the connection.
+    pub(crate) connection_id: ConnectionId,
+}
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Footer {
@@ -85,31 +122,29 @@ pub(crate) struct Footer {
 /// NOTE(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.
 #[derive(Debug)]
-pub(crate) struct Packet<State> {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) state: State,
+pub(crate) struct Packet {
     /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
     /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
     /// packet (when encoded), but doesn't exist as an actual type here?
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
     pub(crate) footer: Option<Footer>,
 }
 
 /// TODO(alex) 2021-01-31: This is an impl block for packets with **any** state.
 /// ADD(alex) 2021-02-05: Functions defined here conflict with functions in every other state, so
 /// a `fn new` here won't allow any other state to have an `fn new`, you must use the most generic.
-impl<State> Packet<State> {
-    fn into_new_state<NewState>(self, state: NewState) -> Packet<NewState> {
-        Packet {
-            header: self.header,
-            payload: self.payload,
-            state,
-            footer: self.footer,
-        }
+impl Packet {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, String> {
+        todo!()
+    }
+
+    pub(crate) fn decode(buffer: &[u8]) -> Result<Self, String> {
+        todo!()
     }
 
     /// TODO(alex) 2021-02-05: Hash the buffer to have a fixed size.
-    pub fn pack(mut buffer: Vec<u8>) -> u128 {
+    pub fn pack(buffer: &[u8]) -> u128 {
         unimplemented!()
     }
 
@@ -119,59 +154,5 @@ impl<State> Packet<State> {
     }
 }
 
-/// TODO(alex) 2021-01-30: This ends up being almost an exact copy of the `RawHeader`, the fields it
-/// has that the raw version doesn't are:
-/// - `crc32` which the raw version doesn't hold, it only gets inserted into the buffer;
-/// - `protocol_id` same as above;
-/// - `kind` which here is represented by an actual `Packet` type struct, such as `DataTransfer`,
-/// or `Fragment`.
-///
-/// Should I have different packets like this? It'll make coding hard as the protocol will have
-/// structs like `Acked(DataTransfer)`, `Acked(ConnectionRequest)`, `Acked(Fragment)`.
-///
-/// Thinking about redundant data, the packet state could be representable by composing the inner
-/// data of each state transition, with the new fields required by the latter state, such as
-/// the `ToSend` struct having an `enqueued_time` -> `Sent` has all the `ToSend` fields, plus
-/// `time_sent` -> finally `Acked` has all of the previous, and adds `time_acked`. These compose
-/// nicely, but we still have the issue of field duplication, unless each state has a field
-/// containing the previous state, which seems counterintuitive, as the biggest benefit I'm seeking
-/// is to have the most help possible from the compiler to prevent incorrect states from being
-/// representable.
-
-/// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
-/// loaded them, so they're moved into this state.
-#[derive(Debug)]
-pub(crate) struct Retrieved {
-    pub(crate) time_received: Duration,
-    pub(crate) time_retrieved: Duration,
-}
-
-/// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
-/// they cannot be retrieved by the use. Deals with connection requests (connection handling),
-/// hearbeat, fragmentation.
-/// TODO(alex) 2021-02-15: This name sucks and doesn't really convey what it does.
-#[derive(Debug)]
-pub(crate) struct Internal {
-    pub(crate) time_received: Duration,
-    pub(crate) time_internal: Duration,
-}
-
 #[derive(Debug)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
-
-/// TODO(alex) 2021-01-30: This has to be done for each different packet state. The same pattern
-/// will also appear on every type-driven state to represent changes.
-/// ADD(alex) 2021-01-30: Taking a look at rust's `NonZero` implementation, I think a macro will be
-/// handy to do this for every kind of possible state change.
-/// `Sent` would have a from: `From<Acked>`, `From<Received>`, `From<Retrieved>`, and so on, but
-/// this doesn't actually make sense, as I don't want a `Sent` packet to turn into `Received` state,
-/// it shouldn't compile. The macro must take the type, plus the list of **possible** state changes,
-/// and not do it for every state type. Again, transitions that make no sense, should not be
-/// representable in code.
-fn blah() {}
-// impl From<Acked> for Sent {
-//     fn from(acked: Acked) -> Self {
-//         let Acked(acked) = acked;
-//         Self(acked)
-//     }
-// }

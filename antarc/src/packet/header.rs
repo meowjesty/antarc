@@ -35,36 +35,9 @@ use crate::{AntarcResult, ProtocolId};
 /// 3. rest of the fields that are common for every header type;
 /// TODO(alex) 2021-03-07: `status_code` does not represent `CONNECTION_ACCEPTED`,
 /// `CONNECTION_DENIED`, it should represent `Success`, `Failed`, `Refused`, ...
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionRequestInfo {
-    pub(crate) status_code: StatusCode,
-    pub(crate) header_info: HeaderInfo,
-}
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionDeniedInfo {
-    pub(crate) status_code: StatusCode,
-    pub(crate) header_info: HeaderInfo,
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionAcceptedInfo {
-    pub(crate) status_code: StatusCode,
-    pub(crate) connection_id: ConnectionId,
-    pub(crate) header_info: HeaderInfo,
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct DataTransferInfo {
-    pub(crate) status_code: StatusCode,
-    /// Identifies the connection, this enables network switching from either side without having
-    /// to slowly re-estabilish the connection.
-    pub(crate) connection_id: ConnectionId,
-    pub(crate) header_info: HeaderInfo,
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct HeaderInfo {
+pub(crate) struct Header {
     /// TODO(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
     /// response, maybe a data transfer, and each is handled differently, for example, the protocol
     /// will read the `body` of a connection request, and of a fragment, but it just passes it in
@@ -80,14 +53,7 @@ pub(crate) struct HeaderInfo {
     /// Represents the ack bitfields to send previous acked state in a compact manner.
     /// TODO(alex): Use this.
     pub(crate) past_acks: u16,
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) enum Header {
-    ConnectionRequest(ConnectionRequestInfo),
-    ConnectionDenied(ConnectionDeniedInfo),
-    ConnectionAccepted(ConnectionAcceptedInfo),
-    DataTransfer(DataTransferInfo),
+    pub(crate) status_code: StatusCode,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -105,38 +71,6 @@ impl Header {
     /// transmitted via the network, `Self + ProtocolId`, even though the crc32 substitutes it.
     pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Self>() + mem::size_of::<ProtocolId>();
 
-    pub(crate) const fn get_ack(&self) -> Ack {
-        match self {
-            Header::ConnectionRequest(request) => request.header_info.ack,
-            Header::ConnectionDenied(denied) => denied.header_info.ack,
-            Header::ConnectionAccepted(accepted) => accepted.header_info.ack,
-            Header::DataTransfer(transfer) => transfer.header_info.ack,
-        }
-    }
-
-    pub(crate) const fn get_sequence(&self) -> Sequence {
-        match self {
-            Header::ConnectionRequest(request) => request.header_info.sequence,
-            Header::ConnectionDenied(denied) => denied.header_info.sequence,
-            Header::ConnectionAccepted(accepted) => accepted.header_info.sequence,
-            Header::DataTransfer(transfer) => transfer.header_info.sequence,
-        }
-    }
-
-    pub(crate) const fn connection_request() -> Self {
-        let header_info = HeaderInfo {
-            sequence: unsafe { Sequence::new_unchecked(1) },
-            ack: 0,
-            past_acks: 0,
-        };
-        let connection_request_info = ConnectionRequestInfo {
-            header_info,
-            status_code: CONNECTION_REQUEST,
-        };
-        Header::ConnectionRequest(connection_request_info)
-    }
-
-    /// TODO(alex) 2021-02-26: This will encode based on the `Header<Kind>` so we need different
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn encode(&self) -> AntarcResult<Vec<u8>> {
