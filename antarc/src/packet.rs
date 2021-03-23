@@ -53,6 +53,11 @@ pub type Ack = u32;
 
 // REGION(alex) 2021-03-23: Types of packet (event types).
 #[derive(Debug)]
+pub(crate) struct ToSend {
+    pub(crate) time_enqueued: Duration,
+}
+
+#[derive(Debug)]
 pub(crate) struct Received {
     pub(crate) time_received: Duration,
 }

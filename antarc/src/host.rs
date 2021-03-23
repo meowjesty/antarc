@@ -5,6 +5,8 @@ use std::{
 
 use crate::packet::{ConnectionId, Sequence};
 
+pub(crate) mod sending_connection_request;
+
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
 /// when trying to figure out how to keep alive a session (connection), how the communication
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
