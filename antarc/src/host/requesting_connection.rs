@@ -1,82 +1,39 @@
-use std::time::Duration;
+use std::{net::UdpSocket, time::Instant};
 
-use super::{connected::Connected, Host};
+use hecs::{With, Without, World};
+
+use super::RequestingConnection;
 use crate::{
-    host::ConnectionId,
+    host::{Address, Host},
     packet::{
-        header::{ConnectionRequestInfo, Header, HeaderInfo},
-        to_send::ToSend,
-        Packet, Payload, Sequence, CONNECTION_REQUEST,
+        header::Header, ConnectionRequest, DataTransfer, Internal, Packet, Received, Sequence,
     },
 };
 
-#[derive(Debug, Default)]
-pub(crate) struct ConnectionRequestTimedOut {
-    error: String,
-    retries: u32,
-}
+pub(crate) fn system_new_host_handler(world: &mut World) {
+    let mut new_hosts = Vec::with_capacity(4);
 
-#[derive(Debug, Default)]
-pub(crate) struct RequestingConnection {
-    retries: u32,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ConnectionDenied {
-    error: String,
-}
-
-impl Host<RequestingConnection> {
-    /// TODO(alex) 2021-03-13: I think this function could be just some code in the `Client`, to
-    /// avoid further complications here.
-    pub(crate) fn poll(mut self) -> Result<Self, Host<ConnectionRequestTimedOut>> {
-        assert!(self.sent_list.last().is_some());
-        let last_sent = self.sent_list.last().unwrap();
-        if last_sent.state.time_sent < self.timer.elapsed() - Duration::from_millis(1000) {
-            let failed_to_receive_connection_ack_in_time = ConnectionRequestTimedOut {
-                retries: self.connection.retries,
-                error: format!("Failed to receive connection ack in time {:#?}.", self),
-            };
-
-            Err(self.into_new_state(failed_to_receive_connection_ack_in_time))
-        } else {
-            Ok(self)
-        }
+    for (packet, (address, header, _)) in world
+        // NOTE(alex) 2021-03-25: Only the freshly received packets, we don't even know if they have
+        // a known host.
+        .query::<Without<Host, (&Address, &Header, &Received)>>()
+        .iter()
+    {
+        assert_eq!(header.sequence.get(), 1);
+        // TODO(alex) 2021-03-25: Validate the header values, if this is a new host it should
+        // respect `Header` connection request initialization.
+        let host = Host {
+            ack_tracker: header.sequence.get(),
+            ..Default::default()
+        };
+        new_hosts.push((packet, host));
     }
 
-    pub(crate) fn on_received_connection_ack(
-        mut self,
-        buffer: &[u8],
-    ) -> Result<Host<Connected>, Host<ConnectionDenied>> {
-        let packet = Packet::decode(buffer, self.timer.elapsed()).unwrap();
-
-        if let Header::ConnectionAccepted(connection_accepted_info) = &packet.header.clone() {
-            if self.on_receive_ack(&packet) {
-                self.internals.push(packet.internald(self.timer.elapsed()));
-
-                let connected = self.into_new_state(Connected {
-                    connection_id: connection_accepted_info.connection_id,
-                });
-                Ok(connected)
-            } else {
-                panic!("{:?}", format!("Failed to connect to {:#?}.", self));
-            }
-        } else if let Header::ConnectionDenied(connection_denied_info) = &packet.header.clone() {
-            let mut denied = self.into_new_state(ConnectionDenied {
-                error: format!("{:#?} with connection denied for", packet,),
-            });
-            denied
-                .internals
-                .push(packet.internald(denied.timer.elapsed()));
-            Err(denied)
-        } else {
-            panic!(
-                "{:?}",
-                format!(
-                    "Expected connection accepted or denied packet, got {:#?} for {:#?}",
-                    packet, self
-                )
-            )
-        }
+    while let Some((packet, host)) = new_hosts.pop() {
+        let host_id = world.spawn((host,));
+        // TODO(alex) 2021-03-25: Associate packet <-> host.
+        // hecs appears to not have the same concept of `pushing` components into an entity, so this
+        // must be done "manually"? Do I need to add `Vec<Packet>` to the `Host` in order to achieve
+        // this?
     }
 }

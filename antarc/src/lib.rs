@@ -18,6 +18,7 @@ pub mod host;
 pub mod net;
 pub mod packet;
 pub mod server;
+pub mod receiver;
 
 #[macro_export]
 macro_rules! read_buffer_inc {

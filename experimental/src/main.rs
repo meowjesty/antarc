@@ -10,6 +10,7 @@ use std::{
 
 use antarc::{net::NetManager, server::Server};
 use async_std::prelude::*;
+use hecs::{Entity, With, Without, World};
 
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
@@ -211,7 +212,7 @@ impl Future for NumberFuture {
     }
 }
 
-fn main() -> std::io::Result<()> {
+fn foo() -> std::io::Result<()> {
     let mut buffer = vec![0; 128];
     let mut buffer2 = vec![0; 128];
     let timer = Instant::now();
@@ -272,4 +273,151 @@ fn main() -> std::io::Result<()> {
         Ok(())
     })
     */
+}
+
+#[derive(Debug)]
+struct Address {
+    addr: u32,
+}
+
+#[derive(Debug)]
+struct Packet {
+    payload: u32,
+    kind: String,
+}
+
+#[derive(Debug)]
+struct Received;
+
+#[derive(Debug)]
+struct Sent;
+
+#[derive(Debug)]
+struct Host {
+    tracker: u32,
+}
+
+#[derive(Debug)]
+struct HostPacket {
+    host_id: Entity,
+    packet_id: Entity,
+}
+
+fn main() {
+    let mut world = World::new();
+
+    for i in 0..2 {
+        let received_packet = world.spawn((
+            Packet {
+                payload: 10 + i,
+                kind: format!("Received {:?}", i),
+            },
+            Received,
+            Address { addr: 1 },
+        ));
+    }
+
+    for i in 0..2 {
+        let sent_packet = world.spawn((
+            Packet {
+                payload: 20 + i,
+                kind: format!("Sent {:?}", i),
+            },
+            Sent,
+            Address { addr: 1 },
+        ));
+    }
+
+    let host = world.spawn((Host { tracker: 0 }, Address { addr: 1 }));
+
+    // Systems can be simple for loops
+    let mut received_packets = Vec::new();
+    println!("Received packets!");
+    for (packet_id, (packet, address, received)) in world
+        .query::<Without<(Host, Sent), (&Packet, &Address, &Received)>>()
+        .iter()
+    {
+        println!("{:#?} {:#?} {:#?}", packet_id, packet, address);
+        received_packets.push(packet_id);
+    }
+
+    while let Some(packet_id) = received_packets.pop() {
+        world.spawn((
+            HostPacket {
+                host_id: host,
+                packet_id,
+            },
+            Received,
+        ));
+    }
+
+    let mut sent_packets = Vec::new();
+    println!("Sent packets!");
+    for (packet_id, (packet, address, sent)) in world
+        .query::<Without<(Host, Received), (&Packet, &Address, &Sent)>>()
+        .iter()
+    {
+        println!("{:#?} {:#?} {:#?}", packet_id, packet, address);
+        sent_packets.push(packet_id);
+    }
+
+    while let Some(packet_id) = sent_packets.pop() {
+        world.spawn((
+            HostPacket {
+                host_id: host,
+                packet_id,
+            },
+            Sent,
+        ));
+    }
+
+    println!("Hosts");
+    for (host_id, host) in world.query::<With<Address, &Host>>().iter() {
+        println!("{:#?} {:#?} ", host_id, host);
+    }
+
+    println!("Packets");
+    for (packet_id, packet) in world.query::<With<Address, &Packet>>().iter() {
+        println!("{:#?} {:#?} ", packet_id, packet);
+    }
+
+    // TODO(alex) 2021-03-27: Adding `Sent` or `Received` (proper type attribution for the
+    // `HosPacket` table) allows us to filter for it during many-to-many query.
+    println!("Host <-> Packets (only sent)");
+    for (id, (host_packet, sent)) in world.query::<(&HostPacket, &Sent)>().iter() {
+        println!("{:#?} {:#?} ", id, host_packet);
+        let mut packet_query = world
+            .query_one::<(&Packet, &Received)>(host_packet.packet_id)
+            .unwrap();
+        let received = packet_query.get();
+        println!("{:#?}", received);
+
+        let mut packet_query = world
+            .query_one::<(&Packet, &Sent)>(host_packet.packet_id)
+            .unwrap();
+        let sent = packet_query.get();
+        println!("{:#?}", sent);
+
+        let mut host_query = world.query_one::<&Host>(host_packet.host_id).unwrap();
+        println!("{:#?}", host_query.get().unwrap());
+    }
+
+    println!("Host <-> Packets (only received)");
+    for (id, (host_packet, received)) in world.query::<(&HostPacket, &Received)>().iter() {
+        println!("{:#?} {:#?} ", id, host_packet);
+        let mut packet_query = world
+            .query_one::<(&Packet, &Received)>(host_packet.packet_id)
+            .unwrap();
+        let received = packet_query.get();
+        println!("{:#?}", received);
+
+        let mut packet_query = world
+            .query_one::<(&Packet, &Sent)>(host_packet.packet_id)
+            .unwrap();
+        let sent = packet_query.get();
+        println!("{:#?}", sent);
+
+        let mut host_query = world.query_one::<&Host>(host_packet.host_id).unwrap();
+        println!("{:#?}", host_query.get().unwrap());
+    }
 }

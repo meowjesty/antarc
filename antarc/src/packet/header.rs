@@ -1,6 +1,8 @@
 use core::mem;
 use std::io::Cursor;
 
+use hecs::Bundle;
+
 use super::{Ack, ConnectionId, Sequence, StatusCode, CONNECTION_REQUEST};
 use crate::{AntarcResult, ProtocolId};
 
@@ -36,7 +38,7 @@ use crate::{AntarcResult, ProtocolId};
 /// TODO(alex) 2021-03-07: `status_code` does not represent `CONNECTION_ACCEPTED`,
 /// `CONNECTION_DENIED`, it should represent `Success`, `Failed`, `Refused`, ...
 
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash, Bundle)]
 pub(crate) struct Header {
     /// TODO(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
     /// response, maybe a data transfer, and each is handled differently, for example, the protocol

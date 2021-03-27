@@ -10,3 +10,4 @@ edition = "2018"
 antarc = { path = "../antarc" }
 futures = "*"
 async-std = "*"
+hecs = { version = "*", features = ["std", "macros"] }

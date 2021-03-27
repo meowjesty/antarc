@@ -54,29 +54,29 @@ pub type Ack = u32;
 // REGION(alex) 2021-03-23: Types of packet (event types).
 #[derive(Debug)]
 pub(crate) struct ToSend {
-    pub(crate) time_enqueued: Duration,
+    pub(crate) time: Duration,
 }
 
 #[derive(Debug)]
 pub(crate) struct Received {
-    pub(crate) time_received: Duration,
+    pub(crate) time: Duration,
 }
 
 #[derive(Debug)]
 pub(crate) struct Sent {
-    pub(crate) time_sent: Duration,
+    pub(crate) time: Duration,
 }
 
 #[derive(Debug)]
 pub(crate) struct Acked {
-    pub(crate) time_acked: Duration,
+    pub(crate) time: Duration,
 }
 
 /// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
 /// loaded them, so they're moved into this state.
 #[derive(Debug)]
 pub(crate) struct Retrieved {
-    pub(crate) time_retrieved: Duration,
+    pub(crate) time: Duration,
 }
 
 /// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
@@ -90,7 +90,10 @@ pub(crate) struct Internal {
 
 // REGION(alex) 2021-03-23: Types of packet (metadata).
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionRequest;
+pub(crate) struct ConnectionRequest {
+    host_id: u32,
+    packet_id: u32,
+}
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct ConnectionDenied;
@@ -144,7 +147,7 @@ impl Packet {
         todo!()
     }
 
-    pub(crate) fn decode(buffer: &[u8]) -> Result<Self, String> {
+    pub(crate) fn decode(buffer: &[u8]) -> Result<(Header, Payload, Footer), String> {
         todo!()
     }
 
