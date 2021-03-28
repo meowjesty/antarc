@@ -85,15 +85,18 @@ pub(crate) struct Retrieved {
 /// TODO(alex) 2021-02-15: This name sucks and doesn't really convey what it does.
 #[derive(Debug)]
 pub(crate) struct Internal {
-    pub(crate) time_internal: Duration,
+    pub(crate) time: Duration,
 }
 
 // REGION(alex) 2021-03-23: Types of packet (metadata).
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionRequest {
+pub(crate) struct HostPacket {
     host_id: u32,
     packet_id: u32,
 }
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct ConnectionRequest;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct ConnectionDenied;
@@ -109,6 +112,9 @@ pub(crate) struct DataTransfer {
     /// to slowly re-estabilish the connection.
     pub(crate) connection_id: ConnectionId,
 }
+
+#[derive(Debug)]
+pub(crate) struct Payload(pub(crate) Vec<u8>);
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Footer {
@@ -130,14 +136,15 @@ pub(crate) struct Footer {
 /// NOTE(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.
 #[derive(Debug)]
-pub(crate) struct Packet {
-    /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
-    /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
-    /// packet (when encoded), but doesn't exist as an actual type here?
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) footer: Option<Footer>,
-}
+pub(crate) struct Packet;
+// pub(crate) struct Packet {
+//     /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
+//     /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
+//     /// packet (when encoded), but doesn't exist as an actual type here?
+//     pub(crate) header: Header,
+//     pub(crate) payload: Payload,
+//     pub(crate) footer: Option<Footer>,
+// }
 
 /// TODO(alex) 2021-01-31: This is an impl block for packets with **any** state.
 /// ADD(alex) 2021-02-05: Functions defined here conflict with functions in every other state, so
@@ -161,6 +168,3 @@ impl Packet {
         unimplemented!()
     }
 }
-
-#[derive(Debug)]
-pub(crate) struct Payload(pub(crate) Vec<u8>);

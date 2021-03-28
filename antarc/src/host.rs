@@ -13,6 +13,9 @@ pub(crate) mod sending_connection_request;
 /// between hosts occur (channels trasnfer packets), and gives more struct names for similar things.
 
 #[derive(Debug)]
+pub(crate) struct Disconnected;
+
+#[derive(Debug)]
 pub(crate) struct RequestingConnection {
     attempts: u32,
 }
@@ -32,7 +35,7 @@ pub(crate) struct Connected {
     connection_id: ConnectionId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct Address(pub(crate) SocketAddr);
 
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);

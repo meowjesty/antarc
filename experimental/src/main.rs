@@ -303,8 +303,20 @@ struct HostPacket {
     packet_id: Entity,
 }
 
+#[derive(Debug)]
+struct Source {
+    host_id: Entity,
+}
+
+#[derive(Debug)]
+struct Destination {
+    host_id: Entity,
+}
+
 fn main() {
     let mut world = World::new();
+
+    let host = world.spawn((Host { tracker: 0 }, Address { addr: 1 }));
 
     for i in 0..2 {
         let received_packet = world.spawn((
@@ -328,8 +340,6 @@ fn main() {
         ));
     }
 
-    let host = world.spawn((Host { tracker: 0 }, Address { addr: 1 }));
-
     // Systems can be simple for loops
     let mut received_packets = Vec::new();
     println!("Received packets!");
@@ -342,13 +352,10 @@ fn main() {
     }
 
     while let Some(packet_id) = received_packets.pop() {
-        world.spawn((
-            HostPacket {
-                host_id: host,
-                packet_id,
-            },
-            Received,
-        ));
+        println!("(Received) Adding {:?} to {:?}", host, packet_id);
+        let _ = world
+            .insert(packet_id, (Source { host_id: host },))
+            .unwrap();
     }
 
     let mut sent_packets = Vec::new();
@@ -362,14 +369,29 @@ fn main() {
     }
 
     while let Some(packet_id) = sent_packets.pop() {
-        world.spawn((
-            HostPacket {
-                host_id: host,
-                packet_id,
-            },
-            Sent,
-        ));
+        println!("(Sent) Adding {:?} to {:?}", host, packet_id);
+        let _ = world
+            .insert(packet_id, (Destination { host_id: host },))
+            .unwrap();
     }
+
+    let sourceless_packet = world.spawn((
+        Packet {
+            payload: 10 + 5,
+            kind: format!("Received {:?} (no source)", 5),
+        },
+        Received,
+        Address { addr: 25 },
+    ));
+
+    let destinationless_packet = world.spawn((
+        Packet {
+            payload: 20 + 5,
+            kind: format!("Sent {:?} (no destination)", 5),
+        },
+        Sent,
+        Address { addr: 5 },
+    ));
 
     println!("Hosts");
     for (host_id, host) in world.query::<With<Address, &Host>>().iter() {
@@ -381,43 +403,59 @@ fn main() {
         println!("{:#?} {:#?} ", packet_id, packet);
     }
 
-    // TODO(alex) 2021-03-27: Adding `Sent` or `Received` (proper type attribution for the
-    // `HosPacket` table) allows us to filter for it during many-to-many query.
-    println!("Host <-> Packets (only sent)");
-    for (id, (host_packet, sent)) in world.query::<(&HostPacket, &Sent)>().iter() {
-        println!("{:#?} {:#?} ", id, host_packet);
-        let mut packet_query = world
-            .query_one::<(&Packet, &Received)>(host_packet.packet_id)
-            .unwrap();
-        let received = packet_query.get();
-        println!("{:#?}", received);
-
-        let mut packet_query = world
-            .query_one::<(&Packet, &Sent)>(host_packet.packet_id)
-            .unwrap();
-        let sent = packet_query.get();
-        println!("{:#?}", sent);
-
-        let mut host_query = world.query_one::<&Host>(host_packet.host_id).unwrap();
-        println!("{:#?}", host_query.get().unwrap());
+    println!("Packets with destination");
+    for (packet_id, (destination)) in world.query::<(&Destination,)>().iter() {
+        println!("Destination {:#?} {:#?}", packet_id, destination);
     }
 
-    println!("Host <-> Packets (only received)");
-    for (id, (host_packet, received)) in world.query::<(&HostPacket, &Received)>().iter() {
-        println!("{:#?} {:#?} ", id, host_packet);
-        let mut packet_query = world
-            .query_one::<(&Packet, &Received)>(host_packet.packet_id)
-            .unwrap();
-        let received = packet_query.get();
-        println!("{:#?}", received);
+    println!("Packets with source");
+    for (packet_id, (source)) in world.query::<(&Source,)>().iter() {
+        println!("Source {:#?} {:#?}", packet_id, source);
+    }
 
-        let mut packet_query = world
-            .query_one::<(&Packet, &Sent)>(host_packet.packet_id)
-            .unwrap();
-        let sent = packet_query.get();
-        println!("{:#?}", sent);
+    // TODO(alex) 2021-03-27: Adding `Sent` or `Received` (proper type attribution for the
+    // `HosPacket` table) allows us to filter for it during many-to-many query.
+    println!("Host <-> Packets (only sent, with destination)");
+    for (packet_id, (packet, sent, destination, address)) in world
+        .query::<(&Packet, &Sent, &Destination, &Address)>()
+        .iter()
+    {
+        println!("{:#?} {:#?} {:#?}", packet_id, packet, address);
+        let mut host_query = world.query_one::<&Host>(destination.host_id).unwrap();
+        let host = host_query.get();
+        println!("{:#?}", host);
+    }
 
-        let mut host_query = world.query_one::<&Host>(host_packet.host_id).unwrap();
-        println!("{:#?}", host_query.get().unwrap());
+    println!("Host <-> Packets (only received, with source)");
+    for (packet_id, (packet, received, source, address)) in world
+        .query::<(&Packet, &Received, &Source, &Address)>()
+        .iter()
+    {
+        println!(
+            "{:#?} {:#?} {:#?} {:#?}",
+            packet_id, packet, source, address
+        );
+        let mut host_query = world.query_one::<&Host>(source.host_id).unwrap();
+        let host = host_query.get();
+        println!("{:#?}", host);
+    }
+
+    println!("Host <-> Packets (received, unknown hosts)");
+    for (packet_id, (packet,)) in world
+        .query::<(&Packet,)>()
+        .with::<Received>()
+        .without::<Source>()
+        .iter()
+    {
+        println!("{:#?} {:#?} ", packet_id, packet);
+    }
+
+    println!("Host <-> Packets (sent, unknown hosts)");
+    for (packet_id, (packet, received)) in world
+        .query::<(&Packet, &Sent)>()
+        .without::<Destination>()
+        .iter()
+    {
+        println!("{:#?} {:#?} ", packet_id, packet);
     }
 }
