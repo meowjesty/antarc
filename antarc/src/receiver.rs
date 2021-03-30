@@ -3,8 +3,11 @@ use std::{net::UdpSocket, time::Instant};
 use hecs::{Entity, Ref, World};
 
 use crate::{
-    host::{Address, Disconnected, Host},
-    packet::{header::Header, Packet, Received, CONNECTION_REQUEST},
+    host::{Address, AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
+    packet::{
+        header::Header, ConnectionAccepted, ConnectionDenied, ConnectionRequest, DataTransfer,
+        Packet, Received, CONNECTION_REQUEST,
+    },
 };
 
 #[derive(Debug)]
@@ -26,16 +29,50 @@ pub(crate) fn system_receiver(
     match socket.recv_from(buffer) {
         Ok((num_recv, from_addr)) => {
             if num_recv > 0 {
+                // TODO(alex) 2021-03-29: Where is the connection_id?
                 let (header, payload, footer) = Packet::decode(&buffer).unwrap();
-                let _packet = world.spawn((
-                    header,
+                let packet = world.spawn((
                     payload,
-                    footer,
                     Address(from_addr),
                     Received {
                         time: timer.elapsed(),
                     },
                 ));
+
+                match header.status_code {
+                    CONNECTION_REQUEST => {
+                        world.insert(packet, (ConnectionRequest,)).unwrap();
+                    }
+                    CONNECTION_ACCEPTED => {
+                        world
+                            .insert(
+                                packet,
+                                (ConnectionAccepted {
+                                    connection_id: footer.connection_id.unwrap(),
+                                },),
+                            )
+                            .unwrap();
+                    }
+                    DATA_TRANSFER => {
+                        world
+                            .insert(
+                                packet,
+                                (DataTransfer {
+                                    connection_id: footer.connection_id.unwrap(),
+                                },),
+                            )
+                            .unwrap();
+                    }
+                    CONNECTION_DENIED => {
+                        world.insert(packet, (ConnectionDenied,)).unwrap();
+                    }
+                    _ => {
+                        eprintln!("{:#?} status code is invalid.", header);
+                        unreachable!()
+                    }
+                }
+
+                world.insert(packet, (header, footer)).unwrap();
             } else {
                 eprintln!("Received 0 bytes from {:#?}.", from_addr);
                 unreachable!();
@@ -48,62 +85,89 @@ pub(crate) fn system_receiver(
     }
 }
 
-pub(crate) fn system_received_packet_from_host(world: &mut World) {
-    let mut host_received_list = Vec::with_capacity(12);
-
-    // TODO(alex) 2021-03-27: Zip the two iterators by combining matching addresses somehow.
-    for (packet_id, (header, packet_address)) in world
+pub(crate) fn system_received_packet(world: &mut World) {
+    let mut host_received_list = world
         .query::<(&Header, &Address)>()
         .with::<Received>()
         .without::<Source>()
         .iter()
-    {
-        for (host_id, (_,)) in world
-            .query::<(&Address,)>()
-            .with::<Host>()
-            .iter()
-            .filter(|(_, (host_address,))| *host_address == packet_address)
-        {
-            host_received_list.push((host_id, packet_id));
-        }
-    }
+        .filter_map(|(packet_id, (_, packet_address))| {
+            let host_packets = world.query::<(&Address,)>().with::<Host>().iter().find_map(
+                |(host_id, (host_address,))| {
+                    if host_address == packet_address {
+                        Some((host_id, packet_id))
+                    } else {
+                        None
+                    }
+                },
+            );
+            host_packets
+        })
+        .collect::<Vec<_>>();
 
     while let Some((host_id, packet_id)) = host_received_list.pop() {
         world.insert(packet_id, (Source { host_id },)).unwrap();
     }
-
-    system_received_packet_from_unknown_host(world);
 }
 
-fn system_received_packet_from_unknown_host(world: &mut World) {
-    let mut new_hosts = Vec::with_capacity(12);
-
-    for (packet_id, (header, packet_address)) in world
+fn system_received_connection_request_from_new_host(world: &mut World) {
+    let mut requesting_connection = world
         .query::<(&Header, &Address)>()
         .with::<Received>()
+        .with::<ConnectionRequest>()
         .without::<Source>()
         .iter()
-    {
-        let new_host = Host {
-            ack_tracker: header.sequence.get(),
-            ..Default::default()
-        };
+        .map(|(packet_id, (header, address))| {
+            let new_host = Host {
+                ack_tracker: header.sequence.get(),
+                ..Default::default()
+            };
 
-        new_hosts.push((new_host, packet_id, packet_address.clone()));
-    }
+            (new_host, packet_id, address.clone())
+        })
+        .collect::<Vec<_>>();
 
-    while let Some((new_host, packet_id, packet_address)) = new_hosts.pop() {
-        let host_id = world.spawn((new_host, packet_address, Disconnected));
+    while let Some((new_host, packet_id, packet_address)) = requesting_connection.pop() {
+        let host_id = world.spawn((
+            new_host,
+            packet_address,
+            RequestingConnection { attempts: 0 },
+        ));
         world.insert(packet_id, (Source { host_id },)).unwrap();
     }
 }
 
-fn system_handle_received_packet(world: &mut World) {
-    for (packet_id, (header, address, source)) in world
-        .query::<(&Header, &Address, &Source)>()
+fn system_received_connection_accepted(world: &mut World) {
+    let mut connection_accepted = world
+        .query::<(&Header, &Address, &Source, &ConnectionAccepted)>()
         .with::<Received>()
         .iter()
-    {
-        // TODO(alex) 2021-03-28: Handle possible packet requests, move host into appropriate state.
+        .filter_map(
+            |(packet_id, (header, address, source, connection_accepted))| {
+                world
+                    .query::<(&Host, &AwaitingConnectionAck)>()
+                    .iter()
+                    .find_map(|(host_id, (host, _))| {
+                        if host_id == source.host_id {
+                            Some((host_id, host.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .zip(Some((packet_id, connection_accepted.clone())))
+            },
+        )
+        .collect::<Vec<_>>();
+
+    while let Some(((host_id, host), (packet_id, accepted))) = connection_accepted.pop() {
+        world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
+        world
+            .insert(
+                host_id,
+                (ConnectionAccepted {
+                    connection_id: accepted.connection_id,
+                },),
+            )
+            .unwrap();
     }
 }

@@ -17,7 +17,7 @@ pub(crate) struct Disconnected;
 
 #[derive(Debug)]
 pub(crate) struct RequestingConnection {
-    attempts: u32,
+    pub(crate) attempts: u32,
 }
 
 #[derive(Debug)]
@@ -41,7 +41,7 @@ pub(crate) struct Address(pub(crate) SocketAddr);
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Host {
     /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
     /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets

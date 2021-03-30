@@ -1,7 +1,12 @@
+#![feature(write_all_vectored)]
+
 use std::{
     convert::TryFrom,
     future::Future,
+    io::{BufRead, Cursor, IoSlice, Read, Write},
+    mem,
     net::{SocketAddr, UdpSocket},
+    num::NonZeroU32,
     sync::{Arc, Mutex},
     task::{Poll, Waker},
     thread,
@@ -9,7 +14,6 @@ use std::{
 };
 
 use antarc::{net::NetManager, server::Server};
-use async_std::prelude::*;
 use hecs::{Entity, With, Without, World};
 
 fn client_main() {
@@ -313,6 +317,9 @@ struct Destination {
     host_id: Entity,
 }
 
+#[derive(Debug)]
+struct ConnectionRequest;
+
 fn main() {
     let mut world = World::new();
 
@@ -382,6 +389,7 @@ fn main() {
         },
         Received,
         Address { addr: 25 },
+        ConnectionRequest,
     ));
 
     let destinationless_packet = world.spawn((
@@ -457,5 +465,62 @@ fn main() {
         .iter()
     {
         println!("{:#?} {:#?} ", packet_id, packet);
+    }
+
+    println!("Host <-> Packets (received, unknown hosts, connection request)");
+    for (packet_id, (packet,)) in world
+        .query::<(&Packet,)>()
+        .with::<Received>()
+        .with::<ConnectionRequest>()
+        .without::<Source>()
+        .iter()
+    {
+        println!("{:#?} {:#?} ", packet_id, packet);
+    }
+
+    println!("Test out Cursor WRITE");
+    {
+        let first_bytes = u32::to_be_bytes(0x1);
+        let second_bytes = u32::to_be_bytes(0x8);
+        let third_bytes = u32::to_be_bytes(0xa);
+
+        let mut first_buffers = [
+            IoSlice::new(&first_bytes),
+            IoSlice::new(&second_bytes),
+            IoSlice::new(&third_bytes),
+        ];
+
+        let mut cursor = Cursor::new(Vec::with_capacity(128));
+        let _ = cursor.write_all_vectored(&mut first_buffers).unwrap();
+        println!("first position {:#?}", cursor.position());
+
+        let fourth_bytes = u32::to_be_bytes(0x10);
+        let _ = cursor.write_all(&fourth_bytes).unwrap();
+        println!("second position {:#?}", cursor.position());
+    }
+
+    println!("Test out Cursor READ");
+    {
+        let buffer = vec![
+            0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf,
+        ];
+        let mut cursor = Cursor::new(buffer);
+        let crc32_position = cursor.get_ref().len() - mem::size_of::<u32>();
+        cursor.set_position(crc32_position as u64);
+
+        let mut crc32_bytes = [0; mem::size_of::<u32>()];
+        let _ = cursor.read_exact(&mut crc32_bytes).unwrap();
+        let crc32 = u32::from_be_bytes(crc32_bytes);
+        println!("crc32 is {:#?} \n\t {:#?}", crc32, crc32_bytes);
+        println!("cursor position is {:#?}", cursor.position());
+
+        cursor.set_position(0);
+        let sentinel = vec![0xa, 0xa, 0xa, 0xa];
+        let buffer_with_sentinel: Vec<u8> = sentinel
+            .iter()
+            .chain(cursor.into_inner())
+            .collect::<Vec<_>>();
+        println!("buffer with sentinel {:#?}", buffer_with_sentinel);
+        println!("cursor position is {:#?}", cursor.position());
     }
 }

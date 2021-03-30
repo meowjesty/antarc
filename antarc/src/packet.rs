@@ -118,6 +118,7 @@ pub(crate) struct Payload(pub(crate) Vec<u8>);
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Footer {
+    pub(crate) connection_id: Option<ConnectionId>,
     pub(crate) crc32: NonZeroU32,
 }
 
@@ -136,25 +137,93 @@ pub(crate) struct Footer {
 /// NOTE(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.
 #[derive(Debug)]
-pub(crate) struct Packet;
-// pub(crate) struct Packet {
-//     /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
-//     /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
-//     /// packet (when encoded), but doesn't exist as an actual type here?
-//     pub(crate) header: Header,
-//     pub(crate) payload: Payload,
-//     pub(crate) footer: Option<Footer>,
-// }
+// pub(crate) struct Packet;
+pub(crate) struct Packet {
+    /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
+    /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
+    /// packet (when encoded), but doesn't exist as an actual type here?
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) footer: Footer,
+}
 
-/// TODO(alex) 2021-01-31: This is an impl block for packets with **any** state.
-/// ADD(alex) 2021-02-05: Functions defined here conflict with functions in every other state, so
-/// a `fn new` here won't allow any other state to have an `fn new`, you must use the most generic.
 impl Packet {
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, String> {
-        todo!()
+    pub(crate) fn encode(
+        header: &Header,
+        payload: &Payload,
+        connection_id: Option<ConnectionId>,
+    ) -> Result<(Vec<u8>, Footer), String> {
+        let sequence_bytes = header.sequence.get().to_be_bytes();
+        let ack_bytes = header.ack.to_be_bytes();
+        let past_acks_bytes = header.past_acks.to_be_bytes();
+        let status_code_bytes = header.status_code.to_be_bytes();
+
+        let mut hasher = Hasher::new();
+        let mut cursor = Cursor::new(Vec::with_capacity(
+            Header::ENCODED_SIZE + payload.0.len() + mem::size_of::<Footer>(),
+        ));
+        {
+            let mut header_and_payload_buffers = [
+                IoSlice::new(&PROTOCOL_ID_BYTES),
+                IoSlice::new(&sequence_bytes),
+                IoSlice::new(&ack_bytes),
+                IoSlice::new(&past_acks_bytes),
+                IoSlice::new(&status_code_bytes),
+                IoSlice::new(&payload.0),
+            ];
+
+            let _ = cursor
+                .write_all_vectored(&mut header_and_payload_buffers)
+                .map_err(|fail| fail.to_string())?;
+        }
+
+        if let Some(connection_id) = connection_id {
+            let connection_id_bytes = connection_id.get().to_be_bytes();
+            let _ = cursor
+                .write_all(&connection_id_bytes)
+                .map_err(|fail| fail.to_string())?;
+        }
+
+        hasher.update(cursor.get_ref());
+        let crc32 = hasher.finalize();
+        assert!(crc32 != 0);
+
+        let _ = cursor
+            .write_all(&crc32.to_be_bytes())
+            .map_err(|fail| fail.to_string())?;
+
+        let _ = cursor.flush().map_err(|fail| fail.to_string())?;
+        let packet_bytes = cursor.into_inner();
+
+        Ok((
+            packet_bytes,
+            Footer {
+                connection_id,
+                crc32: unsafe { NonZeroU32::new_unchecked(crc32) },
+            },
+        ))
     }
 
     pub(crate) fn decode(buffer: &[u8]) -> Result<(Header, Payload, Footer), String> {
+        let mut cursor = Cursor::new(buffer);
+        let mut hasher = Hasher::new();
+
+        let crc32_position = cursor.get_ref().len() - mem::size_of::<NonZeroU32>();
+        cursor.set_position(crc32_position as u64);
+        let mut crc32_bytes = [0; mem::size_of::<NonZeroU32>()];
+        let _ = cursor
+            .read_exact(&mut crc32_bytes)
+            .map_err(|fail| fail.to_string())?;
+        let crc32_read = u32::from_be_bytes(crc32_bytes);
+
+        let packet_with_protocol_id = PROTOCOL_ID_BYTES
+            .iter()
+            .chain(cursor.into_inner())
+            .collect::<Vec<_>>();
+
+        // TODO(alex) 2021-03-30: Fix this.
+        hasher.update(packet_with_protocol_id.as_slice());
+        let crc32 = hasher.finalize();
         todo!()
     }
 
