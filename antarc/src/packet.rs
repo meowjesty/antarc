@@ -1,4 +1,5 @@
 use std::{
+    convert::TryInto,
     io::{BufRead, Cursor, IoSlice, Read, Write},
     marker::PhantomData,
     mem,
@@ -205,26 +206,25 @@ impl Packet {
     }
 
     pub(crate) fn decode(buffer: &[u8]) -> Result<(Header, Payload, Footer), String> {
-        let mut cursor = Cursor::new(buffer);
         let mut hasher = Hasher::new();
 
-        let crc32_position = cursor.get_ref().len() - mem::size_of::<NonZeroU32>();
-        cursor.set_position(crc32_position as u64);
-        let mut crc32_bytes = [0; mem::size_of::<NonZeroU32>()];
-        let _ = cursor
-            .read_exact(&mut crc32_bytes)
-            .map_err(|fail| fail.to_string())?;
-        let crc32_read = u32::from_be_bytes(crc32_bytes);
+        let buffer_length = buffer.len();
+        let crc32_position = buffer_length - mem::size_of::<NonZeroU32>();
+        let crc32_bytes: &[u8; 4] = buffer[crc32_position..].try_into().unwrap();
+        let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
-        let packet_with_protocol_id = PROTOCOL_ID_BYTES
-            .iter()
-            .chain(cursor.into_inner())
-            .collect::<Vec<_>>();
+        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, &buffer[..]].concat();
 
-        // TODO(alex) 2021-03-30: Fix this.
-        hasher.update(packet_with_protocol_id.as_slice());
+        hasher.update(&packet_with_protocol_id);
         let crc32 = hasher.finalize();
-        todo!()
+        if crc32 == crc32_received {
+            todo!()
+        } else {
+            Err(format!(
+                "Received {:#?} crc32, but calculated {:#?}.",
+                crc32_received, crc32
+            ))
+        }
     }
 
     /// TODO(alex) 2021-02-05: Hash the buffer to have a fixed size.

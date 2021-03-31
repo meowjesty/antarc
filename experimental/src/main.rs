@@ -1,7 +1,7 @@
 #![feature(write_all_vectored)]
 
 use std::{
-    convert::TryFrom,
+    convert::{TryFrom, TryInto},
     future::Future,
     io::{BufRead, Cursor, IoSlice, Read, Write},
     mem,
@@ -501,26 +501,17 @@ fn main() {
 
     println!("Test out Cursor READ");
     {
-        let buffer = vec![
+        let buffer: Vec<u8> = vec![
             0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf,
         ];
-        let mut cursor = Cursor::new(buffer);
-        let crc32_position = cursor.get_ref().len() - mem::size_of::<u32>();
-        cursor.set_position(crc32_position as u64);
+        let crc32_position = buffer.len() - mem::size_of::<u32>();
 
-        let mut crc32_bytes = [0; mem::size_of::<u32>()];
-        let _ = cursor.read_exact(&mut crc32_bytes).unwrap();
-        let crc32 = u32::from_be_bytes(crc32_bytes);
+        let crc32_bytes: &[u8; 4] = buffer[crc32_position..].try_into().unwrap();
+        let crc32 = u32::from_be_bytes(*crc32_bytes);
         println!("crc32 is {:#?} \n\t {:#?}", crc32, crc32_bytes);
-        println!("cursor position is {:#?}", cursor.position());
 
-        cursor.set_position(0);
         let sentinel = vec![0xa, 0xa, 0xa, 0xa];
-        let buffer_with_sentinel: Vec<u8> = sentinel
-            .iter()
-            .chain(cursor.into_inner())
-            .collect::<Vec<_>>();
+        let buffer_with_sentinel: Vec<u8> = [&sentinel, &buffer[..]].concat();
         println!("buffer with sentinel {:#?}", buffer_with_sentinel);
-        println!("cursor position is {:#?}", cursor.position());
     }
 }
