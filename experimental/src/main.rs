@@ -513,5 +513,8 @@ fn main() {
         let sentinel = vec![0xa, 0xa, 0xa, 0xa];
         let buffer_with_sentinel: Vec<u8> = [&sentinel, &buffer[..]].concat();
         println!("buffer with sentinel {:#?}", buffer_with_sentinel);
+
+        let reading_into_vec = buffer_with_sentinel[0..4].to_vec();
+        println!("read into vec {:#?}", reading_into_vec);
     }
 }

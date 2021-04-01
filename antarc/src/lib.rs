@@ -23,13 +23,10 @@ pub mod server;
 
 #[macro_export]
 macro_rules! read_buffer_inc {
-    ($kind: ident, $buffer: expr, $start: expr) => {{
-        let mut bytes_arr = [0; mem::size_of::<$kind>()];
+    ({ $buffer: expr, $start: expr } : $kind: ident) => {{
         let end = $start + mem::size_of::<$kind>();
-        $buffer
-            .read_exact(&mut bytes_arr)
-            .map_err(|fail| fail.to_string())?;
-        let val = $kind::from_be_bytes(bytes_arr);
+        let bytes_arr: &[u8; mem::size_of::<$kind>()] = $buffer[$start..end].try_into().unwrap();
+        let val = $kind::from_be_bytes(*bytes_arr);
         $start = end;
         val
     }};

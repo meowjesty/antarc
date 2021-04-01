@@ -60,6 +60,7 @@ pub(crate) struct Header {
     /// TODO(alex): Use this.
     pub(crate) past_acks: u16,
     pub(crate) status_code: StatusCode,
+    pub(crate) payload_length: u16,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the

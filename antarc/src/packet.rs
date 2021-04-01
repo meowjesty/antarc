@@ -114,6 +114,22 @@ pub(crate) struct DataTransfer {
     pub(crate) connection_id: ConnectionId,
 }
 
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct Heartbeat {
+    /// Identifies the connection, this enables network switching from either side without having
+    /// to slowly re-estabilish the connection.
+    pub(crate) connection_id: ConnectionId,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) enum PacketType {
+    ConnectionRequest(ConnectionRequest),
+    ConnectionDenied(ConnectionDenied),
+    ConnectionAccepted(ConnectionAccepted),
+    DataTransfer(DataTransfer),
+    Heartbeat(Heartbeat),
+}
+
 #[derive(Debug)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
 
@@ -218,6 +234,27 @@ impl Packet {
         hasher.update(&packet_with_protocol_id);
         let crc32 = hasher.finalize();
         if crc32 == crc32_received {
+            let buffer = packet_with_protocol_id;
+            let mut buffer_position = 0;
+            // TODO(alex) 2021-04-01: Find out a way to `from_be_bytes::<NonZeroU32>` to work.
+            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
+            let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
+            let read_ack = read_buffer_inc!({buffer, buffer_position } : Ack);
+            let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
+            let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
+            let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
+
+            let payload_length = read_payload_length as usize;
+            let read_payload = buffer[buffer_position..payload_length].to_vec();
+            buffer_position += payload_length;
+
+            // TODO(alex) 2021-04-01: Match on `status_code` here, we need to check what kind of
+            // packet this is, to know if we're reading a `connection_id` or not. So we might as
+            // well apply the appropriate component type, such as `ConnectionRequest` or
+            // `DataTransfer` based on it (`status_code`). This kinda reverses the `kind ->
+            // status_code` relationship, so we don't need a `Header::status_code`, as this will be
+            // identified by the `PacketType`
+            assert_eq!(buffer_position, Header::ENCODED_SIZE);
             todo!()
         } else {
             Err(format!(
