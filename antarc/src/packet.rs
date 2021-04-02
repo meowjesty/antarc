@@ -12,7 +12,7 @@ use crc32fast::Hasher;
 use self::header::Header;
 use crate::{
     read_buffer_inc, AntarcResult, PacketMarker, ProtocolId, BUFFER_CAP, END_OF_PACKET_BYTES,
-    PACKED_LEN, PROTOCOL_ID_BYTES,
+    PACKED_LEN, PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
 pub(crate) mod header;
@@ -238,24 +238,52 @@ impl Packet {
             let mut buffer_position = 0;
             // TODO(alex) 2021-04-01: Find out a way to `from_be_bytes::<NonZeroU32>` to work.
             let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
+            if PROTOCOL_ID.get() != read_protocol_id {
+                return Err(format!(
+                    "Decoded invalid protocol id {:#?}.",
+                    read_protocol_id
+                ));
+            }
+
             let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
+            assert_ne!(read_sequence, 0);
+
             let read_ack = read_buffer_inc!({buffer, buffer_position } : Ack);
             let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
             let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
             let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
+            assert_eq!(buffer_position, Header::ENCODED_SIZE);
+
+            let header = Header {
+                sequence: read_sequence.try_into().unwrap(),
+                ack: read_ack,
+                past_acks: read_past_acks,
+                status_code: read_status_code,
+                payload_length: read_payload_length,
+            };
 
             let payload_length = read_payload_length as usize;
             let read_payload = buffer[buffer_position..payload_length].to_vec();
             buffer_position += payload_length;
+            assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
+            let payload = Payload(read_payload);
 
-            // TODO(alex) 2021-04-01: Match on `status_code` here, we need to check what kind of
-            // packet this is, to know if we're reading a `connection_id` or not. So we might as
-            // well apply the appropriate component type, such as `ConnectionRequest` or
-            // `DataTransfer` based on it (`status_code`). This kinda reverses the `kind ->
-            // status_code` relationship, so we don't need a `Header::status_code`, as this will be
-            // identified by the `PacketType`
-            assert_eq!(buffer_position, Header::ENCODED_SIZE);
-            todo!()
+            let connection_id = if read_status_code & 0b1 == 0b1 {
+                let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
+                assert_eq!(
+                    buffer_position,
+                    Header::ENCODED_SIZE + payload_length + mem::size_of::<ConnectionId>()
+                );
+                Some(read_connection_id.try_into().unwrap())
+            } else {
+                None
+            };
+            let footer = Footer {
+                connection_id,
+                crc32: crc32.try_into().unwrap(),
+            };
+
+            Ok((header, payload, footer))
         } else {
             Err(format!(
                 "Received {:#?} crc32, but calculated {:#?}.",

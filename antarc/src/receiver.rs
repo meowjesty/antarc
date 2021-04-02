@@ -29,7 +29,6 @@ pub(crate) fn system_receiver(
     match socket.recv_from(buffer) {
         Ok((num_recv, from_addr)) => {
             if num_recv > 0 {
-                // TODO(alex) 2021-03-29: Where is the connection_id?
                 let (header, payload, footer) = Packet::decode(&buffer).unwrap();
                 let packet = world.spawn((
                     payload,
@@ -39,6 +38,13 @@ pub(crate) fn system_receiver(
                     },
                 ));
 
+                // TODO(alex) 2021-04-02: Does this need any special handling, or should it be
+                // delegated to the systems whom care about connection state (probably yes)?
+                if let Some(connection_id) = footer.connection_id {}
+
+                // TODO(alex) 2021-04-02: `status_code` contains a number + bitflag indicating what
+                // kind of packet this is, so matching directly against it could be done using
+                // match guards? Or just using `if value & flag == 0b1`.
                 match header.status_code {
                     CONNECTION_REQUEST => {
                         world.insert(packet, (ConnectionRequest,)).unwrap();

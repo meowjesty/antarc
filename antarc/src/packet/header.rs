@@ -59,6 +59,14 @@ pub(crate) struct Header {
     /// Represents the ack bitfields to send previous acked state in a compact manner.
     /// TODO(alex): Use this.
     pub(crate) past_acks: u16,
+    /// TODO(alex) 2021-04-02: This is a bit redundant, whatever is using `Header` should always
+    /// know which kind it is, but the value itself still needs to be sent over the network, so
+    /// I'm keeping this in here (for now), if it's ever taken out, remember to update
+    /// the `Header::ENCODED_SIZE` to account for the change.
+    ///
+    /// ADD(alex) 2021-04-02: The way it's working right now is:
+    /// - `0b0001` : rightmost bit indicates presence of connection id (`0` is ausence);
+    /// - `0b0010` : right bit indicates request (`0` is response);
     pub(crate) status_code: StatusCode,
     pub(crate) payload_length: u16,
 }
