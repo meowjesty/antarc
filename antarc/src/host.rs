@@ -32,7 +32,7 @@ pub(crate) struct AwaitingConnectionAck {
 
 #[derive(Debug)]
 pub(crate) struct Connected {
-    connection_id: ConnectionId,
+    pub(crate) connection_id: ConnectionId,
 }
 
 #[derive(Debug, PartialEq, Clone)]

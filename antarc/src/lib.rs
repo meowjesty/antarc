@@ -1,5 +1,6 @@
 #![feature(const_panic)]
 #![feature(write_all_vectored)]
+#![feature(bool_to_option)]
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]

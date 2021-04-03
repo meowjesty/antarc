@@ -30,6 +30,7 @@ pub struct NetManager<ClientOrServer> {
     /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher
     /// level manager thingy, as `socket.send` feels weird when used here.
     pub(crate) socket: UdpSocket,
+    pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) client_or_server: ClientOrServer,

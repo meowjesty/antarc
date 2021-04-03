@@ -18,6 +18,8 @@ impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
         let socket = UdpSocket::bind(address).unwrap();
 
+        let timer = Instant::now();
+
         let server = Server {
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
             disconnected: Vec::with_capacity(8),
@@ -29,6 +31,7 @@ impl NetManager<Server> {
 
         NetManager {
             socket,
+            timer,
             buffer,
             client_or_server: server,
         }

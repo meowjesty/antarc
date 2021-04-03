@@ -6,18 +6,18 @@ use crate::{
     host::{Address, AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
     packet::{
         header::Header, ConnectionAccepted, ConnectionDenied, ConnectionRequest, DataTransfer,
-        Packet, Received, CONNECTION_REQUEST,
+        Footer, Heartbeat, Packet, Received, CONNECTION_REQUEST,
     },
 };
 
 #[derive(Debug)]
-struct Source {
-    host_id: Entity,
+pub(crate) struct Source {
+    pub(crate) host_id: Entity,
 }
 
 #[derive(Debug)]
-struct Destination {
-    host_id: Entity,
+pub(crate) struct Destination {
+    pub(crate) host_id: Entity,
 }
 
 pub(crate) fn system_receiver(
@@ -41,42 +41,31 @@ pub(crate) fn system_receiver(
                 // TODO(alex) 2021-04-02: Does this need any special handling, or should it be
                 // delegated to the systems whom care about connection state (probably yes)?
                 if let Some(connection_id) = footer.connection_id {}
+                let meta_flags = header.status_code & 0b1111;
+                let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
 
-                // TODO(alex) 2021-04-02: `status_code` contains a number + bitflag indicating what
-                // kind of packet this is, so matching directly against it could be done using
-                // match guards? Or just using `if value & flag == 0b1`.
-                match header.status_code {
-                    CONNECTION_REQUEST => {
+                match packet_type_flags {
+                    CONNECTION_REQUEST if footer.connection_id.is_none() => {
                         world.insert(packet, (ConnectionRequest,)).unwrap();
                     }
-                    CONNECTION_ACCEPTED => {
-                        world
-                            .insert(
-                                packet,
-                                (ConnectionAccepted {
-                                    connection_id: footer.connection_id.unwrap(),
-                                },),
-                            )
-                            .unwrap();
-                    }
-                    DATA_TRANSFER => {
-                        world
-                            .insert(
-                                packet,
-                                (DataTransfer {
-                                    connection_id: footer.connection_id.unwrap(),
-                                },),
-                            )
-                            .unwrap();
-                    }
-                    CONNECTION_DENIED => {
+                    CONNECTION_DENIED if footer.connection_id.is_none() => {
                         world.insert(packet, (ConnectionDenied,)).unwrap();
                     }
-                    _ => {
-                        eprintln!("{:#?} status code is invalid.", header);
-                        unreachable!()
+                    CONNECTION_ACCEPTED if footer.connection_id.is_some() => {
+                        world.insert(packet, (ConnectionAccepted,)).unwrap();
                     }
-                }
+                    DATA_TRANSFER if footer.connection_id.is_some() => {
+                        world.insert(packet, (DataTransfer,)).unwrap();
+                    }
+                    HEARTBEAT if footer.connection_id.is_some() => {
+                        world.insert(packet, (Heartbeat,)).unwrap();
+                    }
+                    invalid => {
+                        eprintln!("Invalid packet type received {:#?}.", invalid);
+                        world.despawn(packet).unwrap();
+                        unreachable!();
+                    }
+                };
 
                 world.insert(packet, (header, footer)).unwrap();
             } else {
@@ -86,7 +75,7 @@ pub(crate) fn system_receiver(
         }
         Err(fail) => {
             eprintln!("Failed to receive on socket with {:#?}.", fail);
-            unreachable!();
+            todo!()
         }
     }
 }
@@ -94,6 +83,7 @@ pub(crate) fn system_receiver(
 pub(crate) fn system_received_packet(world: &mut World) {
     let mut host_received_list = world
         .query::<(&Header, &Address)>()
+        .with::<Footer>()
         .with::<Received>()
         .without::<Source>()
         .iter()
@@ -119,6 +109,7 @@ pub(crate) fn system_received_packet(world: &mut World) {
 fn system_received_connection_request_from_new_host(world: &mut World) {
     let mut requesting_connection = world
         .query::<(&Header, &Address)>()
+        .with::<Footer>()
         .with::<Received>()
         .with::<ConnectionRequest>()
         .without::<Source>()
@@ -145,35 +136,37 @@ fn system_received_connection_request_from_new_host(world: &mut World) {
 
 fn system_received_connection_accepted(world: &mut World) {
     let mut connection_accepted = world
-        .query::<(&Header, &Address, &Source, &ConnectionAccepted)>()
+        .query::<(&Footer, &Source)>()
+        .with::<Header>()
         .with::<Received>()
+        .with::<Address>()
+        .with::<ConnectionAccepted>()
         .iter()
-        .filter_map(
-            |(packet_id, (header, address, source, connection_accepted))| {
-                world
-                    .query::<(&Host, &AwaitingConnectionAck)>()
-                    .iter()
-                    .find_map(|(host_id, (host, _))| {
-                        if host_id == source.host_id {
-                            Some((host_id, host.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .zip(Some((packet_id, connection_accepted.clone())))
-            },
-        )
+        .filter_map(|(packet_id, (footer, source))| {
+            world
+                .query::<(&AwaitingConnectionAck,)>()
+                .with::<Host>()
+                .iter()
+                .find_map(|(host_id, (_,))| {
+                    if host_id == source.host_id {
+                        Some(host_id)
+                    } else {
+                        None
+                    }
+                })
+                .zip(Some((
+                    packet_id,
+                    footer.connection_id.unwrap(),
+                    ConnectionAccepted,
+                )))
+        })
         .collect::<Vec<_>>();
 
-    while let Some(((host_id, host), (packet_id, accepted))) = connection_accepted.pop() {
+    // TODO(alex) 2021-04-03: Is this complete?
+    while let Some((host_id, (packet_id, connection_id, accepted))) = connection_accepted.pop() {
         world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         world
-            .insert(
-                host_id,
-                (ConnectionAccepted {
-                    connection_id: accepted.connection_id,
-                },),
-            )
+            .insert(host_id, (Connected { connection_id },))
             .unwrap();
     }
 }

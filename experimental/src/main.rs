@@ -478,6 +478,16 @@ fn main() {
         println!("{:#?} {:#?} ", packet_id, packet);
     }
 
+    println!("Host <-> Packets (sourceless + destinationless)");
+    for (packet_id, (packet,)) in world
+        .query::<(&Packet,)>()
+        .without::<Source>()
+        .without::<Destination>()
+        .iter()
+    {
+        println!("{:#?} {:#?} ", packet_id, packet);
+    }
+
     println!("Test out Cursor WRITE");
     {
         let first_bytes = u32::to_be_bytes(0x1);
@@ -516,5 +526,76 @@ fn main() {
 
         let reading_into_vec = buffer_with_sentinel[0..4].to_vec();
         println!("read into vec {:#?}", reading_into_vec);
+    }
+
+    println!("Test out status code bitflag");
+    {
+        let status_code: u16 = 0b0010_0100_0011_0001;
+        let lower_part: u16 = status_code & 0b1111;
+        let high_part: u16 = (status_code >> 4) & 0b1111_1111_1111;
+        println!(
+            "status_code {:#?} lower_part {:#?} high_part {:#?}",
+            status_code, lower_part, high_part
+        );
+        println!(
+            "{:#018b}\n{:#018b}\n{:#018b}",
+            status_code, lower_part, high_part
+        );
+
+        let status_code: u16 = 0b0010_0100_0011_0001;
+        let lower_part: u16 = status_code & 0xf;
+        let high_part: u16 = (status_code >> 4) & 0xfff;
+        println!(
+            "status_code {:#?} lower_part {:#?} high_part {:#?}",
+            status_code, lower_part, high_part
+        );
+        println!(
+            "{:#018b}\n{:#018b}\n{:#018b}",
+            status_code, lower_part, high_part
+        );
+    }
+
+    println!("Test out match on u16 + guard");
+    {
+        let status_code: u16 = 0xff;
+        let optional: Option<u16> = Some(0xffff);
+
+        match status_code {
+            0x0 if optional.is_none() => {
+                println!("entered 0x0 if optional.is_none()");
+                println!(
+                    "status_code {:#0x} with optional {:#?}",
+                    status_code, optional
+                );
+            }
+            0x0 if optional.is_some() => {
+                println!("entered 0x0 if optional.is_some()");
+                println!(
+                    "status_code {:#0x} with optional {:#?}",
+                    status_code, optional
+                );
+            }
+            0xff if optional.is_none() => {
+                println!("entered 0xff if optional.is_none()");
+                println!(
+                    "status_code {:#0x} with optional {:#?}",
+                    status_code, optional
+                );
+            }
+            0xff if optional.is_some() => {
+                println!("entered 0xff if optional.is_some()");
+                println!(
+                    "status_code {:#0x} with optional {:#?}",
+                    status_code, optional
+                );
+            }
+            other => {
+                println!("entered other");
+                println!(
+                    "status_code {:#0x} with optional {:#?} other {:#0x}",
+                    status_code, optional, other
+                );
+            }
+        }
     }
 }

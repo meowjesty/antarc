@@ -66,7 +66,7 @@ pub(crate) struct Header {
     ///
     /// ADD(alex) 2021-04-02: The way it's working right now is:
     /// - `0b0001` : rightmost bit indicates presence of connection id (`0` is ausence);
-    /// - `0b0010` : right bit indicates request (`0` is response);
+    /// - `0b0010` : right bit indicates packet origin (`1` for server, `0` for client);
     pub(crate) status_code: StatusCode,
     pub(crate) payload_length: u16,
 }
@@ -97,5 +97,17 @@ impl Header {
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn decode(cursor: &mut Cursor<&[u8]>) -> AntarcResult<Self> {
         todo!()
+    }
+}
+
+impl Default for Header {
+    fn default() -> Self {
+        Self {
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            ack: 0,
+            past_acks: 0b0,
+            status_code: 0x0,
+            payload_length: 0,
+        }
     }
 }

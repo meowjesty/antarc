@@ -103,23 +103,15 @@ pub(crate) struct ConnectionRequest;
 pub(crate) struct ConnectionDenied;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionAccepted {
-    pub(crate) connection_id: ConnectionId,
-}
+pub(crate) struct ConnectionAccepted;
+
+/// Identifies the connection, this enables network switching from either side without having
+/// to slowly re-estabilish the connection.
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+pub(crate) struct DataTransfer;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct DataTransfer {
-    /// Identifies the connection, this enables network switching from either side without having
-    /// to slowly re-estabilish the connection.
-    pub(crate) connection_id: ConnectionId,
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct Heartbeat {
-    /// Identifies the connection, this enables network switching from either side without having
-    /// to slowly re-estabilish the connection.
-    pub(crate) connection_id: ConnectionId,
-}
+pub(crate) struct Heartbeat;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) enum PacketType {
@@ -270,6 +262,7 @@ impl Packet {
 
             let connection_id = if read_status_code & 0b1 == 0b1 {
                 let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
+                assert_ne!(read_connection_id, 0);
                 assert_eq!(
                     buffer_position,
                     Header::ENCODED_SIZE + payload_length + mem::size_of::<ConnectionId>()

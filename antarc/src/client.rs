@@ -1,9 +1,17 @@
 use std::{
     net::{SocketAddr, UdpSocket},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use crate::{host::Host, net::NetManager, MTU_LENGTH};
+use hecs::World;
+
+use crate::{
+    host::{Address, Disconnected, Host, RequestingConnection},
+    net::NetManager,
+    packet::{header::Header, ConnectionRequest, ToSend},
+    receiver::{Destination, Source},
+    MTU_LENGTH,
+};
 
 /// TODO(alex) 2021-02-26: References for ideas about connection:
 /// http://www.tcpipguide.com/free/t_PPPLinkSetupandPhases.htm
@@ -15,8 +23,8 @@ use crate::{host::Host, net::NetManager, MTU_LENGTH};
 /// connection (`Host<State>`) for multiple other clients. To to this we would need something
 /// that looks more like the `Server`, and some way to keep one node of the network as the main
 /// server? This idea is not clear yet.
-#[derive(Debug)]
 pub struct Client {
+    world: World,
     other_clients: Vec<Host>,
     connection: Option<Host>,
 }
@@ -28,7 +36,12 @@ impl NetManager<Client> {
             .set_read_timeout(Some(Duration::from_millis(1000)))
             .unwrap();
 
+        let timer = Instant::now();
+
+        let world = World::new();
+
         let client = Client {
+            world,
             other_clients: Vec::with_capacity(8),
             connection: None,
         };
@@ -37,6 +50,7 @@ impl NetManager<Client> {
 
         NetManager {
             socket,
+            timer,
             buffer,
             client_or_server: client,
         }
@@ -58,7 +72,44 @@ impl NetManager<Client> {
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> () {
-        todo!()
+        let client = &mut self.client_or_server;
+
+        // TODO(alex) 2021-04-03: Check for existing hosts in different states, we do nothing
+        // if the host is already `RequestingConnection, AwaitingConnectionAck, Connected`, we only
+        // want to do something if `Disconnected` or non-existent.
+        //
+        // ADD(alex) 2021-04-03: This check is probably good enough.
+        let existing_host_id = client
+            .world
+            .query::<(&Address,)>()
+            .with::<Host>()
+            .with::<Disconnected>()
+            .iter()
+            .find_map(|(host_id, (address,))| (address.0 == *server_addr).then_some(host_id));
+
+        let host_id = match existing_host_id {
+            Some(host_id) => host_id,
+            None => {
+                let server_host = Host::default();
+                let host_id = client.world.spawn((
+                    server_host,
+                    Address(server_addr.clone()),
+                    RequestingConnection { attempts: 0 },
+                ));
+                host_id
+            }
+        };
+
+        let connection_request_header = Header::default();
+        let _packet_id = client.world.spawn((
+            connection_request_header,
+            Address(server_addr.clone()),
+            ToSend {
+                time: self.timer.elapsed(),
+            },
+            ConnectionRequest,
+            Destination { host_id },
+        ));
     }
 
     pub fn connected(&mut self) {}
