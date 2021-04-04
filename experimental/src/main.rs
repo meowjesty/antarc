@@ -598,4 +598,71 @@ fn main() {
             }
         }
     }
+
+    println!("Test out result mapping");
+    {
+        let first_error: Result<u32, String> = Err(format!("First error"));
+        let second_error: Result<f32, String> = Err(format!("Second error"));
+        let third_error: Result<u64, String> = Err(format!("Third error"));
+        let ok: Result<u128, String> = Ok(0xffff);
+
+        // let result = first_error
+        //     .or_else(|first| {
+        //         println!("Entering first map with {:#?}", first);
+        //         second_error
+        //     })
+        //     .map_err(|second| {
+        //         println!("Entering second map with {:#?}", second);
+        //         third_error
+        //     })
+        //     .map_err(|third| {
+        //         println!("Entering third map with {:#?}", third);
+        //         ok
+        //     });
+
+        let result = match first_error {
+            Ok(val) => Some(val as u128),
+            Err(first) => {
+                println!("Entering first match with {:#?}", first);
+                match second_error {
+                    Ok(val) => Some(val as u128),
+                    Err(second) => {
+                        println!("Entering second match with {:#?}", second);
+                        match third_error {
+                            Ok(val) => Some(val as u128),
+                            Err(third) => {
+                                println!("Entering third match with {:#?}", third);
+                                match ok {
+                                    Ok(val) => Some(val as u128),
+                                    Err(invalid) => {
+                                        println!("Entering fourth match with {:#?}", invalid);
+                                        unreachable!()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        // let result = if let Ok(first) = first_error {
+        //     println!("Entering first map with {:#?}", first);
+        //     Some(first as u128)
+        // } else if let Ok(second) = second_error {
+        //     println!("Entering second map with {:#?}", second);
+        //     Some(second as u128)
+        // } else if let Ok(third) = third_error {
+        //     println!("Entering third map with {:#?}", third);
+        //     Some(third as u128)
+        // } else if let Ok(fourth) = ok {
+        //     println!("Entering fourth map with {:#?}", fourth);
+        //     Some(fourth as u128)
+        // } else {
+        //     println!("Entering else map");
+        //     None
+        // };
+
+        println!("Final result is {:#?}", result);
+    }
 }

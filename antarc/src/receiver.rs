@@ -3,7 +3,10 @@ use std::{net::UdpSocket, time::Instant};
 use hecs::{Entity, Ref, World};
 
 use crate::{
-    host::{Address, AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
+    host::{
+        Address, AwaitingConnectionAck, Connected, Disconnected, HasConnectionId, Host,
+        RequestingConnection,
+    },
     packet::{
         header::Header, ConnectionAccepted, ConnectionDenied, ConnectionRequest, DataTransfer,
         Footer, Heartbeat, Packet, Received, CONNECTION_REQUEST,
@@ -12,11 +15,6 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct Source {
-    pub(crate) host_id: Entity,
-}
-
-#[derive(Debug)]
-pub(crate) struct Destination {
     pub(crate) host_id: Entity,
 }
 
@@ -166,7 +164,7 @@ fn system_received_connection_accepted(world: &mut World) {
     while let Some((host_id, (packet_id, connection_id, accepted))) = connection_accepted.pop() {
         world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         world
-            .insert(host_id, (Connected { connection_id },))
+            .insert(host_id, (Connected, HasConnectionId(connection_id)))
             .unwrap();
     }
 }

@@ -20,6 +20,7 @@ pub mod host;
 pub mod net;
 pub mod packet;
 pub mod receiver;
+pub mod sender;
 pub mod server;
 
 #[macro_export]

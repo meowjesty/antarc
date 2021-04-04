@@ -31,8 +31,20 @@ pub(crate) struct AwaitingConnectionAck {
 }
 
 #[derive(Debug)]
-pub(crate) struct Connected {
-    pub(crate) connection_id: ConnectionId,
+pub(crate) struct AckingConnection {
+    attempts: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct Connected;
+
+#[derive(Debug)]
+pub(crate) struct HasConnectionId(pub(crate) ConnectionId);
+
+impl HasConnectionId {
+    pub(crate) fn get(&self) -> ConnectionId {
+        self.0
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

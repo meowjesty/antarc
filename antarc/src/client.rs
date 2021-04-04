@@ -9,7 +9,8 @@ use crate::{
     host::{Address, Disconnected, Host, RequestingConnection},
     net::NetManager,
     packet::{header::Header, ConnectionRequest, ToSend},
-    receiver::{Destination, Source},
+    receiver::Source,
+    sender::Destination,
     MTU_LENGTH,
 };
 
@@ -87,18 +88,17 @@ impl NetManager<Client> {
             .iter()
             .find_map(|(host_id, (address,))| (address.0 == *server_addr).then_some(host_id));
 
-        let host_id = match existing_host_id {
-            Some(host_id) => host_id,
-            None => {
-                let server_host = Host::default();
-                let host_id = client.world.spawn((
-                    server_host,
-                    Address(server_addr.clone()),
-                    RequestingConnection { attempts: 0 },
-                ));
-                host_id
-            }
-        };
+        // NOTE(alex) 2021-04-04: Can't combine this in the `find_map` because `query` does a
+        // mutable borrow of `world`, so it doesn't allow `world.spawn`.
+        let host_id = existing_host_id.unwrap_or_else(|| {
+            let server_host = Host::default();
+            let host_id = client.world.spawn((
+                server_host,
+                Address(server_addr.clone()),
+                RequestingConnection { attempts: 0 },
+            ));
+            host_id
+        });
 
         let connection_request_header = Header::default();
         let _packet_id = client.world.spawn((
