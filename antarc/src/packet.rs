@@ -122,7 +122,7 @@ pub(crate) enum PacketType {
     Heartbeat(Heartbeat),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
@@ -195,7 +195,7 @@ impl Packet {
 
         hasher.update(cursor.get_ref());
         let crc32 = hasher.finalize();
-        assert!(crc32 != 0);
+        debug_assert!(crc32 != 0);
 
         let _ = cursor
             .write_all(&crc32.to_be_bytes())
@@ -204,13 +204,17 @@ impl Packet {
         let _ = cursor.flush().map_err(|fail| fail.to_string())?;
         let packet_bytes = cursor.into_inner();
 
-        Ok((
-            packet_bytes,
-            Footer {
-                connection_id,
-                crc32: unsafe { NonZeroU32::new_unchecked(crc32) },
-            },
-        ))
+        let footer = Footer {
+            connection_id,
+            crc32: unsafe { NonZeroU32::new_unchecked(crc32) },
+        };
+
+        debug_assert!({
+            let (read_header, read_payload, read_footer) = Packet::decode(&packet_bytes).unwrap();
+            *header == read_header && read_payload == *payload && read_footer == footer
+        });
+
+        Ok((packet_bytes, footer))
     }
 
     pub(crate) fn decode(buffer: &[u8]) -> Result<(Header, Payload, Footer), String> {
@@ -238,13 +242,13 @@ impl Packet {
             }
 
             let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
-            assert_ne!(read_sequence, 0);
+            debug_assert_ne!(read_sequence, 0);
 
             let read_ack = read_buffer_inc!({buffer, buffer_position } : Ack);
             let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
             let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
             let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
-            assert_eq!(buffer_position, Header::ENCODED_SIZE);
+            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
 
             let header = Header {
                 sequence: read_sequence.try_into().unwrap(),
@@ -257,13 +261,13 @@ impl Packet {
             let payload_length = read_payload_length as usize;
             let read_payload = buffer[buffer_position..payload_length].to_vec();
             buffer_position += payload_length;
-            assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
+            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
             let payload = Payload(read_payload);
 
             let connection_id = if read_status_code & 0b1 == 0b1 {
                 let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
-                assert_ne!(read_connection_id, 0);
-                assert_eq!(
+                debug_assert_ne!(read_connection_id, 0);
+                debug_assert_eq!(
                     buffer_position,
                     Header::ENCODED_SIZE + payload_length + mem::size_of::<ConnectionId>()
                 );

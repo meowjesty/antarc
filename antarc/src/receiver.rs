@@ -9,7 +9,8 @@ use crate::{
     },
     packet::{
         header::Header, ConnectionAccepted, ConnectionDenied, ConnectionRequest, DataTransfer,
-        Footer, Heartbeat, Packet, Received, CONNECTION_REQUEST,
+        Footer, Heartbeat, Packet, Received, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
 };
 
@@ -36,26 +37,27 @@ pub(crate) fn system_receiver(
                     },
                 ));
 
-                // TODO(alex) 2021-04-02: Does this need any special handling, or should it be
-                // delegated to the systems whom care about connection state (probably yes)?
-                if let Some(connection_id) = footer.connection_id {}
-                let meta_flags = header.status_code & 0b1111;
                 let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
 
-                match packet_type_flags {
-                    CONNECTION_REQUEST if footer.connection_id.is_none() => {
+                // WARNING(alex): rust and rust-analyzer won't give an error if you forget to import
+                // the constants that are to be `match`ed, instead it will do the normal
+                // destructuring behaviour, and short-circuit whatever comes after the first
+                // non-imported name! rust-analyzer will at least squiggle it suggesting that you
+                // use lower-case instead of all-caps, as it thinks you're just creating a binding.
+                match (packet_type_flags, footer.connection_id) {
+                    (CONNECTION_REQUEST, None) => {
                         world.insert(packet, (ConnectionRequest,)).unwrap();
                     }
-                    CONNECTION_DENIED if footer.connection_id.is_none() => {
+                    (CONNECTION_DENIED, None) => {
                         world.insert(packet, (ConnectionDenied,)).unwrap();
                     }
-                    CONNECTION_ACCEPTED if footer.connection_id.is_some() => {
+                    (CONNECTION_ACCEPTED, Some(_)) => {
                         world.insert(packet, (ConnectionAccepted,)).unwrap();
                     }
-                    DATA_TRANSFER if footer.connection_id.is_some() => {
+                    (DATA_TRANSFER, Some(_)) => {
                         world.insert(packet, (DataTransfer,)).unwrap();
                     }
-                    HEARTBEAT if footer.connection_id.is_some() => {
+                    (HEARTBEAT, Some(_)) => {
                         world.insert(packet, (Heartbeat,)).unwrap();
                     }
                     invalid => {

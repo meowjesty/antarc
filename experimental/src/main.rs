@@ -320,6 +320,11 @@ struct Destination {
 #[derive(Debug)]
 struct ConnectionRequest;
 
+mod test_constants {
+    pub const ZERO: u16 = 0x00;
+    pub const FULL: u16 = 0xff;
+}
+
 fn main() {
     let mut world = World::new();
 
@@ -557,9 +562,14 @@ fn main() {
 
     println!("Test out match on u16 + guard");
     {
+        // const ZERO: u16 = 0x00;
+        // const FULL: u16 = 0xff;
         let status_code: u16 = 0xff;
-        let optional: Option<u16> = Some(0xffff);
+        // let optional: Option<u16> = Some(0xffff);
+        let optional: Option<u16> = None;
 
+        println!();
+        println!("matching on constant!");
         match status_code {
             0x0 if optional.is_none() => {
                 println!("entered 0x0 if optional.is_none()");
@@ -597,8 +607,92 @@ fn main() {
                 );
             }
         }
+
+        /*
+        println!();
+        println!("matching on if guard!");
+        match status_code {
+            x if optional.is_none() && x == ZERO => {
+                println!("entered 0x0 if optional.is_none() ZERO");
+                println!(
+                    "status_code {:#0x} with optional {:#?} and x {:#0x}",
+                    status_code, optional, x
+                );
+            }
+            x if optional.is_some() && x == ZERO => {
+                println!("entered 0x0 if optional.is_some() ZERO");
+                println!(
+                    "status_code {:#0x} with optional {:#?} and x {:#0x}",
+                    status_code, optional, x
+                );
+            }
+            x if optional.is_none() && x == FULL => {
+                println!("entered 0xff if optional.is_none() FULL");
+                println!(
+                    "status_code {:#0x} with optional {:#?} and x {:#0x}",
+                    status_code, optional, x
+                );
+            }
+            x if optional.is_some() && x == FULL => {
+                println!("entered 0xff if optional.is_some() FULL");
+                println!(
+                    "status_code {:#0x} with optional {:#?} and x {:#0x}",
+                    status_code, optional, x
+                );
+            }
+            other => {
+                println!("entered other");
+                println!(
+                    "status_code {:#0x} with optional {:#?} other {:#0x}",
+                    status_code, optional, other
+                );
+            }
+        }
+        */
+
+        use test_constants::{FULL, ZERO};
+        println!();
+        println!("matching on tuple pattern!");
+        match (status_code, optional) {
+            (ZERO, None) => {
+                println!("entered 0x0 if optional.is_none() ZERO");
+                println!(
+                    "status_code {:#0x} with optional {:#?} no x",
+                    status_code, optional
+                );
+            }
+            (ZERO, Some(x)) => {
+                println!("entered 0x0 if optional.is_some() ZERO");
+                println!(
+                    "status_code {:#0x} with optional {:#?} and x {:#0x}",
+                    status_code, optional, x
+                );
+            }
+            (FULL, None) => {
+                println!("entered 0xff if optional.is_none() FULL");
+                println!(
+                    "status_code {:#0x} with optional {:#?} no x",
+                    status_code, optional
+                );
+            }
+            (FULL, Some(x)) => {
+                println!("entered 0xff if optional.is_some() FULL");
+                println!(
+                    "status_code {:#0x} with optional {:#?} and x {:#0x}",
+                    status_code, optional, x
+                );
+            }
+            other => {
+                println!("entered other");
+                println!(
+                    "status_code {:#0x} with optional {:#?} other {:#?}",
+                    status_code, optional, other
+                );
+            }
+        }
     }
 
+    println!();
     println!("Test out result mapping");
     {
         let first_error: Result<u32, String> = Err(format!("First error"));
@@ -620,6 +714,11 @@ fn main() {
         //         ok
         //     });
 
+        // TODO(alex) 2021-04-04: Is this the only way to chain map on error? Every new state that
+        // has a `connection_id` would have to be inserted here.
+        //
+        // ADD(alex): 2021-04-04: Instead of chaining `match`es, just add a component indicating
+        // that the `Host` has a connection id! Simple and efficient.
         let result = match first_error {
             Ok(val) => Some(val as u128),
             Err(first) => {
