@@ -19,6 +19,9 @@ pub(crate) struct Source {
     pub(crate) host_id: Entity,
 }
 
+#[derive(Debug)]
+pub(crate) struct OnReceived;
+
 pub(crate) fn system_receiver(
     socket: &UdpSocket,
     buffer: &mut [u8],
@@ -35,6 +38,7 @@ pub(crate) fn system_receiver(
                     Received {
                         time: timer.elapsed(),
                     },
+                    OnReceived,
                 ));
 
                 let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
@@ -80,29 +84,40 @@ pub(crate) fn system_receiver(
     }
 }
 
-pub(crate) fn system_received_packet(world: &mut World) {
-    let mut host_received_list = world
+pub(crate) fn system_on_packet_received(world: &mut World) {
+    let mut handled_on_received = Vec::with_capacity(8);
+    let mut host_received_list = Vec::with_capacity(8);
+    // let mut new_host_list = Vec::with_capacity(8);
+
+    for (packet_id, (header, packet_address)) in world
         .query::<(&Header, &Address)>()
         .with::<Footer>()
         .with::<Received>()
+        .with::<OnReceived>()
         .without::<Source>()
         .iter()
-        .filter_map(|(packet_id, (_, packet_address))| {
-            let host_packets = world.query::<(&Address,)>().with::<Host>().iter().find_map(
-                |(host_id, (host_address,))| {
-                    if host_address == packet_address {
-                        Some((host_id, packet_id))
-                    } else {
-                        None
-                    }
-                },
-            );
-            host_packets
-        })
-        .collect::<Vec<_>>();
+    {
+        if let Some(host_id) = world.query::<(&Address,)>().with::<Host>().iter().find_map(
+            |(host_id, (host_address,))| {
+                if host_address == packet_address {
+                    Some(host_id)
+                } else {
+                    None
+                }
+            },
+        ) {
+            host_received_list.push((host_id, packet_id))
+        }
+
+        handled_on_received.push(packet_id);
+    }
 
     while let Some((host_id, packet_id)) = host_received_list.pop() {
         world.insert(packet_id, (Source { host_id },)).unwrap();
+    }
+
+    while let Some(packet_id) = handled_on_received.pop() {
+        world.remove::<(OnReceived,)>(packet_id).unwrap();
     }
 }
 
@@ -112,6 +127,18 @@ fn system_received_connection_request_from_new_host(world: &mut World) {
         .with::<Footer>()
         .with::<Received>()
         .with::<ConnectionRequest>()
+        // TODO(alex) 2021-04-06: The system is not independent because of this, we could end up
+        // here before running the `system_add_source_to_packet`, which would be a bug. We're
+        // lacking a marker type that prevents this system from loading packets that have yet to
+        // be sourced (if such a source exists). Some sort of event marker, to tell that this is
+        // the system that must run. These sorts of markers will probably be useful in many other
+        // systems that depend on some previous state being checked before they're run.
+        //
+        // ADD(alex) 2021-04-06: This will also be useful when a system needs to update a `Host`
+        // component.
+        //
+        // NOTE(alex) 2021-04-06: The `OnReceived` event marker solves this problem (untested).
+        .without::<OnReceived>()
         .without::<Source>()
         .iter()
         .map(|(packet_id, (header, address))| {
@@ -141,6 +168,7 @@ fn system_received_connection_accepted(world: &mut World) {
         .with::<Received>()
         .with::<Address>()
         .with::<ConnectionAccepted>()
+        .without::<OnReceived>()
         .iter()
         .filter_map(|(packet_id, (footer, source))| {
             world
