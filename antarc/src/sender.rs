@@ -8,8 +8,9 @@ use crate::{
         Host, RequestingConnection,
     },
     packet::{
-        header::Header, ConnectionAccepted, ConnectionDenied, ConnectionRequest, DataTransfer,
-        Footer, Heartbeat, Packet, Payload, Received, Sent, Sequence, ToSend, CONNECTION_REQUEST,
+        header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionRequest,
+        DataTransfer, Footer, Heartbeat, Packet, Payload, Received, Sent, Sequence, ToSend,
+        CONNECTION_REQUEST,
     },
 };
 
@@ -26,6 +27,7 @@ pub(crate) fn system_sender(socket: &UdpSocket, timer: &Instant, world: &mut Wor
         .query::<(&Header, &Payload, &Destination, &Address)>()
         .with::<ToSend>()
         .without::<Sent>()
+        .without::<Acked>()
         .iter()
         .next()
     {
@@ -36,7 +38,7 @@ pub(crate) fn system_sender(socket: &UdpSocket, timer: &Instant, world: &mut Wor
             .map(|has_connection_id| has_connection_id.get())
             .ok();
 
-        // TODO(alex) 2021-04-04: This is goind to send only 1 packet, we're using `next` on the
+        // TODO(alex) 2021-04-04: This is going to send only 1 packet, we're using `next` on the
         // iterator and not looping! This system is part of a `tick` that has to be constantly
         // called, the looping shouldn't be done here, I think.
         //

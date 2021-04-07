@@ -9,7 +9,7 @@ use crate::{
     },
     packet::{
         header::Header, ConnectionAccepted, ConnectionDenied, ConnectionRequest, DataTransfer,
-        Footer, Heartbeat, Packet, Received, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        Footer, Heartbeat, Internal, Packet, Received, CONNECTION_ACCEPTED, CONNECTION_DENIED,
         CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
 };
@@ -121,80 +121,100 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
     }
 }
 
+///
+/// - NOTE(alex) 2021-04-07:
 fn system_received_connection_request_from_new_host(world: &mut World) {
-    let mut requesting_connection = world
+    let mut new_hosts = Vec::with_capacity(8);
+
+    for (packet_id, (header, address)) in world
         .query::<(&Header, &Address)>()
         .with::<Footer>()
         .with::<Received>()
         .with::<ConnectionRequest>()
-        // TODO(alex) 2021-04-06: The system is not independent because of this, we could end up
-        // here before running the `system_add_source_to_packet`, which would be a bug. We're
-        // lacking a marker type that prevents this system from loading packets that have yet to
-        // be sourced (if such a source exists). Some sort of event marker, to tell that this is
-        // the system that must run. These sorts of markers will probably be useful in many other
-        // systems that depend on some previous state being checked before they're run.
-        //
-        // ADD(alex) 2021-04-06: This will also be useful when a system needs to update a `Host`
-        // component.
-        //
-        // NOTE(alex) 2021-04-06: The `OnReceived` event marker solves this problem (untested).
+        // NOTE(alex): This is the only place where you need to exclude `OnReceived` marker, as
+        // we're not sure if the packet contains a `Source` or not yet, every other system will deal
+        // with a `Source` component, indicating that they're run after the system that adds a
+        // `Source` to a packet.
         .without::<OnReceived>()
-        .without::<Source>()
         .iter()
-        .map(|(packet_id, (header, address))| {
-            let new_host = Host {
+    {
+        if let Ok(source) = world.get::<Source>(packet_id) {
+            // TODO(alex) 2021-04-07: Check if the host is in a valid state to receive a connection
+            // request (`Disconnected` only?), and handle the request.
+            // TODO(alex) 2021-04-07: Packets without `Source + ConnectionRequest` will leak (this
+            // is an invalid packet archetype). Basically, despawn the packet if it would be
+            // invalid.
+        } else {
+            let host = Host {
                 ack_tracker: header.sequence.get(),
                 ..Default::default()
             };
 
-            (new_host, packet_id, address.clone())
-        })
-        .collect::<Vec<_>>();
+            new_hosts.push((packet_id, (host, address.clone())));
+        }
+    }
 
-    while let Some((new_host, packet_id, packet_address)) = requesting_connection.pop() {
-        let host_id = world.spawn((
-            new_host,
-            packet_address,
-            RequestingConnection { attempts: 0 },
-        ));
+    while let Some((packet_id, (new_host, address))) = new_hosts.pop() {
+        let host_id = world.spawn((new_host, address, RequestingConnection { attempts: 0 }));
         world.insert(packet_id, (Source { host_id },)).unwrap();
     }
 }
 
-fn system_received_connection_accepted(world: &mut World) {
-    let mut connection_accepted = world
+fn system_received_connection_accepted(timer: &Instant, world: &mut World) {
+    let mut connection_accepted = Vec::with_capacity(8);
+    let mut invalid_packets = Vec::with_capacity(8);
+
+    for (packet_id, (footer, source)) in world
         .query::<(&Footer, &Source)>()
         .with::<Header>()
         .with::<Received>()
         .with::<Address>()
         .with::<ConnectionAccepted>()
-        .without::<OnReceived>()
+        .without::<Internal>()
         .iter()
-        .filter_map(|(packet_id, (footer, source))| {
-            world
-                .query::<(&AwaitingConnectionAck,)>()
-                .with::<Host>()
-                .iter()
-                .find_map(|(host_id, (_,))| {
-                    if host_id == source.host_id {
-                        Some(host_id)
-                    } else {
-                        None
-                    }
-                })
-                .zip(Some((
-                    packet_id,
-                    footer.connection_id.unwrap(),
-                    ConnectionAccepted,
-                )))
-        })
-        .collect::<Vec<_>>();
+    {
+        match world
+            .query::<(&AwaitingConnectionAck,)>()
+            .with::<Host>()
+            .iter()
+            .find_map(|(host_id, (_,))| {
+                if host_id == source.host_id {
+                    Some(host_id)
+                } else {
+                    None
+                }
+            }) {
+            // NOTE(alex): We have a `Host` in a valid state that can take this type of packet.
+            Some(host_id) => {
+                debug_assert!(footer.connection_id.is_some());
+                connection_accepted.push((host_id, (footer.connection_id.unwrap(),), packet_id));
+            }
+            // NOTE(alex): No `Host` is awaiting for this type of packet.
+            None => {
+                eprintln!("Tried to `ConnectionAccepted` packet, but no `Host` in suitable state was found!");
+                invalid_packets.push(packet_id);
+            }
+        }
+    }
 
-    // TODO(alex) 2021-04-03: Is this complete?
-    while let Some((host_id, (packet_id, connection_id, accepted))) = connection_accepted.pop() {
+    // NOTE(alex): Change `Host` state to `Connected`, and mark packet as handled.
+    while let Some((host_id, (connection_id,), packet_id)) = connection_accepted.pop() {
         world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         world
             .insert(host_id, (Connected, HasConnectionId(connection_id)))
             .unwrap();
+
+        world
+            .insert(
+                packet_id,
+                (Internal {
+                    time: timer.elapsed(),
+                },),
+            )
+            .unwrap();
+    }
+
+    while let Some(packet_id) = invalid_packets.pop() {
+        world.despawn(packet_id).unwrap();
     }
 }
