@@ -85,8 +85,9 @@ pub(crate) fn system_receiver(
 }
 
 pub(crate) fn system_on_packet_received(world: &mut World) {
-    let mut handled_on_received = Vec::with_capacity(8);
+    let mut connection_request_packets = Vec::with_capacity(8);
     let mut host_received_list = Vec::with_capacity(8);
+    let mut invalid_packets = Vec::with_capacity(8);
     // let mut new_host_list = Vec::with_capacity(8);
 
     for (packet_id, (header, packet_address)) in world
@@ -97,6 +98,10 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
         .without::<Source>()
         .iter()
     {
+        let mut connection_request_query =
+            world.query_one::<&ConnectionRequest>(packet_id).unwrap();
+
+        // NOTE(alex): Check if this packet has a `Source`.
         if let Some(host_id) = world.query::<(&Address,)>().with::<Host>().iter().find_map(
             |(host_id, (host_address,))| {
                 if host_address == packet_address {
@@ -107,24 +112,32 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
             },
         ) {
             host_received_list.push((host_id, packet_id))
+        } else if let Some(_) = connection_request_query.get() {
+            // NOTE(alex): `Source`less packet is a connection request, this is ok.
+            connection_request_packets.push(packet_id);
+        } else {
+            // NOTE(alex): `Source`less packets can only be connection requests.
+            invalid_packets.push(packet_id);
         }
-
-        handled_on_received.push(packet_id);
     }
 
     while let Some((host_id, packet_id)) = host_received_list.pop() {
         world.insert(packet_id, (Source { host_id },)).unwrap();
     }
 
-    while let Some(packet_id) = handled_on_received.pop() {
+    while let Some(packet_id) = connection_request_packets.pop() {
         world.remove::<(OnReceived,)>(packet_id).unwrap();
+    }
+
+    while let Some(packet_id) = invalid_packets.pop() {
+        let _ = world.despawn(packet_id).unwrap();
     }
 }
 
-///
-/// - NOTE(alex) 2021-04-07:
-fn system_received_connection_request_from_new_host(world: &mut World) {
+fn system_received_connection_request(world: &mut World) {
     let mut new_hosts = Vec::with_capacity(8);
+    let mut reconnecting_hosts = Vec::with_capacity(8);
+    let mut invalid_packets = Vec::with_capacity(8);
 
     for (packet_id, (header, address)) in world
         .query::<(&Header, &Address)>()
@@ -133,17 +146,22 @@ fn system_received_connection_request_from_new_host(world: &mut World) {
         .with::<ConnectionRequest>()
         // NOTE(alex): This is the only place where you need to exclude `OnReceived` marker, as
         // we're not sure if the packet contains a `Source` or not yet, every other system will deal
-        // with a `Source` component, indicating that they're run after the system that adds a
-        // `Source` to a packet.
+        // with a `Source` component.
         .without::<OnReceived>()
         .iter()
     {
+        // NOTE(alex): There is a known host, but is it in the correct state to handle a connection
+        // request packet?
         if let Ok(source) = world.get::<Source>(packet_id) {
-            // TODO(alex) 2021-04-07: Check if the host is in a valid state to receive a connection
-            // request (`Disconnected` only?), and handle the request.
-            // TODO(alex) 2021-04-07: Packets without `Source + ConnectionRequest` will leak (this
-            // is an invalid packet archetype). Basically, despawn the packet if it would be
-            // invalid.
+            let host_query = world.query_one::<&Host>(source.host_id).unwrap();
+
+            if let Some(_) = host_query.with::<Disconnected>().get() {
+                // NOTE(alex): `Disconnected -> RequestingConnection` is possible.
+                reconnecting_hosts.push(source.host_id);
+            } else {
+                // NOTE(alex): `* -> RequestingConnection` would be an invalid state transition.
+                invalid_packets.push(packet_id);
+            }
         } else {
             let host = Host {
                 ack_tracker: header.sequence.get(),
@@ -154,9 +172,22 @@ fn system_received_connection_request_from_new_host(world: &mut World) {
         }
     }
 
+    // NOTE(alex): Handle packets from new hosts requesting connection.
     while let Some((packet_id, (new_host, address))) = new_hosts.pop() {
         let host_id = world.spawn((new_host, address, RequestingConnection { attempts: 0 }));
         world.insert(packet_id, (Source { host_id },)).unwrap();
+    }
+
+    // NOTE(alex): Handle packets from hosts that were disconnected, and are trying to connect.
+    while let Some(host_id) = reconnecting_hosts.pop() {
+        let _ = world.remove::<(Disconnected,)>(host_id).unwrap();
+        let _ = world
+            .insert(host_id, (RequestingConnection { attempts: 0 },))
+            .unwrap();
+    }
+
+    while let Some(packet_id) = invalid_packets.pop() {
+        let _ = world.despawn(packet_id).unwrap();
     }
 }
 
