@@ -7,7 +7,7 @@
 #![feature(duration_saturating_ops)]
 #![feature(duration_consts_2)]
 
-use core::mem;
+use core::mem::size_of;
 use std::{
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Duration,
@@ -26,8 +26,8 @@ pub mod server;
 #[macro_export]
 macro_rules! read_buffer_inc {
     ({ $buffer: expr, $start: expr } : $kind: ident) => {{
-        let end = $start + mem::size_of::<$kind>();
-        let bytes_arr: &[u8; mem::size_of::<$kind>()] = $buffer[$start..end].try_into().unwrap();
+        let end = $start + size_of::<$kind>();
+        let bytes_arr: &[u8; size_of::<$kind>()] = $buffer[$start..end].try_into().unwrap();
         let val = $kind::from_be_bytes(*bytes_arr);
         $start = end;
         val
@@ -66,19 +66,18 @@ pub(crate) type ProtocolId = NonZeroU32;
 pub(crate) type PacketMarker = NonZeroU16;
 
 pub(crate) const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
-pub(crate) const PROTOCOL_ID_BYTES: [u8; mem::size_of::<ProtocolId>()] =
-    PROTOCOL_ID.get().to_be_bytes();
+pub(crate) const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
 pub(crate) const BUFFER_CAP: usize = Header::ENCODED_SIZE + 128;
 pub(crate) const PADDING: NonZeroU8 = unsafe { NonZeroU8::new_unchecked(0xe0) };
 /// Marks the end of useful data, anything past this can be skipped.
 pub(crate) const END_OF_PACKET: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(0x31f6) };
-pub(crate) const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
+pub(crate) const END_OF_PACKET_BYTES: [u8; size_of::<PacketMarker>()] =
     END_OF_PACKET.get().to_be_bytes();
 // pub const END_OF_PACKET: PacketMarker = 0xa43a;
-// pub const END_OF_PACKET_BYTES: [u8; mem::size_of::<PacketMarker>()] =
+// pub const END_OF_PACKET_BYTES: [u8; size_of::<PacketMarker>()] =
 // END_OF_PACKET.to_be_bytes();
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
-pub(crate) const PACKED_LEN: usize = BUFFER_CAP + mem::size_of::<PacketMarker>();
+pub(crate) const PACKED_LEN: usize = BUFFER_CAP + size_of::<PacketMarker>();
 pub(crate) const MTU_LENGTH: usize = 1500;
 
 // TODO(alex) 2021-01-24: How does send / receive works?

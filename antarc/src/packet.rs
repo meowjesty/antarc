@@ -1,8 +1,8 @@
+use core::mem::size_of;
 use std::{
     convert::TryInto,
     io::{BufRead, Cursor, IoSlice, Read, Write},
     marker::PhantomData,
-    mem,
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Duration,
 };
@@ -169,7 +169,7 @@ impl Packet {
 
         let mut hasher = Hasher::new();
         let mut cursor = Cursor::new(Vec::with_capacity(
-            Header::ENCODED_SIZE + payload.0.len() + mem::size_of::<Footer>(),
+            Header::ENCODED_SIZE + payload.0.len() + size_of::<Footer>(),
         ));
         {
             let mut header_and_payload_buffers = [
@@ -221,11 +221,15 @@ impl Packet {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
-        let crc32_position = buffer_length - mem::size_of::<NonZeroU32>();
-        let crc32_bytes: &[u8; 4] = buffer[crc32_position..].try_into().unwrap();
+        let crc32_position = buffer_length - size_of::<NonZeroU32>();
+        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
+            buffer[crc32_position..].try_into().unwrap();
         let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
-        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, &buffer[..]].concat();
+        // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
+        // the crc32 is calculated after encoding.
+        let buffer_without_crc32 = &buffer[..crc32_position];
+        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, buffer_without_crc32].concat();
 
         hasher.update(&packet_with_protocol_id);
         let crc32 = hasher.finalize();
@@ -269,7 +273,7 @@ impl Packet {
                 debug_assert_ne!(read_connection_id, 0);
                 debug_assert_eq!(
                     buffer_position,
-                    Header::ENCODED_SIZE + payload_length + mem::size_of::<ConnectionId>()
+                    Header::ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
                 );
                 Some(read_connection_id.try_into().unwrap())
             } else {
