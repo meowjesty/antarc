@@ -1,9 +1,12 @@
+use core::fmt;
 use std::{
     marker::PhantomData,
     net::{SocketAddr, UdpSocket},
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Instant,
 };
+
+use hecs::World;
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
 /// receive information about the other `Peer<Client>` that are connected to the same server. They
@@ -25,7 +28,6 @@ use std::{
 /// disconnect->reconnect peer.
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
-#[derive(Debug)]
 pub struct NetManager<ClientOrServer> {
     /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher
     /// level manager thingy, as `socket.send` feels weird when used here.
@@ -34,4 +36,17 @@ pub struct NetManager<ClientOrServer> {
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) client_or_server: ClientOrServer,
+    pub(crate) world: World,
+}
+
+impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NetManager")
+            .field("socket", &self.socket)
+            .field("timer", &self.timer)
+            .field("buffer", &self.buffer.len())
+            .field("client_or_server", &self.client_or_server)
+            .field("world", &self.world.len())
+            .finish()
+    }
 }

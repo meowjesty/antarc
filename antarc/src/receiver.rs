@@ -289,51 +289,6 @@ fn system_received_connection_denied(timer: &Instant, world: &mut World) {
     }
 }
 
-fn system_retrieve_data_transfer(
-    timer: &Instant,
-    world: &mut World,
-) -> Vec<(ConnectionId, Payload)> {
-    let mut data_transfers = Vec::with_capacity(8);
-    let mut result = Vec::with_capacity(8);
-    let mut invalid_packets = Vec::with_capacity(8);
-
-    for (packet_id, (header, payload, footer, source, received)) in world
-        .query::<(&Header, &Payload, &Footer, &Source, &Received)>()
-        .with::<DataTransfer>()
-        .without::<Retrieved>()
-        .iter()
-    {
-        let host_query = world.query_one::<&Host>(source.host_id).unwrap();
-        // TODO(alex) 2021-04-09: This won't work as-is, because the server will have this host in
-        // some sort of `AwaitingConnectionAck` state, as the client doesn't need to send a
-        // `ConnectionAccepted` packet back to the server.
-        // In short, the client knows it's connected, but the server will receive a data transfer
-        // that should confirm the connection.
-        if let Some(_) = host_query.with::<Connected>().get() {
-            data_transfers.push(packet_id);
-            result.push((footer.connection_id.unwrap(), payload.clone()));
-        } else {
-            invalid_packets.push(packet_id);
-        }
-    }
-
-    while let Some(packet_id) = data_transfers.pop() {
-        let _ = world
-            .insert(
-                packet_id,
-                (Retrieved {
-                    time: timer.elapsed(),
-                },),
-            )
-            .unwrap();
-    }
-
-    while let Some(packet_id) = invalid_packets.pop() {
-        let _ = world.despawn(packet_id).unwrap();
-    }
-
-    result
-}
 
 // TODO(alex) 2021-04-08: `system_received_heartbeat`.
 

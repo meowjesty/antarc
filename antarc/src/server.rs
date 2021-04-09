@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hecs::World;
+
 use crate::{host::Host, net::NetManager, packet::ConnectionId, AntarcResult, MTU_LENGTH};
 
 #[derive(Debug)]
@@ -29,7 +31,10 @@ impl NetManager<Server> {
 
         let buffer = vec![0x0; MTU_LENGTH];
 
+        let world = World::new();
+
         NetManager {
+            world,
             socket,
             timer,
             buffer,

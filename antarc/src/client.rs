@@ -6,9 +6,12 @@ use std::{
 use hecs::World;
 
 use crate::{
-    host::{Address, Disconnected, Host, RequestingConnection},
+    host::{Address, Connected, Disconnected, Host, RequestingConnection},
     net::NetManager,
-    packet::{header::Header, ConnectionRequest, ToSend},
+    packet::{
+        header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Payload, Received,
+        Retrieved, ToSend,
+    },
     receiver::Source,
     sender::Destination,
     MTU_LENGTH,
@@ -25,7 +28,6 @@ use crate::{
 /// that looks more like the `Server`, and some way to keep one node of the network as the main
 /// server? This idea is not clear yet.
 pub struct Client {
-    world: World,
     other_clients: Vec<Host>,
     connection: Option<Host>,
 }
@@ -42,7 +44,6 @@ impl NetManager<Client> {
         let world = World::new();
 
         let client = Client {
-            world,
             other_clients: Vec::with_capacity(8),
             connection: None,
         };
@@ -50,6 +51,7 @@ impl NetManager<Client> {
         let buffer = vec![0x0; MTU_LENGTH];
 
         NetManager {
+            world,
             socket,
             timer,
             buffer,
@@ -73,15 +75,14 @@ impl NetManager<Client> {
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> () {
-        let client = &mut self.client_or_server;
+        let world = &mut self.world;
 
         // TODO(alex) 2021-04-03: Check for existing hosts in different states, we do nothing
         // if the host is already `RequestingConnection, AwaitingConnectionAck, Connected`, we only
         // want to do something if `Disconnected` or non-existent.
         //
         // ADD(alex) 2021-04-03: This check is probably good enough.
-        let existing_host_id = client
-            .world
+        let existing_host_id = world
             .query::<(&Address,)>()
             .with::<Host>()
             .with::<Disconnected>()
@@ -92,7 +93,7 @@ impl NetManager<Client> {
         // mutable borrow of `world`, so it doesn't allow `world.spawn`.
         let host_id = existing_host_id.unwrap_or_else(|| {
             let server_host = Host::default();
-            let host_id = client.world.spawn((
+            let host_id = world.spawn((
                 server_host,
                 Address(server_addr.clone()),
                 RequestingConnection { attempts: 0 },
@@ -101,7 +102,7 @@ impl NetManager<Client> {
         });
 
         let connection_request_header = Header::default();
-        let _packet_id = client.world.spawn((
+        let _packet_id = world.spawn((
             connection_request_header,
             Address(server_addr.clone()),
             ToSend {
@@ -130,8 +131,51 @@ impl NetManager<Client> {
 
     /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,
     /// instead of manually calling `receive`.
-    pub fn receive(&mut self) -> () {
-        todo!()
+    /// NOTE(alex): This is less of a system, and more just a function that the user will call, part
+    /// of the public API (exposed via `NetManager` client / server).
+    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
+        let world = &mut self.world;
+
+        let mut data_transfers = Vec::with_capacity(8);
+        let mut result = Vec::with_capacity(8);
+        let mut invalid_packets = Vec::with_capacity(8);
+
+        for (packet_id, (header, payload, footer, source, received)) in world
+            .query::<(&Header, &Payload, &Footer, &Source, &Received)>()
+            .with::<DataTransfer>()
+            .without::<Retrieved>()
+            .iter()
+        {
+            let host_query = world.query_one::<&Host>(source.host_id).unwrap();
+            // NOTE(alex) 2021-04-09: This is the main difference between `Client` and `Server`, as
+            // the client will only accept `DataTransfer`s after the connection is estabilished, but
+            // the server will receive a `DataTransfer` while the `Host` is still in the
+            // `AwaitingAck`-sort of state, this packet will ack the `ConnectionAccepted` packet
+            // that the server sent previously, and estabilish the connection.
+            if let Some(_) = host_query.with::<Connected>().get() {
+                data_transfers.push(packet_id);
+                result.push((footer.connection_id.unwrap(), payload.0.clone()));
+            } else {
+                invalid_packets.push(packet_id);
+            }
+        }
+
+        while let Some(packet_id) = data_transfers.pop() {
+            let _ = world
+                .insert(
+                    packet_id,
+                    (Retrieved {
+                        time: self.timer.elapsed(),
+                    },),
+                )
+                .unwrap();
+        }
+
+        while let Some(packet_id) = invalid_packets.pop() {
+            let _ = world.despawn(packet_id).unwrap();
+        }
+
+        result
     }
 
     /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user
