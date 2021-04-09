@@ -249,3 +249,46 @@ fn system_received_connection_accepted(timer: &Instant, world: &mut World) {
         world.despawn(packet_id).unwrap();
     }
 }
+
+fn system_received_connection_denied(timer: &Instant, world: &mut World) {
+    let mut denied_hosts = Vec::with_capacity(8);
+    let mut invalid_packets = Vec::with_capacity(8);
+
+    for (packet_id, (header, source, received)) in world
+        .query::<(&Header, &Source, &Received)>()
+        .with::<ConnectionDenied>()
+        .without::<Internal>()
+        .iter()
+    {
+        let host_query = world.query_one::<&Host>(source.host_id).unwrap();
+        // NOTE(alex): Only hosts with `AwaitingConnectionAck` may handle this type of packet.
+        if let Some(_) = host_query.with::<AwaitingConnectionAck>().get() {
+            denied_hosts.push((source.host_id, packet_id));
+        } else {
+            invalid_packets.push(packet_id);
+        }
+    }
+
+    while let Some((host_id, packet_id)) = denied_hosts.pop() {
+        let _ = world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
+        // TODO(alex) 2021-04-09: Reset `Host` tracker values.
+        let _ = world.insert(host_id, (Disconnected,)).unwrap();
+
+        let _ = world
+            .insert(
+                packet_id,
+                (Internal {
+                    time: timer.elapsed(),
+                },),
+            )
+            .unwrap();
+    }
+
+    while let Some(packet_id) = invalid_packets.pop() {
+        let _ = world.despawn(packet_id).unwrap();
+    }
+}
+
+// TODO(alex) 2021-04-08: `system_received_data_transfer`.
+
+// TODO(alex) 2021-04-08: `system_received_heartbeat`.
