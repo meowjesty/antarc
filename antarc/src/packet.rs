@@ -122,7 +122,7 @@ pub(crate) enum PacketType {
     Heartbeat(Heartbeat),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
