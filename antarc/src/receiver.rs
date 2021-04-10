@@ -22,6 +22,11 @@ pub(crate) struct Source {
 #[derive(Debug)]
 pub(crate) struct OnReceived;
 
+/// TODO(alex) 2021-04-10: This could hold a `[Entity; 4]` representing the ack window to help with
+// past ack handling? The same applies for `LatestSent`. Would probably blow up with redundant data.
+#[derive(Debug, PartialEq)]
+pub(crate) struct LatestReceived;
+
 pub(crate) fn system_receiver(
     socket: &UdpSocket,
     buffer: &mut [u8],
@@ -31,14 +36,28 @@ pub(crate) fn system_receiver(
     match socket.recv_from(buffer) {
         Ok((num_recv, from_addr)) => {
             if num_recv > 0 {
+                let from_address = Address(from_addr);
+
+                // TODO(alex) 2021-04-10: Is this the correct way to get the `LatestReceived`? Is
+                // `Source` always present, or should I do without it?
+                let old_latest = world
+                    .query::<&Address>()
+                    .with::<Source>()
+                    .with::<LatestReceived>()
+                    .iter()
+                    .find_map(|(packet_id, address)| {
+                        (*address == from_address).then_some(packet_id)
+                    });
+
                 let (header, payload, footer) = Packet::decode(&buffer).unwrap();
                 let packet = world.spawn((
                     payload,
-                    Address(from_addr),
+                    from_address,
                     Received {
                         time: timer.elapsed(),
                     },
                     OnReceived,
+                    LatestReceived,
                 ));
 
                 let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
@@ -71,7 +90,11 @@ pub(crate) fn system_receiver(
                     }
                 };
 
-                world.insert(packet, (header, footer)).unwrap();
+                let _ = world.insert(packet, (header, footer)).unwrap();
+
+                if let Some(packet_id) = old_latest {
+                    let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
+                }
             } else {
                 eprintln!("Received 0 bytes from {:#?}.", from_addr);
                 unreachable!();
@@ -289,10 +312,24 @@ fn system_received_connection_denied(timer: &Instant, world: &mut World) {
     }
 }
 
-
 // TODO(alex) 2021-04-08: `system_received_heartbeat`.
 
 // TODO(alex) 2021-04-09: `system_on_receive_ack` that loops through packets with `Source` and acks
 // the host's sent packets. Is this system ok with being run in any order (probably not, as it
 // shouldn't loop through packets `Internal` and `Retrieved`, but there is no way to avoid this
 // right now).
+fn system_on_receive_ack(timer: &Instant, world: &mut World) {
+    // TODO(alex) 2021-04-09: Should this add a new `ToSend` packet for a host, every packet that
+    // host A receives from B should respond back with an ack, sometimes this can be done via the
+    // user sending a message to B, but what if the user has no data to send for a while? B might
+    // think that the packet was lost, due to the amount of time between sent<->acked, this also
+    // messes up rtt calculations. But how do we handle this, if we add a `ToSend` packet here, the
+    // host A sequence tracker field has to be updated, as the sequence may never repeat (I don't
+    // see a problem with repeating an ack value), but then if this reply fails for some reason,
+    // or we ignore this packet in favor of a data transfer, then B will receive a packet with the
+    // correct (possible duplicated) ack value, but it'll receive a wrong sequence value (such as
+    // sequence + 2), and think that sequence + 1 was lost, when it wasn't ever sent?
+    //
+    // ADD(alex) 2021-04-09: I'm thinking about some sort of `ToAck(ack_num)` event, instead of
+    // building a full packet with a `Header`.
+}

@@ -12,26 +12,86 @@ use crate::{
         DataTransfer, Footer, Heartbeat, Packet, Payload, Received, Sent, Sequence, ToSend,
         CONNECTION_REQUEST,
     },
+    receiver::{LatestReceived, Source},
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, PartialOrd)]
 pub(crate) struct Destination {
     pub(crate) host_id: Entity,
 }
 
-pub(crate) fn system_sender(socket: &UdpSocket, timer: &Instant, world: &mut World) {
+#[derive(Debug, PartialEq, PartialOrd)]
+pub(crate) struct LatestSent;
+
+pub(crate) fn system_sender(
+    status_code: u16,
+    socket: &UdpSocket,
+    timer: &Instant,
+    world: &mut World,
+) {
     let mut new_footer = None;
     let mut sent = None;
+    let mut old_latest_sent = None;
 
     if let Some(packet) = world
-        .query::<(&Header, &Payload, &Destination, &Address)>()
+        .query::<(&Payload, &Destination, &Address)>()
         .with::<ToSend>()
         .without::<Sent>()
         .without::<Acked>()
         .iter()
         .next()
     {
-        let (packet_id, (header, payload, destination, address)) = packet;
+        let (packet_id, (payload, destination, address)) = packet;
+
+        let latest_sent = world
+            .query::<(&Header, &Destination)>()
+            .with::<Sent>()
+            .with::<LatestSent>()
+            .without::<Acked>()
+            .iter()
+            .find_map(|(packet_id, (header, sent_to))| {
+                (sent_to == destination).then_some((packet_id, header.clone()))
+            });
+
+        let sequence = latest_sent
+            .as_ref()
+            .map_or(unsafe { Sequence::new_unchecked(1) }, |(_, header)| {
+                header.sequence
+            });
+
+        let ack = world
+            .query::<(&Header, &Source)>()
+            .with::<LatestReceived>()
+            .iter()
+            .find_map(|(_, (header, source))| {
+                (source.host_id == destination.host_id).then_some(header.sequence)
+            })
+            .map_or(0, |sequence_to_ack| sequence_to_ack.get());
+
+        let ack_diff = {
+            let latest_ack = latest_sent.as_ref().map_or(0, |(_, header)| header.ack);
+            let diff = ack - latest_ack;
+            diff
+        };
+
+        let past_acks = {
+            let latest_past_acks = latest_sent
+                .as_ref()
+                .map_or(0, |(_, header)| header.past_acks);
+
+            (latest_past_acks << ack_diff) | 0b1
+        };
+
+        let header = Header {
+            sequence,
+            ack,
+            past_acks,
+            status_code,
+            // TODO(alex) 2021-04-10: Do not allow packets with large payloads, this will be
+            // properly handled with fragmentation, but right now we could just check before
+            // assignment!
+            payload_length: payload.len() as u16,
+        };
 
         let connection_id = world
             .get::<HasConnectionId>(destination.host_id)
@@ -44,13 +104,14 @@ pub(crate) fn system_sender(socket: &UdpSocket, timer: &Instant, world: &mut Wor
         //
         // TODO(alex) 2021-04-05: `new_footer` will always exist here, but when we start handling
         // encoding errors, then it might not be created.
-        let (packet_bytes, footer) = Packet::encode(header, payload, connection_id).unwrap();
+        let (packet_bytes, footer) = Packet::encode(&header, payload, connection_id).unwrap();
         new_footer = Some((packet_id, (footer,)));
 
         match socket.send_to(&packet_bytes, address.0) {
             Ok(num_sent) => {
                 debug_assert!(num_sent > 0);
                 sent = Some((packet_id, destination.host_id));
+                old_latest_sent = latest_sent;
             }
             Err(fail) => {
                 eprintln!("Failed to send packet with {:#?}.", fail);
@@ -75,6 +136,10 @@ pub(crate) fn system_sender(socket: &UdpSocket, timer: &Instant, world: &mut Wor
 
         let mut host = world.get_mut::<Host>(host_id).unwrap();
         host.sequence_tracker = Sequence::new(host.sequence_tracker.get() + 1).unwrap();
+    }
+
+    if let Some((packet_id, _)) = old_latest_sent {
+        let _ = world.remove::<(LatestSent,)>(packet_id).unwrap();
     }
 }
 

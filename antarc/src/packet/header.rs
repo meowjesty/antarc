@@ -38,7 +38,7 @@ use crate::{AntarcResult, ProtocolId};
 /// TODO(alex) 2021-03-07: `status_code` does not represent `CONNECTION_ACCEPTED`,
 /// `CONNECTION_DENIED`, it should represent `Success`, `Failed`, `Refused`, ...
 
-#[derive(Debug, PartialEq, Clone, Eq, Hash, Bundle)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct Header {
     /// TODO(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
     /// response, maybe a data transfer, and each is handled differently, for example, the protocol

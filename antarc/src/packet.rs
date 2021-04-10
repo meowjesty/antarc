@@ -125,6 +125,12 @@ pub(crate) enum PacketType {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
 
+impl Payload {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub(crate) struct Footer {
     pub(crate) connection_id: Option<ConnectionId>,
