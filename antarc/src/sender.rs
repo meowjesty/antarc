@@ -59,6 +59,24 @@ pub(crate) fn system_sender(
                 header.sequence
             });
 
+        // TODO(alex) 2021-04-11: This will ignore some of the packets received, while the socket
+        // isn't ready to send, other packets may arrive and take the `LatestReceived` token,
+        // leaving a some received packets in an ack limbo.
+        //
+        // To counter this, some `ToAck(packet_id)` archetype would be nice, as we could loop
+        // through those here, grab the biggest ack number, take the difference between whatever
+        // packet never arrived, and use this to create the true `past_acks` value, example:
+        //
+        // sent { sequence 20, ack 19, past_acks 1111_0111 }
+        // received { sequence 20 }
+        // received { sequence 21 }
+        // lost received { sequence 22 }
+        // lost received { sequence 23 }
+        // received { sequence 24 }
+        // sent { sequence 21, ack 24, past_acks 0111_1100 }
+        //
+        // To achieve this, something must be done in the receiver side of things, more than just
+        // strapping a `LatestReceived` marker. We need a list of packets to ack.
         let ack = world
             .query::<(&Header, &Source)>()
             .with::<LatestReceived>()

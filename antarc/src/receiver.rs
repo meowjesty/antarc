@@ -38,17 +38,6 @@ pub(crate) fn system_receiver(
             if num_recv > 0 {
                 let from_address = Address(from_addr);
 
-                // TODO(alex) 2021-04-10: Is this the correct way to get the `LatestReceived`? Is
-                // `Source` always present, or should I do without it?
-                let old_latest = world
-                    .query::<&Address>()
-                    .with::<Source>()
-                    .with::<LatestReceived>()
-                    .iter()
-                    .find_map(|(packet_id, address)| {
-                        (*address == from_address).then_some(packet_id)
-                    });
-
                 let (header, payload, footer) = Packet::decode(&buffer).unwrap();
                 let packet = world.spawn((
                     payload,
@@ -57,7 +46,6 @@ pub(crate) fn system_receiver(
                         time: timer.elapsed(),
                     },
                     OnReceived,
-                    LatestReceived,
                 ));
 
                 let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
@@ -91,10 +79,6 @@ pub(crate) fn system_receiver(
                 };
 
                 let _ = world.insert(packet, (header, footer)).unwrap();
-
-                if let Some(packet_id) = old_latest {
-                    let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
-                }
             } else {
                 eprintln!("Received 0 bytes from {:#?}.", from_addr);
                 unreachable!();
@@ -111,7 +95,7 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
     let mut connection_request_packets = Vec::with_capacity(8);
     let mut host_received_list = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
-    // let mut new_host_list = Vec::with_capacity(8);
+    let mut update_latest_received = Vec::with_capacity(8);
 
     for (packet_id, (header, packet_address)) in world
         .query::<(&Header, &Address)>()
@@ -134,9 +118,17 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
                 }
             },
         ) {
+            let old_latest = world
+                .query::<&Source>()
+                .with::<LatestReceived>()
+                .iter()
+                .find_map(|(packet_id, source)| (source.host_id == host_id).then_some(packet_id));
+            update_latest_received.push(old_latest);
+
             host_received_list.push((host_id, packet_id))
         } else if let Some(_) = connection_request_query.get() {
             // NOTE(alex): `Source`less packet is a connection request, this is ok.
+            debug_assert_eq!(header.status_code, CONNECTION_REQUEST);
             connection_request_packets.push(packet_id);
         } else {
             // NOTE(alex): `Source`less packets can only be connection requests.
@@ -145,15 +137,23 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
     }
 
     while let Some((host_id, packet_id)) = host_received_list.pop() {
-        world.insert(packet_id, (Source { host_id },)).unwrap();
+        let _ = world
+            .insert(packet_id, (Source { host_id }, LatestReceived))
+            .unwrap();
     }
 
     while let Some(packet_id) = connection_request_packets.pop() {
-        world.remove::<(OnReceived,)>(packet_id).unwrap();
+        let _ = world.remove::<(OnReceived,)>(packet_id).unwrap();
     }
 
     while let Some(packet_id) = invalid_packets.pop() {
         let _ = world.despawn(packet_id).unwrap();
+    }
+
+    while let Some(old_latest) = update_latest_received.pop() {
+        if let Some(packet_id) = old_latest {
+            let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
+        }
     }
 }
 
@@ -198,7 +198,9 @@ fn system_received_connection_request(world: &mut World) {
     // NOTE(alex): Handle packets from new hosts requesting connection.
     while let Some((packet_id, (new_host, address))) = new_hosts.pop() {
         let host_id = world.spawn((new_host, address, RequestingConnection { attempts: 0 }));
-        world.insert(packet_id, (Source { host_id },)).unwrap();
+        world
+            .insert(packet_id, (Source { host_id }, LatestReceived))
+            .unwrap();
     }
 
     // NOTE(alex): Handle packets from hosts that were disconnected, and are trying to connect.
