@@ -1,3 +1,11 @@
+// NOTE(alex) 2021-04-13: How I would like UDP sockets to work:
+// - `bind(7777, buffer[10mb])` would both open the socket, and give it a buffer where data is
+// loaded into, even without calling `recv`, kinda like a file read;
+// - when you call `recv_from` it returns some sort of slice into the buffer, or maybe you pass it
+// another buffer to put the data in, but it doesn't block anything (no wait for recv), because
+// the OS already has data in the socket buffer (or no data), so recv returns `(address, data[])`;
+// - every packet sent to the bound port, is just added to the socket buffer, and you tell the OS
+// what should happen in case the memory can't hold up.
 use std::{net::UdpSocket, time::Instant};
 
 use hecs::{Entity, Ref, World};
@@ -20,21 +28,20 @@ pub(crate) struct Source {
 }
 
 #[derive(Debug)]
-pub(crate) struct OnReceived;
-
-#[derive(Debug)]
-pub(crate) struct OnPacketReceived {
+pub(crate) struct OnReceivedPacket {
     packet_id: Entity,
 }
 
 #[derive(Debug)]
-pub(crate) struct OnConnectionRequest {
+pub(crate) struct OnReceivedConnectionRequest {
     packet_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct LatestReceived;
 
+///
+/// - Raises the `OnReceivedPacket` event.
 pub(crate) fn system_receiver(
     socket: &UdpSocket,
     buffer: &mut [u8],
@@ -53,7 +60,6 @@ pub(crate) fn system_receiver(
                     Received {
                         time: timer.elapsed(),
                     },
-                    OnReceived,
                 ));
 
                 let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
@@ -87,7 +93,7 @@ pub(crate) fn system_receiver(
                 };
 
                 let _ = world.insert(packet_id, (header, footer)).unwrap();
-                let _event = world.spawn((OnPacketReceived { packet_id },));
+                let _event = world.spawn((OnReceivedPacket { packet_id },));
             } else {
                 eprintln!("Received 0 bytes from {:#?}.", from_addr);
                 unreachable!();
@@ -100,14 +106,22 @@ pub(crate) fn system_receiver(
     }
 }
 
-pub(crate) fn system_on_packet_received(world: &mut World) {
+/// System responsible for attributing a `Source` host to a packet entity, if the host matches the
+/// packet's `Address`, otherwise it raises the `OnReceivedConnectionRequest` event (if the `Header`
+/// represents a `ConnectionRequest`).
+///
+/// Also handles the changes to a host's `LatestReceived` packet.
+///
+/// - Raises the `OnReceivedConnectionRequest` event.
+pub(crate) fn system_on_received_packet(world: &mut World) {
+    let mut handled_events = Vec::with_capacity(8);
+
     let mut connection_request_packets = Vec::with_capacity(8);
     let mut host_received_list = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
     let mut update_latest_received = Vec::with_capacity(8);
-    let mut handled_events = Vec::with_capacity(8);
 
-    for (event_id, (on_packet_received,)) in world.query::<(&OnPacketReceived,)>().iter() {
+    for (event_id, (on_packet_received,)) in world.query::<(&OnReceivedPacket,)>().iter() {
         let packet_id = on_packet_received.packet_id;
 
         let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
@@ -126,6 +140,7 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
                 }
             },
         ) {
+            // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it out.
             let old_latest = world
                 .query::<&Source>()
                 .with::<LatestReceived>()
@@ -157,7 +172,7 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
     }
 
     let _ = world.spawn_batch(connection_request_packets.iter().map(|packet_id| {
-        (OnConnectionRequest {
+        (OnReceivedConnectionRequest {
             packet_id: *packet_id,
         },)
     }));
@@ -173,21 +188,27 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
     }
 }
 
-fn system_received_connection_request(world: &mut World) {
+/// Handles the `OnReceivedConnectionRequest` event by creating a new host archetype, or updating
+/// a previously known `Disconnected` host that could be trying to reconnect.
+fn system_on_received_connection_request(world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
+
     let mut new_hosts = Vec::with_capacity(8);
     let mut reconnecting_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
-    for (event_id, (on_connection_request,)) in world.query::<(&OnConnectionRequest,)>().iter() {
-        let packet_id = on_connection_request.packet_id;
+    for (event_id, (on_received_connection_request,)) in
+        world.query::<(&OnReceivedConnectionRequest,)>().iter()
+    {
+        let packet_id = on_received_connection_request.packet_id;
 
         let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
         let (header, address) = packet_query.get().unwrap();
 
         // NOTE(alex): There is a known host, but is it in the correct state to handle a connection
         // request packet?
-        if let Ok(source) = world.get::<Source>(packet_id) {
+        let mut source_query = world.query_one::<&Source>(packet_id).unwrap();
+        if let Some(source) = source_query.get() {
             let host_query = world.query_one::<&Host>(source.host_id).unwrap();
 
             if let Some(_) = host_query.with::<Disconnected>().get() {
@@ -234,7 +255,9 @@ fn system_received_connection_request(world: &mut World) {
     }
 }
 
-fn system_received_connection_accepted(timer: &Instant, world: &mut World) {
+// TODO(alex) 2021-04-13: Do we need events here? I don't think so, every packet here will already
+// have a `Source` component
+fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
     let mut connection_accepted = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
