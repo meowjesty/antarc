@@ -22,8 +22,16 @@ pub(crate) struct Source {
 #[derive(Debug)]
 pub(crate) struct OnReceived;
 
-/// TODO(alex) 2021-04-10: This could hold a `[Entity; 4]` representing the ack window to help with
-// past ack handling? The same applies for `LatestSent`. Would probably blow up with redundant data.
+#[derive(Debug)]
+pub(crate) struct OnPacketReceived {
+    packet_id: Entity,
+}
+
+#[derive(Debug)]
+pub(crate) struct OnConnectionRequest {
+    packet_id: Entity,
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct LatestReceived;
 
@@ -39,7 +47,7 @@ pub(crate) fn system_receiver(
                 let from_address = Address(from_addr);
 
                 let (header, payload, footer) = Packet::decode(&buffer).unwrap();
-                let packet = world.spawn((
+                let packet_id = world.spawn((
                     payload,
                     from_address,
                     Received {
@@ -57,28 +65,29 @@ pub(crate) fn system_receiver(
                 // use lower-case instead of all-caps, as it thinks you're just creating a binding.
                 match (packet_type_flags, footer.connection_id) {
                     (CONNECTION_REQUEST, None) => {
-                        world.insert(packet, (ConnectionRequest,)).unwrap();
+                        world.insert(packet_id, (ConnectionRequest,)).unwrap();
                     }
                     (CONNECTION_DENIED, None) => {
-                        world.insert(packet, (ConnectionDenied,)).unwrap();
+                        world.insert(packet_id, (ConnectionDenied,)).unwrap();
                     }
                     (CONNECTION_ACCEPTED, Some(_)) => {
-                        world.insert(packet, (ConnectionAccepted,)).unwrap();
+                        world.insert(packet_id, (ConnectionAccepted,)).unwrap();
                     }
                     (DATA_TRANSFER, Some(_)) => {
-                        world.insert(packet, (DataTransfer,)).unwrap();
+                        world.insert(packet_id, (DataTransfer,)).unwrap();
                     }
                     (HEARTBEAT, Some(_)) => {
-                        world.insert(packet, (Heartbeat,)).unwrap();
+                        world.insert(packet_id, (Heartbeat,)).unwrap();
                     }
                     invalid => {
                         eprintln!("Invalid packet type received {:#?}.", invalid);
-                        world.despawn(packet).unwrap();
+                        world.despawn(packet_id).unwrap();
                         unreachable!();
                     }
                 };
 
-                let _ = world.insert(packet, (header, footer)).unwrap();
+                let _ = world.insert(packet_id, (header, footer)).unwrap();
+                let _event = world.spawn((OnPacketReceived { packet_id },));
             } else {
                 eprintln!("Received 0 bytes from {:#?}.", from_addr);
                 unreachable!();
@@ -96,15 +105,14 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
     let mut host_received_list = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
     let mut update_latest_received = Vec::with_capacity(8);
+    let mut handled_events = Vec::with_capacity(8);
 
-    for (packet_id, (header, packet_address)) in world
-        .query::<(&Header, &Address)>()
-        .with::<Footer>()
-        .with::<Received>()
-        .with::<OnReceived>()
-        .without::<Source>()
-        .iter()
-    {
+    for (event_id, (on_packet_received,)) in world.query::<(&OnPacketReceived,)>().iter() {
+        let packet_id = on_packet_received.packet_id;
+
+        let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
+        let (header, packet_address) = packet_query.get().unwrap();
+
         let mut connection_request_query =
             world.query_one::<&ConnectionRequest>(packet_id).unwrap();
 
@@ -134,6 +142,12 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
             // NOTE(alex): `Source`less packets can only be connection requests.
             invalid_packets.push(packet_id);
         }
+
+        handled_events.push(event_id);
+    }
+
+    while let Some(handled_event) = handled_events.pop() {
+        let _ = world.despawn(handled_event).unwrap();
     }
 
     while let Some((host_id, packet_id)) = host_received_list.pop() {
@@ -142,9 +156,11 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
             .unwrap();
     }
 
-    while let Some(packet_id) = connection_request_packets.pop() {
-        let _ = world.remove::<(OnReceived,)>(packet_id).unwrap();
-    }
+    let _ = world.spawn_batch(connection_request_packets.iter().map(|packet_id| {
+        (OnConnectionRequest {
+            packet_id: *packet_id,
+        },)
+    }));
 
     while let Some(packet_id) = invalid_packets.pop() {
         let _ = world.despawn(packet_id).unwrap();
@@ -158,21 +174,17 @@ pub(crate) fn system_on_packet_received(world: &mut World) {
 }
 
 fn system_received_connection_request(world: &mut World) {
+    let mut handled_events = Vec::with_capacity(8);
     let mut new_hosts = Vec::with_capacity(8);
     let mut reconnecting_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
-    for (packet_id, (header, address)) in world
-        .query::<(&Header, &Address)>()
-        .with::<Footer>()
-        .with::<Received>()
-        .with::<ConnectionRequest>()
-        // NOTE(alex): This is the only place where you need to exclude `OnReceived` marker, as
-        // we're not sure if the packet contains a `Source` or not yet, every other system will deal
-        // with a `Source` component.
-        .without::<OnReceived>()
-        .iter()
-    {
+    for (event_id, (on_connection_request,)) in world.query::<(&OnConnectionRequest,)>().iter() {
+        let packet_id = on_connection_request.packet_id;
+
+        let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
+        let (header, address) = packet_query.get().unwrap();
+
         // NOTE(alex): There is a known host, but is it in the correct state to handle a connection
         // request packet?
         if let Ok(source) = world.get::<Source>(packet_id) {
@@ -193,6 +205,12 @@ fn system_received_connection_request(world: &mut World) {
 
             new_hosts.push((packet_id, (host, address.clone())));
         }
+
+        handled_events.push(event_id);
+    }
+
+    while let Some(handled_event) = handled_events.pop() {
+        let _ = world.despawn(handled_event).unwrap();
     }
 
     // NOTE(alex): Handle packets from new hosts requesting connection.
