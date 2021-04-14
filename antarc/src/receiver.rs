@@ -193,6 +193,10 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
         // such as `OnReceivedAddToAck` (or some similar name). This event and system will be
         // responsible for adding a `ToAck` (or some sort) component to packets that are sent
         // back (responses).
+        //
+        // ADD(alex) 2021-04-14: This is the event, it's being raised both here, and on the
+        // connection request handler. Here it's raised only if we have a `Source` already,
+        // meanwhile the connection request handler raises it after adding a `Source`.
         let _ = world.spawn((OnReceivedAddPacketToAck { packet_id, host_id },));
     }
 
