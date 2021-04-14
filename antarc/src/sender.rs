@@ -47,7 +47,6 @@ pub(crate) fn system_sender(
             .query::<(&Header, &Destination)>()
             .with::<Sent>()
             .with::<LatestSent>()
-            .without::<Acked>()
             .iter()
             .find_map(|(packet_id, (header, sent_to))| {
                 (sent_to == destination).then_some((packet_id, header.clone()))

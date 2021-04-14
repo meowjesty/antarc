@@ -16,10 +16,12 @@ use crate::{
         RequestingConnection,
     },
     packet::{
-        header::Header, ConnectionAccepted, ConnectionDenied, ConnectionId, ConnectionRequest,
-        DataTransfer, Footer, Heartbeat, Internal, Packet, Payload, Received, Retrieved,
-        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
+        ConnectionRequest, DataTransfer, Footer, Heartbeat, Internal, Packet, Payload, Received,
+        Retrieved, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
+        HEARTBEAT,
     },
+    sender::Destination,
 };
 
 #[derive(Debug)]
@@ -35,6 +37,20 @@ pub(crate) struct OnReceivedPacket {
 #[derive(Debug)]
 pub(crate) struct OnReceivedConnectionRequest {
     packet_id: Entity,
+}
+
+/// Event: `Host` has `Sent` packets that require acking.
+#[derive(Debug)]
+pub(crate) struct OnReceivedAckSentPacket {
+    packet_id: Entity,
+    host_id: Entity,
+}
+
+/// Event: `Host` has `Received` packets that will be acked on the next `send`.
+#[derive(Debug)]
+pub(crate) struct OnReceivedAddPacketToAck {
+    packet_id: Entity,
+    host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
@@ -148,7 +164,7 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
                 .find_map(|(packet_id, source)| (source.host_id == host_id).then_some(packet_id));
             update_latest_received.push(old_latest);
 
-            host_received_list.push((host_id, packet_id))
+            host_received_list.push((host_id, packet_id, header.clone()))
         } else if let Some(_) = connection_request_query.get() {
             // NOTE(alex): `Source`less packet is a connection request, this is ok.
             debug_assert_eq!(header.status_code, CONNECTION_REQUEST);
@@ -165,10 +181,19 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
         let _ = world.despawn(handled_event).unwrap();
     }
 
-    while let Some((host_id, packet_id)) = host_received_list.pop() {
+    while let Some((host_id, packet_id, header)) = host_received_list.pop() {
         let _ = world
             .insert(packet_id, (Source { host_id }, LatestReceived))
             .unwrap();
+
+        if header.ack != 0 {
+            let _ = world.spawn((OnReceivedAckSentPacket { packet_id, host_id },));
+        }
+        // TODO(alex) 2021-04-14: Raise event that happens after the `OnReceivedAckSentPacket`,
+        // such as `OnReceivedAddToAck` (or some similar name). This event and system will be
+        // responsible for adding a `ToAck` (or some sort) component to packets that are sent
+        // back (responses).
+        let _ = world.spawn((OnReceivedAddPacketToAck { packet_id, host_id },));
     }
 
     let _ = world.spawn_batch(connection_request_packets.iter().map(|packet_id| {
@@ -234,10 +259,12 @@ fn system_on_received_connection_request(world: &mut World) {
         let _ = world.despawn(handled_event).unwrap();
     }
 
-    // NOTE(alex): Handle packets from new hosts requesting connection.
+    // NOTE(alex): Handle packets from new hosts requesting connection. Also raises the event
+    // telling this new `Host` that it has to ack the packet just received.
     while let Some((packet_id, (new_host, address))) = new_hosts.pop() {
         let host_id = world.spawn((new_host, address, RequestingConnection { attempts: 0 }));
-        world
+        let _ = world.spawn((OnReceivedAddPacketToAck { packet_id, host_id },));
+        let _ = world
             .insert(packet_id, (Source { host_id }, LatestReceived))
             .unwrap();
     }
@@ -361,7 +388,52 @@ fn system_received_connection_denied(timer: &Instant, world: &mut World) {
 // the host's sent packets. Is this system ok with being run in any order (probably not, as it
 // shouldn't loop through packets `Internal` and `Retrieved`, but there is no way to avoid this
 // right now).
-fn system_on_receive_ack(timer: &Instant, world: &mut World) {
+fn system_on_received_ack_sent_packet(timer: &Instant, world: &mut World) {
+    let mut handled_events = Vec::with_capacity(8);
+    let mut sent_to_ack_list = Vec::with_capacity(8);
+
+    for (event_id, (event,)) in world.query::<(&OnReceivedAckSentPacket,)>().iter() {
+        let OnReceivedAckSentPacket { packet_id, host_id } = event;
+
+        let mut acker_query = world.query_one::<(&Header,)>(*packet_id).unwrap();
+        let (received,) = acker_query.get().unwrap();
+
+        // TODO(alex) 2021-04-14: Handle `past_acks`. Should this be done here or raise another
+        // event?
+        //
+        // NOTE(alex): Search for packets that have been `Sent`, but were not `Acked` yet, that
+        // belong to this specific `Host` (via `Destination`) and that have a matching `sequence`
+        // (sent) to this packet's `ack` (received).
+        if let Some(sent) = world
+            .query::<(&Header, &Sent, &Destination)>()
+            .without::<Acked>()
+            .iter()
+            .find_map(|(sent_id, (header, sent, destination))| {
+                (destination.host_id == *host_id && header.sequence.get() == received.ack)
+                    .then_some(sent_id)
+            })
+        {
+            sent_to_ack_list.push(sent);
+        }
+        handled_events.push(event_id);
+    }
+
+    while let Some(event_id) = handled_events.pop() {
+        let _ = world.despawn(event_id).unwrap();
+    }
+
+    while let Some(sent_id) = sent_to_ack_list.pop() {
+        // NOTE(alex): Packets here are now `Sent + Acked`.
+        let _ = world
+            .insert(
+                sent_id,
+                (Acked {
+                    time: timer.elapsed(),
+                },),
+            )
+            .unwrap();
+    }
+
     // TODO(alex) 2021-04-09: Should this add a new `ToSend` packet for a host, every packet that
     // host A receives from B should respond back with an ack, sometimes this can be done via the
     // user sending a message to B, but what if the user has no data to send for a while? B might
