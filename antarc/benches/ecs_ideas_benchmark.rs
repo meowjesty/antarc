@@ -22,7 +22,7 @@ struct Event {
     id: Entity,
 }
 
-const MAX: usize = 1000;
+const MAX: usize = 100;
 
 fn build_data() -> Vec<Data> {
     let mut data_list = Vec::with_capacity(MAX);
@@ -102,6 +102,57 @@ fn spawn_despawn() {
     }
 }
 
+fn hecs_insert_remove() {
+    let mut world = World::new();
+    let mut ids = world
+        .spawn_batch((0..MAX).into_iter().map(|i| {
+            (Data {
+                x: 1.0 + i as f32,
+                y: 1.1 + i as f32,
+                z: 1.2 + i as f32,
+                day: 2 + i as u32,
+                month: 3 + i as u16,
+                year: 4 + i as u32,
+            },)
+        }))
+        .collect::<Vec<_>>();
+
+    let mut ids_copy = ids.clone();
+
+    while let Some(id) = ids.pop() {
+        let _ = world.insert(id, (Marker, Extra(0xed))).unwrap();
+    }
+
+    while let Some(id) = ids_copy.pop() {
+        let _ = world.remove::<(Marker, Extra)>(id).unwrap();
+    }
+}
+
+fn hecs_spawn_despawn() {
+    let mut world = World::new();
+    let mut ids = world
+        .spawn_batch((0..MAX).into_iter().map(|i| {
+            (Data {
+                x: 1.0 + i as f32,
+                y: 1.1 + i as f32,
+                z: 1.2 + i as f32,
+                day: 2 + i as u32,
+                month: 3 + i as u16,
+                year: 4 + i as u32,
+            },)
+        }))
+        .collect::<Vec<_>>();
+
+    let mut ids_copy = ids.clone();
+    while let Some(id) = ids.pop() {
+        let _ = world.spawn((Event { id },));
+    }
+
+    while let Some(id) = ids_copy.pop() {
+        let _ = world.despawn(id).unwrap();
+    }
+}
+
 fn bench_insert(c: &mut Criterion) {
     c.bench_function("insert", |b| b.iter(|| insert()));
 }
@@ -110,5 +161,19 @@ fn bench_spawn_despawn(c: &mut Criterion) {
     c.bench_function("spawn_despawn", |b| b.iter(|| spawn_despawn()));
 }
 
-criterion_group!(benches, bench_spawn_despawn, bench_insert);
+fn bench_hecs_insert_remove(c: &mut Criterion) {
+    c.bench_function("hecs_insert_remove", |b| b.iter(|| hecs_insert_remove()));
+}
+
+fn bench_hecs_spawn_despawn(c: &mut Criterion) {
+    c.bench_function("hecs_spawn_despawn", |b| b.iter(|| hecs_spawn_despawn()));
+}
+
+criterion_group!(
+    benches,
+    bench_spawn_despawn,
+    bench_insert,
+    bench_hecs_insert_remove,
+    bench_hecs_spawn_despawn
+);
 criterion_main!(benches);
