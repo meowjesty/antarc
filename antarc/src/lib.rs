@@ -4,7 +4,6 @@
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]
-#![feature(duration_saturating_ops)]
 #![feature(duration_consts_2)]
 
 use core::mem::size_of;

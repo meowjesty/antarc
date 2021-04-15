@@ -10,6 +10,12 @@ edition = "2018"
 crc32fast = { version = "*", features = ["std", "nightly"] }
 hecs = { version = "*", features = ["std", "macros"] }
 
+[dev-dependencies]
+criterion = "*"
+
+[[bench]]
+name = "ecs_ideas_benchmark"
+harness = false
 
 [[example]]
 name="hello_antarc"
