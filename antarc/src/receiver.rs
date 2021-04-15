@@ -6,6 +6,14 @@
 // the OS already has data in the socket buffer (or no data), so recv returns `(address, data[])`;
 // - every packet sent to the bound port, is just added to the socket buffer, and you tell the OS
 // what should happen in case the memory can't hold up.
+
+/// TODO(alex) 2021-04-15: Benchmarks show that spawning/despawning is faster than insert/remove,
+/// this is a positive for the ecs event system. We'll be taking a small performance hit that would
+/// be avoidable with a proper synchronization of systems (having the `system_receiver` function
+/// call the `system_on_received_packet`, for example), but this isn't a priority right now.
+///
+/// The big performance gains can be noticed when compared to the previous system of
+/// inserting/removing markers to a packet.
 use std::{net::UdpSocket, time::Instant};
 
 use hecs::{Entity, Ref, World};
