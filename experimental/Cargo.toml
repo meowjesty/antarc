@@ -8,6 +8,4 @@ edition = "2018"
 
 [dependencies]
 antarc = { path = "../antarc" }
-futures = "*"
-async-std = "*"
 hecs = { version = "*", features = ["std", "macros"] }

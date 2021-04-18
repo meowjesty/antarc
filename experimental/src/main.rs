@@ -221,31 +221,31 @@ fn foo() -> std::io::Result<()> {
     let mut buffer2 = vec![0; 128];
     let timer = Instant::now();
     println!("create task");
-    let task = async_std::task::spawn(async move {
-        println!("begin task");
-        let socket = async_std::net::UdpSocket::bind("127.0.0.1:7777")
-            .await
-            .unwrap();
-        println!("socket bound");
-        println!("before receive");
-        let read =
-            async_std::future::timeout(Duration::from_millis(1000), socket.recv_from(&mut buffer))
-                .await;
-        println!("after received, got {:?}", read);
-        // println!("{:?}", read_with.await);
-        // let foo = socket.recv_from(&mut buffer2).await;
-        println!("end task");
-        32
-    });
-    println!("task created");
+    // let task = async_std::task::spawn(async move {
+    //     println!("begin task");
+    //     let socket = async_std::net::UdpSocket::bind("127.0.0.1:7777")
+    //         .await
+    //         .unwrap();
+    //     println!("socket bound");
+    //     println!("before receive");
+    //     let read =
+    //         async_std::future::timeout(Duration::from_millis(1000), socket.recv_from(&mut
+    // buffer))             .await;
+    //     println!("after received, got {:?}", read);
+    //     // println!("{:?}", read_with.await);
+    //     // let foo = socket.recv_from(&mut buffer2).await;
+    //     println!("end task");
+    //     32
+    // });
+    // println!("task created");
 
-    println!("create block");
-    let block = async_std::task::block_on(async {
-        println!("await task");
-        let x = task.await;
-        println!("After task");
-    });
-    println!("block created");
+    // println!("create block");
+    // let block = async_std::task::block_on(async {
+    //     println!("await task");
+    //     let x = task.await;
+    //     println!("After task");
+    // });
+    // println!("block created");
 
     let mut x = false;
     let mut y = 0;

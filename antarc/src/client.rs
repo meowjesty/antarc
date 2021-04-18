@@ -6,7 +6,7 @@ use std::{
 use hecs::World;
 
 use crate::{
-    host::{Address, Connected, Disconnected, Host, RequestingConnection},
+    host::{Address, Connected, Disconnected, RequestingConnection},
     net::NetManager,
     packet::{
         header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Payload, Received,
@@ -27,10 +27,7 @@ use crate::{
 /// connection (`Host<State>`) for multiple other clients. To to this we would need something
 /// that looks more like the `Server`, and some way to keep one node of the network as the main
 /// server? This idea is not clear yet.
-pub struct Client {
-    other_clients: Vec<Host>,
-    connection: Option<Host>,
-}
+pub struct Client {}
 
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
@@ -43,10 +40,7 @@ impl NetManager<Client> {
 
         let world = World::new();
 
-        let client = Client {
-            other_clients: Vec::with_capacity(8),
-            connection: None,
-        };
+        let client = Client {};
 
         let buffer = vec![0x0; MTU_LENGTH];
 
@@ -84,7 +78,6 @@ impl NetManager<Client> {
         // ADD(alex) 2021-04-03: This check is probably good enough.
         let existing_host_id = world
             .query::<(&Address,)>()
-            .with::<Host>()
             .with::<Disconnected>()
             .iter()
             .find_map(|(host_id, (address,))| (address.0 == *server_addr).then_some(host_id));
@@ -92,9 +85,7 @@ impl NetManager<Client> {
         // NOTE(alex) 2021-04-04: Can't combine this in the `find_map` because `query` does a
         // mutable borrow of `world`, so it doesn't allow `world.spawn`.
         let host_id = existing_host_id.unwrap_or_else(|| {
-            let server_host = Host::default();
             let host_id = world.spawn((
-                server_host,
                 Address(server_addr.clone()),
                 RequestingConnection { attempts: 0 },
             ));
@@ -146,7 +137,7 @@ impl NetManager<Client> {
             .without::<Retrieved>()
             .iter()
         {
-            let host_query = world.query_one::<&Host>(source.host_id).unwrap();
+            let host_query = world.query_one::<&Address>(source.host_id).unwrap();
             // NOTE(alex) 2021-04-09: This is the main difference between `Client` and `Server`, as
             // the client will only accept `DataTransfer`s after the connection is estabilished, but
             // the server will receive a `DataTransfer` while the `Host` is still in the

@@ -6,14 +6,11 @@ use std::{
 
 use hecs::World;
 
-use crate::{host::Host, net::NetManager, packet::ConnectionId, AntarcResult, MTU_LENGTH};
+use crate::{net::NetManager, packet::ConnectionId, AntarcResult, MTU_LENGTH};
 
 #[derive(Debug)]
 pub struct Server {
     connection_id_tracker: ConnectionId,
-    disconnected: Vec<Host>,
-    acking_connection: Vec<Host>,
-    connected: Vec<Host>,
 }
 
 impl NetManager<Server> {
@@ -24,9 +21,6 @@ impl NetManager<Server> {
 
         let server = Server {
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
-            disconnected: Vec::with_capacity(8),
-            acking_connection: Vec::with_capacity(8),
-            connected: Vec::with_capacity(8),
         };
 
         let buffer = vec![0x0; MTU_LENGTH];

@@ -4,8 +4,8 @@ use hecs::{Entity, Ref, World};
 
 use crate::{
     host::{
-        AckingConnection, Address, AwaitingConnectionAck, Connected, Disconnected, HasConnectionId,
-        Host, RequestingConnection,
+        AckingConnection, Address, AwaitingConnectionAck, Connected, Disconnected,
+        RequestingConnection,
     },
     packet::{
         header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionRequest,
@@ -110,6 +110,7 @@ pub(crate) fn system_sender(
             payload_length: payload.len() as u16,
         };
 
+        todo!();
         let connection_id = world
             .get::<HasConnectionId>(destination.host_id)
             .map(|has_connection_id| has_connection_id.get())
@@ -151,8 +152,8 @@ pub(crate) fn system_sender(
             )
             .unwrap();
 
-        let mut host = world.get_mut::<Host>(host_id).unwrap();
-        host.sequence_tracker = Sequence::new(host.sequence_tracker.get() + 1).unwrap();
+        // let mut host = world.get_mut::<Host>(host_id).unwrap();
+        // host.sequence_tracker = Sequence::new(host.sequence_tracker.get() + 1).unwrap();
     }
 
     if let Some((packet_id, _)) = old_latest_sent {

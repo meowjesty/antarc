@@ -7,22 +7,23 @@
 // - every packet sent to the bound port, is just added to the socket buffer, and you tell the OS
 // what should happen in case the memory can't hold up.
 
-/// TODO(alex) 2021-04-15: Benchmarks show that spawning/despawning is faster than insert/remove,
-/// this is a positive for the ecs event system. We'll be taking a small performance hit that would
-/// be avoidable with a proper synchronization of systems (having the `system_receiver` function
-/// call the `system_on_received_packet`, for example), but this isn't a priority right now.
+/// TODO(alex) 2021-04-15: Benchmarks show that spawning/despawning is faster than
+/// insert/remove, this is a positive for the ecs event system. We'll be taking a small
+/// performance hit that would be avoidable with a proper synchronization of systems (having
+/// the `system_receiver` function call the `system_on_received_packet`, for example), but this
+/// isn't a priority right now.
 ///
 /// The big performance gains can be noticed when compared to the previous system of
 /// inserting/removing markers to a packet.
-use std::{net::UdpSocket, time::Instant};
+use std::{
+    net::UdpSocket,
+    time::{Duration, Instant},
+};
 
 use hecs::{Entity, Ref, World};
 
 use crate::{
-    host::{
-        Address, AwaitingConnectionAck, Connected, Disconnected, HasConnectionId, Host,
-        RequestingConnection,
-    },
+    host::{Address, AwaitingConnectionAck, Connected, Disconnected,  RequestingConnection},
     packet::{
         header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
         ConnectionRequest, DataTransfer, Footer, Heartbeat, Internal, Packet, Payload, Received,
@@ -32,30 +33,32 @@ use crate::{
     sender::Destination,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct Source {
     pub(crate) host_id: Entity,
 }
 
-#[derive(Debug)]
-pub(crate) struct OnReceivedPacket {
+/// Raised when a packet is first received by the `socket`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct OnReceivedNewPacket {
     packet_id: Entity,
 }
 
-#[derive(Debug)]
+/// Raised when the packet `status_code` is identified as being a subset of a connection request.
+#[derive(Debug, PartialEq)]
 pub(crate) struct OnReceivedConnectionRequest {
     packet_id: Entity,
 }
 
-/// Event: `Host` has `Sent` packets that require acking.
-#[derive(Debug)]
+/// Event: `Host` has `Sent` packets that require acking (remote acks local).
+#[derive(Debug, PartialEq)]
 pub(crate) struct OnReceivedAckSentPacket {
     packet_id: Entity,
     host_id: Entity,
 }
 
-/// Event: `Host` has `Received` packets that will be acked on the next `send`.
-#[derive(Debug)]
+/// Event: `Host` has `Received` packets that will be acked on the next `send` (local acks remote).
+#[derive(Debug, PartialEq)]
 pub(crate) struct OnReceivedAddPacketToAck {
     packet_id: Entity,
     host_id: Entity,
@@ -117,7 +120,7 @@ pub(crate) fn system_receiver(
                 };
 
                 let _ = world.insert(packet_id, (header, footer)).unwrap();
-                let _event = world.spawn((OnReceivedPacket { packet_id },));
+                let _event = world.spawn((OnReceivedNewPacket { packet_id },));
             } else {
                 eprintln!("Received 0 bytes from {:#?}.", from_addr);
                 unreachable!();
@@ -145,7 +148,7 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
     let mut invalid_packets = Vec::with_capacity(8);
     let mut update_latest_received = Vec::with_capacity(8);
 
-    for (event_id, (on_packet_received,)) in world.query::<(&OnReceivedPacket,)>().iter() {
+    for (event_id, (on_packet_received,)) in world.query::<(&OnReceivedNewPacket,)>().iter() {
         let packet_id = on_packet_received.packet_id;
 
         let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
@@ -155,15 +158,18 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
             world.query_one::<&ConnectionRequest>(packet_id).unwrap();
 
         // NOTE(alex): Check if this packet has a `Source`.
-        if let Some(host_id) = world.query::<(&Address,)>().with::<Host>().iter().find_map(
-            |(host_id, (host_address,))| {
+        if let Some(host_id) = world
+            .query::<(&Address,)>() // both host and packet archetypes have this
+            .without::<Header>() // only packets have a `Header` component
+            .iter()
+            .find_map(|(host_id, (host_address,))| {
                 if host_address == packet_address {
                     Some(host_id)
                 } else {
                     None
                 }
-            },
-        ) {
+            })
+        {
             // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it out.
             let old_latest = world
                 .query::<&Source>()
@@ -230,7 +236,7 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
 fn system_on_received_connection_request(world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
 
-    let mut new_hosts = Vec::with_capacity(8);
+    let mut new_requesting_connection_hosts = Vec::with_capacity(8);
     let mut reconnecting_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
@@ -246,9 +252,9 @@ fn system_on_received_connection_request(world: &mut World) {
         // request packet?
         let mut source_query = world.query_one::<&Source>(packet_id).unwrap();
         if let Some(source) = source_query.get() {
-            let host_query = world.query_one::<&Host>(source.host_id).unwrap();
+            let mut host_query = world.query_one::<&Disconnected>(source.host_id).unwrap();
 
-            if let Some(_) = host_query.with::<Disconnected>().get() {
+            if let Some(_) = host_query.get() {
                 // NOTE(alex): `Disconnected -> RequestingConnection` is possible.
                 reconnecting_hosts.push(source.host_id);
             } else {
@@ -256,12 +262,10 @@ fn system_on_received_connection_request(world: &mut World) {
                 invalid_packets.push(packet_id);
             }
         } else {
-            let host = Host {
-                ack_tracker: header.sequence.get(),
-                ..Default::default()
-            };
+            let requesting_connection = RequestingConnection { attempts: 0 };
 
-            new_hosts.push((packet_id, (host, address.clone())));
+            new_requesting_connection_hosts
+                .push((packet_id, (requesting_connection, address.clone())));
         }
 
         handled_events.push(event_id);
@@ -273,8 +277,10 @@ fn system_on_received_connection_request(world: &mut World) {
 
     // NOTE(alex): Handle packets from new hosts requesting connection. Also raises the event
     // telling this new `Host` that it has to ack the packet just received.
-    while let Some((packet_id, (new_host, address))) = new_hosts.pop() {
-        let host_id = world.spawn((new_host, address, RequestingConnection { attempts: 0 }));
+    while let Some((packet_id, (requesting_connection, address))) =
+        new_requesting_connection_hosts.pop()
+    {
+        let host_id = world.spawn((requesting_connection, address));
         let _ = world.spawn((OnReceivedAddPacketToAck { packet_id, host_id },));
         let _ = world
             .insert(packet_id, (Source { host_id }, LatestReceived))
@@ -311,7 +317,6 @@ fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
     {
         match world
             .query::<(&AwaitingConnectionAck,)>()
-            .with::<Host>()
             .iter()
             .find_map(|(host_id, (_,))| {
                 if host_id == source.host_id {
@@ -337,7 +342,13 @@ fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
     while let Some((host_id, (connection_id,), packet_id)) = connection_accepted.pop() {
         world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         world
-            .insert(host_id, (Connected, HasConnectionId(connection_id)))
+            .insert(
+                host_id,
+                (Connected {
+                    connection_id,
+                    rtt: Duration::default(),
+                },),
+            )
             .unwrap();
 
         world
@@ -356,7 +367,7 @@ fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
 }
 
 fn system_received_connection_denied(timer: &Instant, world: &mut World) {
-    let mut denied_hosts = Vec::with_capacity(8);
+    let mut connection_denied_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
     for (packet_id, (header, source, received)) in world
@@ -365,16 +376,18 @@ fn system_received_connection_denied(timer: &Instant, world: &mut World) {
         .without::<Internal>()
         .iter()
     {
-        let host_query = world.query_one::<&Host>(source.host_id).unwrap();
+        let mut host_query = world
+            .query_one::<&AwaitingConnectionAck>(source.host_id)
+            .unwrap();
         // NOTE(alex): Only hosts with `AwaitingConnectionAck` may handle this type of packet.
-        if let Some(_) = host_query.with::<AwaitingConnectionAck>().get() {
-            denied_hosts.push((source.host_id, packet_id));
+        if let Some(_) = host_query.get() {
+            connection_denied_hosts.push((source.host_id, packet_id));
         } else {
             invalid_packets.push(packet_id);
         }
     }
 
-    while let Some((host_id, packet_id)) = denied_hosts.pop() {
+    while let Some((host_id, packet_id)) = connection_denied_hosts.pop() {
         let _ = world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         // TODO(alex) 2021-04-09: Reset `Host` tracker values.
         let _ = world.insert(host_id, (Disconnected,)).unwrap();
