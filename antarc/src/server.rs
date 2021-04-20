@@ -15,25 +15,11 @@ pub struct Server {
 
 impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
-        let socket = UdpSocket::bind(address).unwrap();
-
-        let timer = Instant::now();
-
         let server = Server {
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
         };
-
-        let buffer = vec![0x0; MTU_LENGTH];
-
-        let world = World::new();
-
-        NetManager {
-            world,
-            socket,
-            timer,
-            buffer,
-            client_or_server: server,
-        }
+        let net_manager = NetManager::new(address, server);
+        net_manager
     }
 
     /// TODO(alex) 2021-03-08: We need an API like `get('/{:id}')` route, but for `Host`s.

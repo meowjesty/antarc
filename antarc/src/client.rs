@@ -1,9 +1,10 @@
 use std::{
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
 use hecs::World;
+use mio::{net::UdpSocket, Events, Poll};
 
 use crate::{
     host::{Address, Connected, Disconnected, RequestingConnection},
@@ -31,26 +32,9 @@ pub struct Client {}
 
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
-        let socket = UdpSocket::bind(address).unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(1000)))
-            .unwrap();
-
-        let timer = Instant::now();
-
-        let world = World::new();
-
         let client = Client {};
-
-        let buffer = vec![0x0; MTU_LENGTH];
-
-        NetManager {
-            world,
-            socket,
-            timer,
-            buffer,
-            client_or_server: client,
-        }
+        let net_manager = NetManager::new(address, client);
+        net_manager
     }
 
     /// Creates a new `Host<Connecting>` or updates an existing `Host<Disconnected>`, then adds a

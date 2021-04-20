@@ -1,12 +1,15 @@
 use core::fmt;
 use std::{
     marker::PhantomData,
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Instant,
 };
 
-use hecs::World;
+use hecs::{Entity, World};
+use mio::{net::UdpSocket, Events, Interest, Poll, Token};
+
+use crate::MTU_LENGTH;
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
 /// receive information about the other `Peer<Client>` that are connected to the same server. They
@@ -29,9 +32,7 @@ use hecs::World;
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
 pub struct NetManager<ClientOrServer> {
-    /// TODO(alex): 2021-02-15: `socket` should not be here, I think it belongs in some higher
-    /// level manager thingy, as `socket.send` feels weird when used here.
-    pub(crate) socket: UdpSocket,
+    pub(crate) network_id: Entity,
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
@@ -39,10 +40,58 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) world: World,
 }
 
+pub(crate) struct NetworkResource {
+    pub(crate) socket: UdpSocket,
+    pub(crate) poll: Poll,
+    pub(crate) events: Events,
+}
+
+impl NetworkResource {
+    pub(crate) const TOKEN: Token = Token(0xdad);
+
+    pub(crate) fn new(address: &SocketAddr) -> Self {
+        let mut socket = UdpSocket::bind(*address).unwrap();
+        let poll = Poll::new().unwrap();
+        let events = Events::with_capacity(128);
+
+        poll.registry()
+            .register(
+                &mut socket,
+                Self::TOKEN,
+                Interest::READABLE | Interest::WRITABLE,
+            )
+            .unwrap();
+
+        Self {
+            socket,
+            poll,
+            events,
+        }
+    }
+}
+
+impl<ClientOrServer> NetManager<ClientOrServer> {
+    pub(crate) fn new(address: &SocketAddr, client_or_server: ClientOrServer) -> Self {
+        let timer = Instant::now();
+        let mut world = World::new();
+        let buffer = vec![0x0; MTU_LENGTH];
+
+        let network_resource = NetworkResource::new(address);
+        let network_id = world.spawn((network_resource,));
+
+        Self {
+            network_id,
+            timer,
+            buffer,
+            client_or_server,
+            world,
+        }
+    }
+}
+
 impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NetManager")
-            .field("socket", &self.socket)
             .field("timer", &self.timer)
             .field("buffer", &self.buffer.len())
             .field("client_or_server", &self.client_or_server)
