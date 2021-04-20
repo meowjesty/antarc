@@ -12,7 +12,7 @@ use crate::{
         DataTransfer, Footer, Heartbeat, Packet, Payload, Received, Sent, Sequence, ToSend,
         CONNECTION_REQUEST,
     },
-    receiver::{LatestReceived, Source},
+    receiver::{LatestReceived, OnReceivedAckRemotePacket, Source},
 };
 
 #[derive(Debug, PartialEq, PartialOrd)]
@@ -32,18 +32,18 @@ pub(crate) fn system_sender(
     let mut new_footer = None;
     let mut sent = None;
     let mut old_latest_sent = None;
+    let mut handled_events = Vec::with_capacity(8);
 
     if let Some(packet) = world
         .query::<(&Payload, &Destination, &Address)>()
         .with::<ToSend>()
         .without::<Sent>()
-        .without::<Acked>()
         .iter()
         .next()
     {
         let (packet_id, (payload, destination, address)) = packet;
 
-        let latest_sent = world
+        let latest_sent_to_remote = world
             .query::<(&Header, &Destination)>()
             .with::<Sent>()
             .with::<LatestSent>()
@@ -52,7 +52,10 @@ pub(crate) fn system_sender(
                 (sent_to == destination).then_some((packet_id, header.clone()))
             });
 
-        let sequence = latest_sent
+        // TODO(alex) 2021-04-20: It might be possible to keep an `Option<PacketId>` reference in
+        // the `Host`, and it just gets updated on every successful send, instead of querying like
+        // this.
+        let sequence = latest_sent_to_remote
             .as_ref()
             .map_or(unsafe { Sequence::new_unchecked(1) }, |(_, header)| {
                 header.sequence
@@ -60,7 +63,7 @@ pub(crate) fn system_sender(
 
         // TODO(alex) 2021-04-11: This will ignore some of the packets received, while the socket
         // isn't ready to send, other packets may arrive and take the `LatestReceived` token,
-        // leaving a some received packets in an ack limbo.
+        // leaving some received packets in an ack limbo.
         //
         // To counter this, some `ToAck(packet_id)` archetype would be nice, as we could loop
         // through those here, grab the biggest ack number, take the difference between whatever
@@ -76,23 +79,46 @@ pub(crate) fn system_sender(
         //
         // To achieve this, something must be done in the receiver side of things, more than just
         // strapping a `LatestReceived` marker. We need a list of packets to ack.
-        let ack = world
-            .query::<(&Header, &Source)>()
-            .with::<LatestReceived>()
+        //
+        // ADD(alex) 2021-04-20: The problem above is solved, but we have a new one now, we could
+        // end up lagging behind in acks. If many packets are arriving, and we can't reply acking
+        // each one as they come, the following logic will be acking the packets in whatever
+        // ordering their events are stored in, if this order is crescent, then `past_acks` would be
+        // irrelevant, and ack lag occurs, if the order is random it might be even worse.
+        //
+        // ADD(alex) 2021-04-20: There must be a check to grab the `LatestReceived` and ack based on
+        // it, and drop the lagged events. It's doing the `LatestReceived` bit, but we're **not**
+        // dropping the lagged events.
+        let (event_id, remote_to_ack) = world
+            .query::<(&OnReceivedAckRemotePacket,)>()
             .iter()
-            .find_map(|(_, (header, source))| {
-                (source.host_id == destination.host_id).then_some(header.sequence)
+            .find_map(|(event_id, (event,))| {
+                (event.host_id == destination.host_id).then_some((event_id, packet_id))
             })
-            .map_or(0, |sequence_to_ack| sequence_to_ack.get());
+            .map_or((None, 0), |(event_id, packet_id)| {
+                (
+                    Some(event_id),
+                    world
+                        .query_one::<&Header>(packet_id)
+                        .unwrap()
+                        .with::<LatestReceived>()
+                        .get()
+                        .unwrap()
+                        .sequence
+                        .get(),
+                )
+            });
 
         let ack_diff = {
-            let latest_ack = latest_sent.as_ref().map_or(0, |(_, header)| header.ack);
-            let diff = ack - latest_ack;
+            let latest_ack = latest_sent_to_remote
+                .as_ref()
+                .map_or(0, |(_, header)| header.ack);
+            let diff = remote_to_ack - latest_ack;
             diff
         };
 
         let past_acks = {
-            let latest_past_acks = latest_sent
+            let latest_past_acks = latest_sent_to_remote
                 .as_ref()
                 .map_or(0, |(_, header)| header.past_acks);
 
@@ -101,7 +127,7 @@ pub(crate) fn system_sender(
 
         let header = Header {
             sequence,
-            ack,
+            ack: remote_to_ack,
             past_acks,
             status_code,
             // TODO(alex) 2021-04-10: Do not allow packets with large payloads, this will be
@@ -110,11 +136,14 @@ pub(crate) fn system_sender(
             payload_length: payload.len() as u16,
         };
 
-        todo!();
         let connection_id = world
-            .get::<HasConnectionId>(destination.host_id)
-            .map(|has_connection_id| has_connection_id.get())
-            .ok();
+            .query_one::<&AckingConnection>(destination.host_id)
+            .map_or(None, |mut query| query.get().map(|host| host.connection_id))
+            .or_else(|| {
+                world
+                    .query_one::<&Connected>(destination.host_id)
+                    .map_or(None, |mut query| query.get().map(|host| host.connection_id))
+            });
 
         // TODO(alex) 2021-04-04: This is going to send only 1 packet, we're using `next` on the
         // iterator and not looping! This system is part of a `tick` that has to be constantly
@@ -129,13 +158,18 @@ pub(crate) fn system_sender(
             Ok(num_sent) => {
                 debug_assert!(num_sent > 0);
                 sent = Some((packet_id, destination.host_id));
-                old_latest_sent = latest_sent;
+                old_latest_sent = latest_sent_to_remote;
+                handled_events.push(event_id);
             }
             Err(fail) => {
                 eprintln!("Failed to send packet with {:#?}.", fail);
                 todo!()
             }
         }
+    }
+
+    while let Some(event_id) = handled_events.pop().flatten() {
+        let _ = world.despawn(event_id).unwrap();
     }
 
     if let Some((packet_id, (footer,))) = new_footer {

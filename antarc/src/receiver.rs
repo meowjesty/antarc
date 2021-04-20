@@ -23,7 +23,7 @@ use std::{
 use hecs::{Entity, Ref, World};
 
 use crate::{
-    host::{Address, AwaitingConnectionAck, Connected, Disconnected,  RequestingConnection},
+    host::{Address, AwaitingConnectionAck, Connected, Disconnected, RequestingConnection},
     packet::{
         header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
         ConnectionRequest, DataTransfer, Footer, Heartbeat, Internal, Packet, Payload, Received,
@@ -41,27 +41,27 @@ pub(crate) struct Source {
 /// Raised when a packet is first received by the `socket`.
 #[derive(Debug, PartialEq)]
 pub(crate) struct OnReceivedNewPacket {
-    packet_id: Entity,
+    pub(crate) packet_id: Entity,
 }
 
 /// Raised when the packet `status_code` is identified as being a subset of a connection request.
 #[derive(Debug, PartialEq)]
 pub(crate) struct OnReceivedConnectionRequest {
-    packet_id: Entity,
+    pub(crate) packet_id: Entity,
 }
 
 /// Event: `Host` has `Sent` packets that require acking (remote acks local).
 #[derive(Debug, PartialEq)]
-pub(crate) struct OnReceivedAckSentPacket {
-    packet_id: Entity,
-    host_id: Entity,
+pub(crate) struct OnReceivedAckLocalPacket {
+    pub(crate) packet_id: Entity,
+    pub(crate) host_id: Entity,
 }
 
 /// Event: `Host` has `Received` packets that will be acked on the next `send` (local acks remote).
 #[derive(Debug, PartialEq)]
-pub(crate) struct OnReceivedAddPacketToAck {
-    packet_id: Entity,
-    host_id: Entity,
+pub(crate) struct OnReceivedAckRemotePacket {
+    pub(crate) packet_id: Entity,
+    pub(crate) host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
@@ -201,7 +201,7 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
             .unwrap();
 
         if header.ack != 0 {
-            let _ = world.spawn((OnReceivedAckSentPacket { packet_id, host_id },));
+            let _ = world.spawn((OnReceivedAckLocalPacket { packet_id, host_id },));
         }
         // TODO(alex) 2021-04-14: Raise event that happens after the `OnReceivedAckSentPacket`,
         // such as `OnReceivedAddToAck` (or some similar name). This event and system will be
@@ -211,7 +211,7 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
         // ADD(alex) 2021-04-14: This is the event, it's being raised both here, and on the
         // connection request handler. Here it's raised only if we have a `Source` already,
         // meanwhile the connection request handler raises it after adding a `Source`.
-        let _ = world.spawn((OnReceivedAddPacketToAck { packet_id, host_id },));
+        let _ = world.spawn((OnReceivedAckRemotePacket { packet_id, host_id },));
     }
 
     let _ = world.spawn_batch(connection_request_packets.iter().map(|packet_id| {
@@ -281,7 +281,7 @@ fn system_on_received_connection_request(world: &mut World) {
         new_requesting_connection_hosts.pop()
     {
         let host_id = world.spawn((requesting_connection, address));
-        let _ = world.spawn((OnReceivedAddPacketToAck { packet_id, host_id },));
+        let _ = world.spawn((OnReceivedAckRemotePacket { packet_id, host_id },));
         let _ = world
             .insert(packet_id, (Source { host_id }, LatestReceived))
             .unwrap();
@@ -409,16 +409,13 @@ fn system_received_connection_denied(timer: &Instant, world: &mut World) {
 
 // TODO(alex) 2021-04-08: `system_received_heartbeat`.
 
-// TODO(alex) 2021-04-09: `system_on_receive_ack` that loops through packets with `Source` and acks
-// the host's sent packets. Is this system ok with being run in any order (probably not, as it
-// shouldn't loop through packets `Internal` and `Retrieved`, but there is no way to avoid this
-// right now).
+/// NOTE(alex): System that acks packets sent by the local host to a remote host (acks `Sent`).
 fn system_on_received_ack_sent_packet(timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
     let mut sent_to_ack_list = Vec::with_capacity(8);
 
-    for (event_id, (event,)) in world.query::<(&OnReceivedAckSentPacket,)>().iter() {
-        let OnReceivedAckSentPacket { packet_id, host_id } = event;
+    for (event_id, (event,)) in world.query::<(&OnReceivedAckLocalPacket,)>().iter() {
+        let OnReceivedAckLocalPacket { packet_id, host_id } = event;
 
         let mut acker_query = world.query_one::<(&Header,)>(*packet_id).unwrap();
         let (received,) = acker_query.get().unwrap();
