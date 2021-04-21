@@ -12,7 +12,7 @@ use crate::{
         DataTransfer, Footer, Heartbeat, Packet, Payload, Received, Sent, Sequence, ToSend,
         CONNECTION_REQUEST,
     },
-    receiver::{LatestReceived, ReceivedAckRemotePacket, Source},
+    receiver::{LatestReceived, AckRemotePacket, Source},
 };
 
 #[derive(Debug, PartialEq, PartialOrd)]
@@ -90,7 +90,7 @@ pub(crate) fn system_sender(
         // it, and drop the lagged events. It's doing the `LatestReceived` bit, but we're **not**
         // dropping the lagged events.
         let (event_id, remote_to_ack) = world
-            .query::<(&ReceivedAckRemotePacket,)>()
+            .query::<(&AckRemotePacket,)>()
             .iter()
             .find_map(|(event_id, (event,))| {
                 (event.host_id == destination.host_id).then_some((event_id, packet_id))

@@ -57,21 +57,25 @@ pub(crate) struct ReceivedConnectionRequest {
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedConnectionDenied {
     pub(crate) packet_id: Entity,
+    host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedConnectionAccepted {
     pub(crate) packet_id: Entity,
+    host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedDataTransfer {
     pub(crate) packet_id: Entity,
+    host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedHeartbeat {
     pub(crate) packet_id: Entity,
+    host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,14 +89,14 @@ enum ReceivedType {
 
 /// Event: `Host` has `Sent` packets that require acking (remote acks local).
 #[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedAckLocalPacket {
+pub(crate) struct AckLocalPacket {
     pub(crate) packet_id: Entity,
     pub(crate) host_id: Entity,
 }
 
 /// Event: `Host` has `Received` packets that will be acked on the next `send` (local acks remote).
 #[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedAckRemotePacket {
+pub(crate) struct AckRemotePacket {
     pub(crate) packet_id: Entity,
     pub(crate) host_id: Entity,
 }
@@ -104,7 +108,7 @@ pub(crate) struct LatestReceived;
 /// - Raises the `ReceivedNewPacket` event.
 pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
-    let mut received_packet = None;
+    let mut received_new_packet = None;
 
     if let Some((event_id, _readable)) = world.query::<&Readable>().iter().next() {
         if let Some((_, resource)) = world.query::<&mut NetworkResource>().iter().next() {
@@ -121,7 +125,7 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
                             time: timer.elapsed(),
                         };
                         let packet = (header, payload, footer, remote_address, received);
-                        received_packet = Some(packet);
+                        received_new_packet = Some(packet);
                     } else {
                         eprintln!("Received 0 bytes from {:#?}.", from_addr);
                         unreachable!();
@@ -136,40 +140,9 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
         }
     }
 
-    if let Some((header, payload, footer, address, received)) = received_packet {
-        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
-        let connection_id = footer.connection_id;
-
+    if let Some((header, payload, footer, address, received)) = received_new_packet {
         let packet_id = world.spawn((header, payload, footer, address, received));
         let _ = world.spawn((ReceivedNewPacket { packet_id },));
-
-        // WARNING(alex): rust and rust-analyzer won't give an error if you forget to import the
-        // constants that are to be `match`ed, instead it will do the normal destructuring
-        // behaviour, and short-circuit whatever comes after the first non-imported name!
-        // rust-analyzer will at least squiggle it suggesting that you use lower-case instead of
-        // all-caps, as it thinks you're just creating a binding.
-        match (packet_type_flags, connection_id) {
-            (CONNECTION_REQUEST, None) => {
-                let _ = world.spawn((ReceivedConnectionRequest { packet_id },));
-            }
-            (CONNECTION_DENIED, None) => {
-                let _ = world.spawn((ReceivedConnectionDenied { packet_id },));
-            }
-            (CONNECTION_ACCEPTED, Some(_)) => {
-                let _ = world.spawn((ReceivedConnectionAccepted { packet_id },));
-            }
-            (DATA_TRANSFER, Some(_)) => {
-                let _ = world.spawn((ReceivedDataTransfer { packet_id },));
-            }
-            (HEARTBEAT, Some(_)) => {
-                let _ = world.spawn((ReceivedHeartbeat { packet_id },));
-            }
-            invalid => {
-                eprintln!("Invalid packet type received {:#?}.", invalid);
-                let _ = world.despawn(packet_id).unwrap();
-                unreachable!();
-            }
-        };
     }
 
     while let Some(event_id) = handled_events.pop() {
@@ -187,19 +160,20 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
 pub(crate) fn on_received_new_packet(world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
 
-    let mut connection_request_packets = Vec::with_capacity(8);
-    let mut host_received_list = Vec::with_capacity(8);
+    let mut unknown_host_packets = Vec::with_capacity(8);
+    let mut known_host_packets = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
-    let mut update_latest_received = Vec::with_capacity(8);
 
-    for (event_id, (on_packet_received,)) in world.query::<(&ReceivedNewPacket,)>().iter() {
-        let packet_id = on_packet_received.packet_id;
+    for (event_id, (event,)) in world.query::<(&ReceivedNewPacket,)>().iter() {
+        let packet_id = event.packet_id;
 
-        let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
-        let (header, packet_address) = packet_query.get().unwrap();
+        let mut packet_query = world
+            .query_one::<(&Header, &Footer, &Address)>(packet_id)
+            .unwrap();
+        let (header, footer, address) = packet_query.get().unwrap();
 
-        let mut connection_request_query =
-            world.query_one::<&ConnectionRequest>(packet_id).unwrap();
+        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
+        let connection_id = footer.connection_id;
 
         // NOTE(alex): Check if this packet has a `Source`.
         if let Some(host_id) = world
@@ -207,30 +181,31 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
             .without::<Header>() // only packets have a `Header` component
             .iter()
             .find_map(|(host_id, (host_address,))| {
-                if host_address == packet_address {
+                if host_address == address {
                     Some(host_id)
                 } else {
                     None
                 }
             })
         {
-            // TODO(alex) 2021-04-21: Should the `match` on packet type be done here, so we can
-            // raise the appropriate event for packets that have `Source` and the connection request
-            // when there is none?
-
             // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it out.
-            let old_latest = world
+            let old_latest_id = world
                 .query::<&Source>()
                 .with::<LatestReceived>()
                 .iter()
                 .find_map(|(packet_id, source)| (source.host_id == host_id).then_some(packet_id));
-            update_latest_received.push(old_latest);
 
-            host_received_list.push((host_id, packet_id, header.clone()))
-        } else if let Some(_) = connection_request_query.get() {
+            known_host_packets.push((
+                packet_id,
+                host_id,
+                old_latest_id,
+                header.clone(),
+                connection_id,
+            ));
+        } else if packet_type_flags == CONNECTION_REQUEST && connection_id.is_none() {
             // NOTE(alex): `Source`less packet is a connection request, this is ok.
             debug_assert_eq!(header.status_code, CONNECTION_REQUEST);
-            connection_request_packets.push(packet_id);
+            unknown_host_packets.push(packet_id);
         } else {
             // NOTE(alex): `Source`less packets can only be connection requests.
             invalid_packets.push(packet_id);
@@ -243,14 +218,50 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
         let _ = world.despawn(handled_event).unwrap();
     }
 
-    while let Some((host_id, packet_id, header)) = host_received_list.pop() {
+    while let Some((packet_id, host_id, old_latest_id, header, connection_id)) =
+        known_host_packets.pop()
+    {
+        // WARNING(alex): rust and rust-analyzer won't give an error if you forget to import the
+        // constants that are to be `match`ed, instead it will do the normal destructuring
+        // behaviour, and short-circuit whatever comes after the first non-imported name!
+        // rust-analyzer will at least squiggle it suggesting that you use lower-case instead of
+        // all-caps, as it thinks you're just creating a binding.
+        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
+        match (packet_type_flags, connection_id) {
+            (CONNECTION_REQUEST, None) => {
+                let _ = world.spawn((ReceivedConnectionRequest { packet_id },));
+            }
+            (CONNECTION_DENIED, None) => {
+                let _ = world.spawn((ReceivedConnectionDenied { packet_id, host_id },));
+            }
+            (CONNECTION_ACCEPTED, Some(_)) => {
+                let _ = world.spawn((ReceivedConnectionAccepted { packet_id, host_id },));
+            }
+            (DATA_TRANSFER, Some(_)) => {
+                let _ = world.spawn((ReceivedDataTransfer { packet_id, host_id },));
+            }
+            (HEARTBEAT, Some(_)) => {
+                let _ = world.spawn((ReceivedHeartbeat { packet_id, host_id },));
+            }
+            invalid => {
+                eprintln!("Invalid packet type received {:#?}.", invalid);
+                let _ = world.despawn(packet_id).unwrap();
+                unreachable!();
+            }
+        };
+
         let _ = world
             .insert(packet_id, (Source { host_id }, LatestReceived))
             .unwrap();
 
-        if header.ack != 0 {
-            let _ = world.spawn((ReceivedAckLocalPacket { packet_id, host_id },));
+        if let Some(packet_id) = old_latest_id {
+            let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
         }
+
+        if header.ack != 0 {
+            let _ = world.spawn((AckLocalPacket { packet_id, host_id },));
+        }
+
         // TODO(alex) 2021-04-14: Raise event that happens after the `OnReceivedAckSentPacket`,
         // such as `OnReceivedAddToAck` (or some similar name). This event and system will be
         // responsible for adding a `ToAck` (or some sort) component to packets that are sent
@@ -259,10 +270,13 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
         // ADD(alex) 2021-04-14: This is the event, it's being raised both here, and on the
         // connection request handler. Here it's raised only if we have a `Source` already,
         // meanwhile the connection request handler raises it after adding a `Source`.
-        let _ = world.spawn((ReceivedAckRemotePacket { packet_id, host_id },));
+        let _ = world.spawn((AckRemotePacket { packet_id, host_id },));
     }
 
-    let _ = world.spawn_batch(connection_request_packets.iter().map(|packet_id| {
+    // NOTE(alex) 2021-04-21: As the packets here are `Source`less, this won't conflict with the
+    // spawning of connection requests of `Source`d packets above, this check is done in the event
+    // handling iteration.
+    let _ = world.spawn_batch(unknown_host_packets.iter().map(|packet_id| {
         (ReceivedConnectionRequest {
             packet_id: *packet_id,
         },)
@@ -270,12 +284,6 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
 
     while let Some(packet_id) = invalid_packets.pop() {
         let _ = world.despawn(packet_id).unwrap();
-    }
-
-    while let Some(old_latest) = update_latest_received.pop() {
-        if let Some(packet_id) = old_latest {
-            let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
-        }
     }
 }
 
@@ -360,7 +368,7 @@ fn system_on_received_connection_request(world: &mut World) {
         new_requesting_connection_hosts.pop()
     {
         let host_id = world.spawn((requesting_connection, address));
-        let _ = world.spawn((ReceivedAckRemotePacket { packet_id, host_id },));
+        let _ = world.spawn((AckRemotePacket { packet_id, host_id },));
         let _ = world
             .insert(packet_id, (Source { host_id }, LatestReceived))
             .unwrap();
@@ -493,8 +501,8 @@ fn system_on_received_ack_sent_packet(timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
     let mut sent_to_ack_list = Vec::with_capacity(8);
 
-    for (event_id, (event,)) in world.query::<(&ReceivedAckLocalPacket,)>().iter() {
-        let ReceivedAckLocalPacket { packet_id, host_id } = event;
+    for (event_id, (event,)) in world.query::<(&AckLocalPacket,)>().iter() {
+        let AckLocalPacket { packet_id, host_id } = event;
 
         let mut acker_query = world.query_one::<(&Header,)>(*packet_id).unwrap();
         let (received,) = acker_query.get().unwrap();
