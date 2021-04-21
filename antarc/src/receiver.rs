@@ -101,7 +101,7 @@ pub(crate) struct ReceivedAckRemotePacket {
 pub(crate) struct LatestReceived;
 
 ///
-/// - Raises the `OnReceivedPacket` event.
+/// - Raises the `ReceivedNewPacket` event.
 pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
     let mut received_packet = None;
@@ -113,25 +113,15 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
             match socket.recv_from(buffer) {
                 Ok((num_recv, from_addr)) => {
                     if num_recv > 0 {
-                        let from_address = Address(from_addr);
+                        let remote_address = Address(from_addr);
 
                         let (header, payload, footer) = Packet::decode(&buffer).unwrap();
-                        // let packet_id = world.spawn((
-                        //     payload,
-                        //     from_address,
-                        //     Received {
-                        //         time: timer.elapsed(),
-                        //     },
-                        // ));
 
                         let received = Received {
                             time: timer.elapsed(),
                         };
-                        let packet = (header, payload, footer, from_address, received);
+                        let packet = (header, payload, footer, remote_address, received);
                         received_packet = Some(packet);
-
-                        // let _ = world.insert(packet_id, (header, footer)).unwrap();
-                        // let _event = world.spawn((ReceivedNewPacket { packet_id },));
                     } else {
                         eprintln!("Received 0 bytes from {:#?}.", from_addr);
                         unreachable!();
@@ -146,41 +136,37 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
         }
     }
 
-    // WARNING(alex): rust and rust-analyzer won't give an error if you forget
-    // to import the constants that are to be `match`ed,
-    // instead it will do the normal destructuring
-    // behaviour, and short-circuit whatever comes after
-    // the first non-imported name! rust-analyzer will
-    // at least squiggle it suggesting that you
-    // use lower-case instead of all-caps, as it thinks you're just creating a
-    // binding.
     if let Some((header, payload, footer, address, received)) = received_packet {
         let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
         let connection_id = footer.connection_id;
 
+        let packet_id = world.spawn((header, payload, footer, address, received));
+        let _ = world.spawn((ReceivedNewPacket { packet_id },));
+
+        // WARNING(alex): rust and rust-analyzer won't give an error if you forget to import the
+        // constants that are to be `match`ed, instead it will do the normal destructuring
+        // behaviour, and short-circuit whatever comes after the first non-imported name!
+        // rust-analyzer will at least squiggle it suggesting that you use lower-case instead of
+        // all-caps, as it thinks you're just creating a binding.
         match (packet_type_flags, connection_id) {
             (CONNECTION_REQUEST, None) => {
-                let packet_id = world.spawn((header, payload, footer, address, received));
                 let _ = world.spawn((ReceivedConnectionRequest { packet_id },));
             }
             (CONNECTION_DENIED, None) => {
-                let packet_id = world.spawn((header, payload, footer, address, received));
                 let _ = world.spawn((ReceivedConnectionDenied { packet_id },));
             }
             (CONNECTION_ACCEPTED, Some(_)) => {
-                let packet_id = world.spawn((header, payload, footer, address, received));
                 let _ = world.spawn((ReceivedConnectionAccepted { packet_id },));
             }
             (DATA_TRANSFER, Some(_)) => {
-                let packet_id = world.spawn((header, payload, footer, address, received));
                 let _ = world.spawn((ReceivedDataTransfer { packet_id },));
             }
             (HEARTBEAT, Some(_)) => {
-                let packet_id = world.spawn((header, payload, footer, address, received));
                 let _ = world.spawn((ReceivedHeartbeat { packet_id },));
             }
             invalid => {
                 eprintln!("Invalid packet type received {:#?}.", invalid);
+                let _ = world.despawn(packet_id).unwrap();
                 unreachable!();
             }
         };
@@ -198,7 +184,7 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
 /// Also handles the changes to a host's `LatestReceived` packet.
 ///
 /// - Raises the `OnReceivedConnectionRequest` event.
-pub(crate) fn system_on_received_packet(world: &mut World) {
+pub(crate) fn on_received_new_packet(world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
 
     let mut connection_request_packets = Vec::with_capacity(8);
@@ -228,6 +214,10 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
                 }
             })
         {
+            // TODO(alex) 2021-04-21: Should the `match` on packet type be done here, so we can
+            // raise the appropriate event for packets that have `Source` and the connection request
+            // when there is none?
+
             // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it out.
             let old_latest = world
                 .query::<&Source>()
@@ -285,6 +275,37 @@ pub(crate) fn system_on_received_packet(world: &mut World) {
     while let Some(old_latest) = update_latest_received.pop() {
         if let Some(packet_id) = old_latest {
             let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
+        }
+    }
+}
+
+fn on_received_connection_request(world: &mut World) {
+    let mut handled_events: Vec<Entity> = Vec::with_capacity(8);
+    let mut new_hosts: Vec<(Entity, Address)> = Vec::with_capacity(8);
+    let mut reconnecting_hosts: Vec<(Entity, Address)> = Vec::with_capacity(8);
+    let mut invalid_packets: Vec<Entity> = Vec::with_capacity(8);
+
+    for (event_id, event) in world.query::<&ReceivedConnectionRequest>().iter() {
+        let mut packet_query = world
+            .query_one::<(&Header, &Footer, &Address)>(event.packet_id)
+            .unwrap();
+        let (header, footer, address) = packet_query.get().unwrap();
+
+        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
+        let connection_id = footer.connection_id;
+
+        match (packet_type_flags, connection_id) {
+            (CONNECTION_REQUEST, None) => {}
+            // TODO(alex) 2021-04-21: Search for a host to check if it exists and is in the valid
+            // `Disconnected` state.
+            // - exists: use this host as a `Source`;
+            // - does not exist: create a new host and add it as `Source`;
+            invalid => {
+                eprintln!(
+                    "Invalid packet type for connection request handler {:#?}.",
+                    invalid
+                )
+            }
         }
     }
 }
