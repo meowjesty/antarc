@@ -54,6 +54,35 @@ pub(crate) struct ReceivedConnectionRequest {
     pub(crate) packet_id: Entity,
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct ReceivedConnectionDenied {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ReceivedConnectionAccepted {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ReceivedDataTransfer {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ReceivedHeartbeat {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq)]
+enum ReceivedType {
+    ConnectionRequest,
+    ConnectionDenied,
+    ConnectionAccepted,
+    DataTransfer,
+    Heartbeat,
+}
+
 /// Event: `Host` has `Sent` packets that require acking (remote acks local).
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedAckLocalPacket {
@@ -75,11 +104,7 @@ pub(crate) struct LatestReceived;
 /// - Raises the `OnReceivedPacket` event.
 pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
-    let mut connection_request = None;
-    let mut connection_denied = None;
-    let mut connection_accepted = None;
-    let mut data_transfer = None;
-    let mut hearbeat = None;
+    let mut received_packet = None;
 
     if let Some((event_id, _readable)) = world.query::<&Readable>().iter().next() {
         if let Some((_, resource)) = world.query::<&mut NetworkResource>().iter().next() {
@@ -99,77 +124,11 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
                         //     },
                         // ));
 
-                        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
-
-                        // WARNING(alex): rust and rust-analyzer won't give an error if you forget
-                        // to import the constants that are to be `match`ed,
-                        // instead it will do the normal destructuring
-                        // behaviour, and short-circuit whatever comes after
-                        // the first non-imported name! rust-analyzer will
-                        // at least squiggle it suggesting that you
-                        // use lower-case instead of all-caps, as it thinks you're just creating a
-                        // binding.
-                        match (packet_type_flags, footer.connection_id) {
-                            (CONNECTION_REQUEST, None) => {
-                                connection_request = Some((
-                                    header,
-                                    payload,
-                                    footer,
-                                    from_address,
-                                    Received {
-                                        time: timer.elapsed(),
-                                    },
-                                ));
-                            }
-                            (CONNECTION_DENIED, None) => {
-                                connection_denied = Some((
-                                    header,
-                                    payload,
-                                    footer,
-                                    from_address,
-                                    Received {
-                                        time: timer.elapsed(),
-                                    },
-                                ));
-                            }
-                            (CONNECTION_ACCEPTED, Some(_)) => {
-                                connection_accepted = Some((
-                                    header,
-                                    payload,
-                                    footer,
-                                    from_address,
-                                    Received {
-                                        time: timer.elapsed(),
-                                    },
-                                ));
-                            }
-                            (DATA_TRANSFER, Some(_)) => {
-                                data_transfer = Some((
-                                    header,
-                                    payload,
-                                    footer,
-                                    from_address,
-                                    Received {
-                                        time: timer.elapsed(),
-                                    },
-                                ));
-                            }
-                            (HEARTBEAT, Some(_)) => {
-                                hearbeat = Some((
-                                    header,
-                                    payload,
-                                    footer,
-                                    from_address,
-                                    Received {
-                                        time: timer.elapsed(),
-                                    },
-                                ));
-                            }
-                            invalid => {
-                                eprintln!("Invalid packet type received {:#?}.", invalid);
-                                unreachable!();
-                            }
+                        let received = Received {
+                            time: timer.elapsed(),
                         };
+                        let packet = (header, payload, footer, from_address, received);
+                        received_packet = Some(packet);
 
                         // let _ = world.insert(packet_id, (header, footer)).unwrap();
                         // let _event = world.spawn((ReceivedNewPacket { packet_id },));
@@ -187,14 +146,44 @@ pub(crate) fn system_receiver(buffer: &mut [u8], timer: &Instant, world: &mut Wo
         }
     }
 
-    // TODO(alex) 2021-04-20: Finish this, and later improve the code duplication.
-    if let Some(packet) = connection_request {
-        let packet_id = world.spawn(packet);
-        let _ = world.spawn((ReceivedConnectionRequest { packet_id },));
-    } else if let Some(packet) = connection_denied {
-    } else if let Some(packet) = connection_accepted {
-    } else if let Some(packet) = data_transfer {
-    } else if let Some(packet) = hearbeat {
+    // WARNING(alex): rust and rust-analyzer won't give an error if you forget
+    // to import the constants that are to be `match`ed,
+    // instead it will do the normal destructuring
+    // behaviour, and short-circuit whatever comes after
+    // the first non-imported name! rust-analyzer will
+    // at least squiggle it suggesting that you
+    // use lower-case instead of all-caps, as it thinks you're just creating a
+    // binding.
+    if let Some((header, payload, footer, address, received)) = received_packet {
+        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
+        let connection_id = footer.connection_id;
+
+        match (packet_type_flags, connection_id) {
+            (CONNECTION_REQUEST, None) => {
+                let packet_id = world.spawn((header, payload, footer, address, received));
+                let _ = world.spawn((ReceivedConnectionRequest { packet_id },));
+            }
+            (CONNECTION_DENIED, None) => {
+                let packet_id = world.spawn((header, payload, footer, address, received));
+                let _ = world.spawn((ReceivedConnectionDenied { packet_id },));
+            }
+            (CONNECTION_ACCEPTED, Some(_)) => {
+                let packet_id = world.spawn((header, payload, footer, address, received));
+                let _ = world.spawn((ReceivedConnectionAccepted { packet_id },));
+            }
+            (DATA_TRANSFER, Some(_)) => {
+                let packet_id = world.spawn((header, payload, footer, address, received));
+                let _ = world.spawn((ReceivedDataTransfer { packet_id },));
+            }
+            (HEARTBEAT, Some(_)) => {
+                let packet_id = world.spawn((header, payload, footer, address, received));
+                let _ = world.spawn((ReceivedHeartbeat { packet_id },));
+            }
+            invalid => {
+                eprintln!("Invalid packet type received {:#?}.", invalid);
+                unreachable!();
+            }
+        };
     }
 
     while let Some(event_id) = handled_events.pop() {
