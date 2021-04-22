@@ -49,6 +49,8 @@ pub(crate) struct ReceivedNewPacket {
 }
 
 /// Raised when the packet `status_code` is identified as being a subset of a connection request.
+/// TODO(alex) 2021-04-21: These events could hold more information than just the ids of each entity
+/// to avoid the need to query for additional data on each event handler.
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedConnectionRequest {
     pub(crate) packet_id: Entity,
@@ -189,11 +191,17 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
             })
         {
             // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it out.
+            // TODO(alex) 2021-04-22: The `new_sequence > old_sequence` check avoids the case where
+            // a packet arrives out of order, and should not be marked as the latest, but this won't
+            // hold if sequence wraps.
             let old_latest_id = world
-                .query::<&Source>()
+                .query::<(&Header, &Source)>()
                 .with::<LatestReceived>()
                 .iter()
-                .find_map(|(packet_id, source)| (source.host_id == host_id).then_some(packet_id));
+                .find_map(|(packet_id, (old_header, source))| {
+                    (source.host_id == host_id && header.sequence > old_header.sequence)
+                        .then_some(packet_id)
+                });
 
             known_host_packets.push((
                 packet_id,
@@ -287,11 +295,13 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
     }
 }
 
+// NOTE(alex): This handler is specific for the server, as the client doesn't receive connection
+// requests, at least not yet.
 fn on_received_connection_request(world: &mut World) {
-    let mut handled_events: Vec<Entity> = Vec::with_capacity(8);
-    let mut new_hosts: Vec<(Entity, Address)> = Vec::with_capacity(8);
-    let mut reconnecting_hosts: Vec<(Entity, Address)> = Vec::with_capacity(8);
-    let mut invalid_packets: Vec<Entity> = Vec::with_capacity(8);
+    let mut handled_events = Vec::with_capacity(8);
+    let mut new_hosts = Vec::with_capacity(8);
+    let mut reconnecting_hosts = Vec::with_capacity(8);
+    let mut invalid_packets = Vec::with_capacity(8);
 
     for (event_id, event) in world.query::<&ReceivedConnectionRequest>().iter() {
         let mut packet_query = world
@@ -302,12 +312,29 @@ fn on_received_connection_request(world: &mut World) {
         let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
         let connection_id = footer.connection_id;
 
+        // NOTE(alex): The somewhat duplicated `match` here (similar to `on_received_new_packet`
+        // handler) exists as that handler only checks packet type validity for `Source`d packets.
         match (packet_type_flags, connection_id) {
-            (CONNECTION_REQUEST, None) => {}
-            // TODO(alex) 2021-04-21: Search for a host to check if it exists and is in the valid
-            // `Disconnected` state.
-            // - exists: use this host as a `Source`;
-            // - does not exist: create a new host and add it as `Source`;
+            (CONNECTION_REQUEST, None) => {
+                // NOTE(alex): This packet is a connection request from a known host (must be in a
+                // `Disconnected` state).
+                if let Some(source) = world.query_one::<&Source>(event.packet_id).unwrap().get() {
+                    if let Some(_disconnected) = world
+                        .query_one::<&Disconnected>(source.host_id)
+                        .unwrap()
+                        .get()
+                    {
+                        reconnecting_hosts.push((event.packet_id, source.host_id));
+                    } else {
+                        // NOTE(alex): Host is in an incompatible state to receive this kind of
+                        // packet.
+                        invalid_packets.push(event.packet_id);
+                    }
+                } else {
+                    // NOTE(alex): Create a new host and add it as the source for this packet.
+                    new_hosts.push((event.packet_id, address.clone()));
+                }
+            }
             invalid => {
                 eprintln!(
                     "Invalid packet type for connection request handler {:#?}.",
@@ -315,11 +342,38 @@ fn on_received_connection_request(world: &mut World) {
                 )
             }
         }
+
+        handled_events.push(event_id);
+    }
+
+    while let Some(event_id) = handled_events.pop() {
+        let _ = world.despawn(event_id).unwrap();
+    }
+
+    while let Some(packet_id) = invalid_packets.pop() {
+        let _ = world.despawn(packet_id).unwrap();
+    }
+
+    while let Some((packet_id, host_id)) = reconnecting_hosts.pop() {
+        let _ = world.remove::<(Disconnected,)>(host_id).unwrap();
+        let _ = world
+            .insert(host_id, (RequestingConnection { attempts: 0 },))
+            .unwrap();
+    }
+
+    // TODO(alex) 2021-04-22: This and every other case of `spawn` could be changed to `spawn_batch`
+    // something like: `spawn_batch(list.iter()).for_each(|id| world.insert(id, component))`.
+    while let Some((packet_id, address)) = new_hosts.pop() {
+        let host_id = world.spawn((address, RequestingConnection { attempts: 0 }));
+        let _ = world
+            .insert(packet_id, (LatestReceived, Source { host_id }))
+            .unwrap();
     }
 }
 
 /// Handles the `OnReceivedConnectionRequest` event by creating a new host archetype, or updating
 /// a previously known `Disconnected` host that could be trying to reconnect.
+// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
 fn system_on_received_connection_request(world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
 
@@ -389,6 +443,7 @@ fn system_on_received_connection_request(world: &mut World) {
 
 // TODO(alex) 2021-04-13: Do we need events here? I don't think so, every packet here will already
 // have a `Source` component
+// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
 fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
     let mut connection_accepted = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
@@ -453,6 +508,7 @@ fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
     }
 }
 
+// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
 fn system_received_connection_denied(timer: &Instant, world: &mut World) {
     let mut connection_denied_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
@@ -497,6 +553,7 @@ fn system_received_connection_denied(timer: &Instant, world: &mut World) {
 // TODO(alex) 2021-04-08: `system_received_heartbeat`.
 
 /// NOTE(alex): System that acks packets sent by the local host to a remote host (acks `Sent`).
+// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
 fn system_on_received_ack_sent_packet(timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
     let mut sent_to_ack_list = Vec::with_capacity(8);
