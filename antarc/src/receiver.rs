@@ -284,6 +284,7 @@ pub(crate) fn on_received_new_packet(world: &mut World) {
     // NOTE(alex) 2021-04-21: As the packets here are `Source`less, this won't conflict with the
     // spawning of connection requests of `Source`d packets above, this check is done in the event
     // handling iteration.
+    // NOTE(alex) 2021-04-23: These packets have been checked to be `ConnectionRequest`s.
     let _ = world.spawn_batch(unknown_host_packets.iter().map(|packet_id| {
         (ReceivedConnectionRequest {
             packet_id: *packet_id,
@@ -305,42 +306,28 @@ fn on_received_connection_request(world: &mut World) {
 
     for (event_id, event) in world.query::<&ReceivedConnectionRequest>().iter() {
         let mut packet_query = world
-            .query_one::<(&Header, &Footer, &Address)>(event.packet_id)
-            .unwrap();
-        let (header, footer, address) = packet_query.get().unwrap();
+            .query_one::<&Address>(event.packet_id)
+            .unwrap()
+            .with::<Header>();
+        let address = packet_query.get().unwrap();
 
-        let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
-        let connection_id = footer.connection_id;
-
-        // NOTE(alex): The somewhat duplicated `match` here (similar to `on_received_new_packet`
-        // handler) exists as that handler only checks packet type validity for `Source`d packets.
-        match (packet_type_flags, connection_id) {
-            (CONNECTION_REQUEST, None) => {
-                // NOTE(alex): This packet is a connection request from a known host (must be in a
-                // `Disconnected` state).
-                if let Some(source) = world.query_one::<&Source>(event.packet_id).unwrap().get() {
-                    if let Some(_disconnected) = world
-                        .query_one::<&Disconnected>(source.host_id)
-                        .unwrap()
-                        .get()
-                    {
-                        reconnecting_hosts.push((event.packet_id, source.host_id));
-                    } else {
-                        // NOTE(alex): Host is in an incompatible state to receive this kind of
-                        // packet.
-                        invalid_packets.push(event.packet_id);
-                    }
-                } else {
-                    // NOTE(alex): Create a new host and add it as the source for this packet.
-                    new_hosts.push((event.packet_id, address.clone()));
-                }
+        // NOTE(alex): This packet is a connection request from a known host (must be in a
+        // `Disconnected` state).
+        if let Some(source) = world.query_one::<&Source>(event.packet_id).unwrap().get() {
+            if let Some(_disconnected) = world
+                .query_one::<&Disconnected>(source.host_id)
+                .unwrap()
+                .get()
+            {
+                reconnecting_hosts.push((event.packet_id, source.host_id));
+            } else {
+                // NOTE(alex): Host is in an incompatible state to receive this kind of
+                // packet.
+                invalid_packets.push(event.packet_id);
             }
-            invalid => {
-                eprintln!(
-                    "Invalid packet type for connection request handler {:#?}.",
-                    invalid
-                )
-            }
+        } else {
+            // NOTE(alex): Create a new host and add it as the source for this packet.
+            new_hosts.push((event.packet_id, address.clone()));
         }
 
         handled_events.push(event_id);
@@ -371,117 +358,48 @@ fn on_received_connection_request(world: &mut World) {
     }
 }
 
-/// Handles the `OnReceivedConnectionRequest` event by creating a new host archetype, or updating
-/// a previously known `Disconnected` host that could be trying to reconnect.
-// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
-fn system_on_received_connection_request(world: &mut World) {
+fn on_received_connection_accepted(timer: &Instant, world: &mut World) {
     let mut handled_events = Vec::with_capacity(8);
-
-    let mut new_requesting_connection_hosts = Vec::with_capacity(8);
-    let mut reconnecting_hosts = Vec::with_capacity(8);
+    let mut connected_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
-    for (event_id, (on_received_connection_request,)) in
-        world.query::<(&ReceivedConnectionRequest,)>().iter()
-    {
-        let packet_id = on_received_connection_request.packet_id;
+    for (event_id, event) in world.query::<&ReceivedConnectionAccepted>().iter() {
+        let mut packet_query = world
+            .query_one::<(&Header, &Footer, &Source)>(event.packet_id)
+            .unwrap();
+        let (header, footer, source) = packet_query.get().unwrap();
+        debug_assert_eq!(source.host_id, event.host_id);
+        debug_assert!(footer.connection_id.is_some());
 
-        let mut packet_query = world.query_one::<(&Header, &Address)>(packet_id).unwrap();
-        let (header, address) = packet_query.get().unwrap();
-
-        // NOTE(alex): There is a known host, but is it in the correct state to handle a connection
-        // request packet?
-        let mut source_query = world.query_one::<&Source>(packet_id).unwrap();
-        if let Some(source) = source_query.get() {
-            let mut host_query = world.query_one::<&Disconnected>(source.host_id).unwrap();
-
-            if let Some(_) = host_query.get() {
-                // NOTE(alex): `Disconnected -> RequestingConnection` is possible.
-                reconnecting_hosts.push(source.host_id);
-            } else {
-                // NOTE(alex): `* -> RequestingConnection` would be an invalid state transition.
-                invalid_packets.push(packet_id);
+        let mut host_query = world
+            .query_one::<&AwaitingConnectionAck>(source.host_id)
+            .unwrap();
+        match host_query.get() {
+            Some(_) => {
+                connected_hosts.push((
+                    source.host_id,
+                    event.packet_id,
+                    footer.connection_id.unwrap(),
+                ));
             }
-        } else {
-            let requesting_connection = RequestingConnection { attempts: 0 };
-
-            new_requesting_connection_hosts
-                .push((packet_id, (requesting_connection, address.clone())));
+            None => {
+                eprintln!(
+                    "Host is in an invalid state to accept this packet {:#?}.",
+                    header
+                );
+                invalid_packets.push(event.packet_id);
+            }
         }
 
         handled_events.push(event_id);
     }
 
-    while let Some(handled_event) = handled_events.pop() {
-        let _ = world.despawn(handled_event).unwrap();
-    }
-
-    // NOTE(alex): Handle packets from new hosts requesting connection. Also raises the event
-    // telling this new `Host` that it has to ack the packet just received.
-    while let Some((packet_id, (requesting_connection, address))) =
-        new_requesting_connection_hosts.pop()
-    {
-        let host_id = world.spawn((requesting_connection, address));
-        let _ = world.spawn((AckRemotePacket { packet_id, host_id },));
-        let _ = world
-            .insert(packet_id, (Source { host_id }, LatestReceived))
-            .unwrap();
-    }
-
-    // NOTE(alex): Handle packets from hosts that were disconnected, and are trying to connect.
-    while let Some(host_id) = reconnecting_hosts.pop() {
-        let _ = world.remove::<(Disconnected,)>(host_id).unwrap();
-        let _ = world
-            .insert(host_id, (RequestingConnection { attempts: 0 },))
-            .unwrap();
-    }
-
-    while let Some(packet_id) = invalid_packets.pop() {
-        let _ = world.despawn(packet_id).unwrap();
-    }
-}
-
-// TODO(alex) 2021-04-13: Do we need events here? I don't think so, every packet here will already
-// have a `Source` component
-// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
-fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
-    let mut connection_accepted = Vec::with_capacity(8);
-    let mut invalid_packets = Vec::with_capacity(8);
-
-    for (packet_id, (footer, source)) in world
-        .query::<(&Footer, &Source)>()
-        .with::<Header>()
-        .with::<Received>()
-        .with::<Address>()
-        .with::<ConnectionAccepted>()
-        .without::<Internal>()
-        .iter()
-    {
-        match world
-            .query::<(&AwaitingConnectionAck,)>()
-            .iter()
-            .find_map(|(host_id, (_,))| {
-                if host_id == source.host_id {
-                    Some(host_id)
-                } else {
-                    None
-                }
-            }) {
-            // NOTE(alex): We have a `Host` in a valid state that can take this type of packet.
-            Some(host_id) => {
-                debug_assert!(footer.connection_id.is_some());
-                connection_accepted.push((host_id, (footer.connection_id.unwrap(),), packet_id));
-            }
-            // NOTE(alex): No `Host` is awaiting for this type of packet.
-            None => {
-                eprintln!("Tried to `ConnectionAccepted` packet, but no `Host` in suitable state was found!");
-                invalid_packets.push(packet_id);
-            }
-        }
+    while let Some(event_id) = handled_events.pop() {
+        let _ = world.despawn(event_id).unwrap();
     }
 
     // NOTE(alex): Change `Host` state to `Connected`, and mark packet as handled.
-    while let Some((host_id, (connection_id,), packet_id)) = connection_accepted.pop() {
+    while let Some((host_id, packet_id, connection_id)) = connected_hosts.pop() {
         world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         world
             .insert(
@@ -493,14 +411,7 @@ fn system_on_received_connection_accepted(timer: &Instant, world: &mut World) {
             )
             .unwrap();
 
-        world
-            .insert(
-                packet_id,
-                (Internal {
-                    time: timer.elapsed(),
-                },),
-            )
-            .unwrap();
+        // world.insert(packet_id, (Internal { time: timer.elapsed(),},),).unwrap();
     }
 
     while let Some(packet_id) = invalid_packets.pop() {
