@@ -1,4 +1,7 @@
-use std::{net::UdpSocket, time::Instant};
+use std::{
+    net::{SocketAddr, UdpSocket},
+    time::Instant,
+};
 
 use hecs::{Entity, Ref, World};
 
@@ -7,12 +10,14 @@ use crate::{
         AckingConnection, Address, AwaitingConnectionAck, Connected, Disconnected,
         RequestingConnection,
     },
+    net::NetworkResource,
     packet::{
         header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionRequest,
-        DataTransfer, Footer, Heartbeat, Packet, Payload, Received, Sent, Sequence, ToSend,
+        DataTransfer, Footer, Heartbeat, Packet, Payload, Queued, Received, Sent, Sequence,
         CONNECTION_REQUEST,
     },
-    receiver::{LatestReceived, AckRemotePacket, Source},
+    readiness::Writable,
+    receiver::{AckRemotePacket, LatestReceived, SendPacket, Source},
 };
 
 #[derive(Debug, PartialEq, PartialOrd)]
@@ -21,7 +26,23 @@ pub(crate) struct Destination {
 }
 
 #[derive(Debug, PartialEq, PartialOrd)]
+pub(crate) struct PreparePacketToSend {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
+pub(crate) struct RawPacket {
+    pub(crate) packet_id: Entity,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) address: SocketAddr,
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
 pub(crate) struct LatestSent;
+
+pub(crate) fn prepare_packet_to_send(world: &mut World) {
+    for (event_id, (event,)) in world.query::<(&PreparePacketToSend,)>().iter() {}
+}
 
 pub(crate) fn system_sender(
     status_code: u16,
@@ -29,14 +50,42 @@ pub(crate) fn system_sender(
     timer: &Instant,
     world: &mut World,
 ) {
+    let mut handled_events = Vec::with_capacity(8);
+    let mut sent_packets = Vec::with_capacity(8);
     let mut new_footer = None;
     let mut sent = None;
     let mut old_latest_sent = None;
-    let mut handled_events = Vec::with_capacity(8);
+
+    if let Some((event_id, _writable)) = world.query::<&Writable>().iter().next() {
+        if let Some((_, resource)) = world.query::<&mut NetworkResource>().iter().next() {
+            let socket = &mut resource.socket;
+
+            // TODO(alex) 2021-04-24: We get here after the packet is pre-processed and is ready to
+            // be sent, no reason to encode it here! There is a previous event to this one, the
+            // `PreparePacketToSend`, which encodes the packet and creates a `RawPacket`.
+            if let Some((send_event_id, (event,))) = world.query::<(&SendPacket,)>().iter().next() {
+                let mut raw_packet_query =
+                    world.query_one::<(&RawPacket,)>(event.packet_id).unwrap();
+                let (raw_packet,) = raw_packet_query.get().unwrap();
+
+                match socket.send_to(&raw_packet.bytes, raw_packet.address) {
+                    Ok(num_sent) => {
+                        debug_assert!(num_sent > 0);
+
+                        sent_packets.push(raw_packet.packet_id);
+                        handled_events.push((event_id, send_event_id));
+                    }
+                    Err(fail) => {
+                        eprintln!("Failed to send {:#?} with {:#?}.", raw_packet, fail);
+                    }
+                }
+            }
+        }
+    }
 
     if let Some(packet) = world
         .query::<(&Payload, &Destination, &Address)>()
-        .with::<ToSend>()
+        .with::<Queued>()
         .without::<Sent>()
         .iter()
         .next()
@@ -159,7 +208,7 @@ pub(crate) fn system_sender(
                 debug_assert!(num_sent > 0);
                 sent = Some((packet_id, destination.host_id));
                 old_latest_sent = latest_sent_to_remote;
-                handled_events.push(event_id);
+                // handled_events.push(event_id);
             }
             Err(fail) => {
                 eprintln!("Failed to send packet with {:#?}.", fail);
@@ -168,9 +217,9 @@ pub(crate) fn system_sender(
         }
     }
 
-    while let Some(event_id) = handled_events.pop().flatten() {
-        let _ = world.despawn(event_id).unwrap();
-    }
+    // while let Some(event_id) = handled_events.pop().flatten() {
+    //     let _ = world.despawn(event_id).unwrap();
+    // }
 
     if let Some((packet_id, (footer,))) = new_footer {
         world.insert(packet_id, (footer,)).unwrap();

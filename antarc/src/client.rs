@@ -7,14 +7,14 @@ use hecs::World;
 use mio::{net::UdpSocket, Events, Poll};
 
 use crate::{
-    host::{Address, Connected, Disconnected, RequestingConnection},
+    host::{Address, Connected, Disconnected, RequestingConnection, SendingConnectionRequest},
     net::NetManager,
     packet::{
-        header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Payload, Received,
-        Retrieved, ToSend,
+        header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Packet, Payload,
+        Queued, Received, Retrieved,
     },
-    receiver::Source,
-    sender::Destination,
+    receiver::{SendPacket, Source},
+    sender::{Destination, RawPacket},
     MTU_LENGTH,
 };
 
@@ -71,21 +71,36 @@ impl NetManager<Client> {
         let host_id = existing_host_id.unwrap_or_else(|| {
             let host_id = world.spawn((
                 Address(server_addr.clone()),
-                RequestingConnection { attempts: 0 },
+                SendingConnectionRequest { attempts: 0 },
             ));
             host_id
         });
 
         let connection_request_header = Header::default();
-        let _packet_id = world.spawn((
+        let payload = Payload(Vec::new());
+        let (bytes, footer) = Packet::encode(&connection_request_header, &payload, None).unwrap();
+
+        let packet_id = world.spawn((
             connection_request_header,
+            payload,
+            footer,
             Address(server_addr.clone()),
-            ToSend {
+            Queued {
                 time: self.timer.elapsed(),
             },
             ConnectionRequest,
             Destination { host_id },
         ));
+
+        let raw_packet_id = world.spawn((RawPacket {
+            packet_id,
+            bytes,
+            address: server_addr.clone(),
+        },));
+
+        let _event_id = world.spawn((SendPacket {
+            packet_id: raw_packet_id,
+        },));
     }
 
     pub fn connected(&mut self) {}

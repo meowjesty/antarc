@@ -81,6 +81,11 @@ pub(crate) struct ReceivedHeartbeat {
 }
 
 #[derive(Debug, PartialEq)]
+pub(crate) struct SendPacket {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq)]
 enum ReceivedType {
     ConnectionRequest,
     ConnectionDenied,
@@ -398,7 +403,6 @@ fn on_received_connection_accepted(timer: &Instant, world: &mut World) {
         let _ = world.despawn(event_id).unwrap();
     }
 
-    // NOTE(alex): Change `Host` state to `Connected`, and mark packet as handled.
     while let Some((host_id, packet_id, connection_id)) = connected_hosts.pop() {
         world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
         world
@@ -411,6 +415,7 @@ fn on_received_connection_accepted(timer: &Instant, world: &mut World) {
             )
             .unwrap();
 
+        // TODO(alex): Mark this packet as handled, somehow.
         // world.insert(packet_id, (Internal { time: timer.elapsed(),},),).unwrap();
     }
 
@@ -419,41 +424,46 @@ fn on_received_connection_accepted(timer: &Instant, world: &mut World) {
     }
 }
 
-// TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
-fn system_received_connection_denied(timer: &Instant, world: &mut World) {
-    let mut connection_denied_hosts = Vec::with_capacity(8);
+fn on_received_connection_denied(timer: &Instant, world: &mut World) {
+    let mut handled_events = Vec::with_capacity(8);
+
+    let mut denied_hosts = Vec::with_capacity(8);
     let mut invalid_packets = Vec::with_capacity(8);
 
-    for (packet_id, (header, source, received)) in world
-        .query::<(&Header, &Source, &Received)>()
-        .with::<ConnectionDenied>()
-        .without::<Internal>()
-        .iter()
-    {
+    for (event_id, event) in world.query::<&ReceivedConnectionDenied>().iter() {
+        let mut packet_query = world
+            .query_one::<(&Header, &Source)>(event.packet_id)
+            .unwrap();
+        let (header, source) = packet_query.get().unwrap();
+        debug_assert_eq!(source.host_id, event.host_id);
+
         let mut host_query = world
             .query_one::<&AwaitingConnectionAck>(source.host_id)
             .unwrap();
         // NOTE(alex): Only hosts with `AwaitingConnectionAck` may handle this type of packet.
-        if let Some(_) = host_query.get() {
-            connection_denied_hosts.push((source.host_id, packet_id));
-        } else {
-            invalid_packets.push(packet_id);
+        match host_query.get() {
+            Some(_) => {
+                denied_hosts.push((source.host_id, event.packet_id));
+            }
+            None => {
+                eprintln!(
+                    "Host is in an invalid state to accept this packet {:#?}.",
+                    header
+                );
+                invalid_packets.push(event.packet_id);
+            }
         }
+        handled_events.push(event_id);
     }
 
-    while let Some((host_id, packet_id)) = connection_denied_hosts.pop() {
-        let _ = world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
-        // TODO(alex) 2021-04-09: Reset `Host` tracker values.
-        let _ = world.insert(host_id, (Disconnected,)).unwrap();
+    while let Some(event_id) = handled_events.pop() {
+        let _ = world.despawn(event_id).unwrap();
+    }
 
-        let _ = world
-            .insert(
-                packet_id,
-                (Internal {
-                    time: timer.elapsed(),
-                },),
-            )
-            .unwrap();
+    while let Some((host_id, packet_id)) = denied_hosts.pop() {
+        let _ = world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
+        let _ = world.insert(host_id, (Disconnected,)).unwrap();
+        // TODO(alex): Mark this packet as handled, somehow.
     }
 
     while let Some(packet_id) = invalid_packets.pop() {
