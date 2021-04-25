@@ -80,11 +80,20 @@ pub(crate) struct Header {
 /// just have an `impl` block for the relevant meta-state part of each struct that feeds the
 /// `Header.kind` field during encoding / decoding.
 impl Header {
-    pub(crate) const PROTOCOL_ID: ProtocolId = crate::PROTOCOL_ID;
+    // pub(crate) const PROTOCOL_ID: ProtocolId = crate::PROTOCOL_ID;
 
     /// NOTE(alex): This is the size of the `Header` for the fields that are **encoded** and
     /// transmitted via the network, `Self + ProtocolId`, even though the crc32 substitutes it.
-    pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Self>() + mem::size_of::<ProtocolId>();
+    ///
+    /// WARNING(alex): `size_of::<Self>` is a no-no, as it changes based on struct alignment, so
+    /// these values must be calculated separately. Tuples also change alignment, so these must be
+    /// added individually.
+    pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Sequence>()
+        + mem::size_of::<Ack>()
+        + mem::size_of::<u16>()
+        + mem::size_of::<StatusCode>()
+        + mem::size_of::<u16>()
+        + mem::size_of::<ProtocolId>();
 
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.

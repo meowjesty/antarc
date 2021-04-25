@@ -27,8 +27,14 @@ impl NetManager<Server> {
         todo!()
     }
 
-    pub fn tick(&self) {
-        todo!();
+    pub fn tick(&mut self) -> () {
+        self.receiver();
+        self.on_received_new_packet();
+        self.on_received_connection_request();
+        self.on_received_connection_accepted();
+        self.on_received_connection_denied();
+        self.prepare_packet_to_send();
+        self.sender();
     }
 
     pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {

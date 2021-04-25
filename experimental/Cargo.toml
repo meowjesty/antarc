@@ -9,3 +9,5 @@ edition = "2018"
 [dependencies]
 antarc = { path = "../antarc" }
 hecs = { version = "*", features = ["std", "macros"] }
+log = { version = "*" }
+env_logger = { version = "*" }

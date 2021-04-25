@@ -8,6 +8,7 @@ use std::{
 };
 
 use crc32fast::Hasher;
+use log::debug;
 
 use self::header::Header;
 use crate::{
@@ -137,6 +138,10 @@ pub(crate) struct Footer {
     pub(crate) crc32: NonZeroU32,
 }
 
+impl Footer {
+    // pub(crate) const ENCODED_SIZE: usize = size_of::<(ConnectionId, NonZeroU32)>();
+}
+
 /// TODO(alex) 2021-02-09: There must be a way to mark a packet as `Reliable` and/or `Priority`.
 /// The `Reliable` packet will keep retrying until it is acked, how the algorithm will actually work
 /// I'm still unsure, should it keep bumping itself into being the first to send, until it's acked?
@@ -168,52 +173,43 @@ impl Packet {
         payload: &Payload,
         connection_id: Option<ConnectionId>,
     ) -> Result<(Vec<u8>, Footer), String> {
-        let sequence_bytes = header.sequence.get().to_be_bytes();
-        let ack_bytes = header.ack.to_be_bytes();
-        let past_acks_bytes = header.past_acks.to_be_bytes();
-        let status_code_bytes = header.status_code.to_be_bytes();
+        let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
+        let ack_bytes = header.ack.to_be_bytes().to_vec();
+        let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
+        let status_code_bytes = header.status_code.to_be_bytes().to_vec();
+        let payload_length_bytes = header.payload_length.to_be_bytes().to_vec();
+        // TODO(alex) 2021-04-24: crc32 calculation is wrong when encoding, the debug assertion
+        // doesn't match.
 
         let mut hasher = Hasher::new();
-        let mut cursor = Cursor::new(Vec::with_capacity(
-            Header::ENCODED_SIZE + payload.0.len() + size_of::<Footer>(),
-        ));
-        {
-            let mut header_and_payload_buffers = [
-                IoSlice::new(&PROTOCOL_ID_BYTES),
-                IoSlice::new(&sequence_bytes),
-                IoSlice::new(&ack_bytes),
-                IoSlice::new(&past_acks_bytes),
-                IoSlice::new(&status_code_bytes),
-                IoSlice::new(&payload.0),
-            ];
-
-            let _ = cursor
-                .write_all_vectored(&mut header_and_payload_buffers)
-                .map_err(|fail| fail.to_string())?;
-        }
+        let mut bytes = vec![
+            PROTOCOL_ID_BYTES.to_vec(),
+            sequence_bytes,
+            ack_bytes,
+            past_acks_bytes,
+            status_code_bytes,
+            payload_length_bytes,
+            payload.0.clone(),
+        ]
+        .concat();
 
         if let Some(connection_id) = connection_id {
-            let connection_id_bytes = connection_id.get().to_be_bytes();
-            let _ = cursor
-                .write_all(&connection_id_bytes)
-                .map_err(|fail| fail.to_string())?;
+            let mut connection_id_bytes = connection_id.get().to_be_bytes().to_vec();
+            bytes.append(&mut connection_id_bytes);
         }
 
-        hasher.update(cursor.get_ref());
+        hasher.update(&bytes);
         let crc32 = hasher.finalize();
         debug_assert!(crc32 != 0);
 
-        let _ = cursor
-            .write_all(&crc32.to_be_bytes())
-            .map_err(|fail| fail.to_string())?;
-
-        let _ = cursor.flush().map_err(|fail| fail.to_string())?;
-        let packet_bytes = cursor.into_inner();
+        bytes.append(&mut crc32.to_be_bytes().to_vec());
 
         let footer = Footer {
             connection_id,
             crc32: unsafe { NonZeroU32::new_unchecked(crc32) },
         };
+
+        let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
 
         debug_assert!({
             let (read_header, read_payload, read_footer) = Packet::decode(&packet_bytes).unwrap();
@@ -227,7 +223,9 @@ impl Packet {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
+
         let crc32_position = buffer_length - size_of::<NonZeroU32>();
+
         let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
             buffer[crc32_position..].try_into().unwrap();
         let crc32_received = u32::from_be_bytes(*crc32_bytes);
@@ -235,6 +233,7 @@ impl Packet {
         // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
         // the crc32 is calculated after encoding.
         let buffer_without_crc32 = &buffer[..crc32_position];
+
         let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, buffer_without_crc32].concat();
 
         hasher.update(&packet_with_protocol_id);
@@ -258,6 +257,7 @@ impl Packet {
             let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
             let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
             let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
+            // TODO(alex): There is an alignment issue, would this be solved by using `Reader`?
             debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
 
             let header = Header {
@@ -269,7 +269,7 @@ impl Packet {
             };
 
             let payload_length = read_payload_length as usize;
-            let read_payload = buffer[buffer_position..payload_length].to_vec();
+            let read_payload = buffer[buffer_position..buffer_position + payload_length].to_vec();
             buffer_position += payload_length;
             debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
             let payload = Payload(read_payload);

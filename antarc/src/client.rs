@@ -4,6 +4,7 @@ use std::{
 };
 
 use hecs::World;
+use log::{debug, info};
 use mio::{net::UdpSocket, Events, Poll};
 
 use crate::{
@@ -52,7 +53,12 @@ impl NetManager<Client> {
     ///
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
+    ///
+    /// TODO(alex) 2021-04-24: `LatestReceived` makes sense to be part of the `Host` entity, this
+    /// way we can do `world.insert` and not have to remove adn then insert (packet case).
     pub fn connect(&mut self, server_addr: &SocketAddr) -> () {
+        debug!("Client::connect start");
+
         let world = &mut self.world;
 
         // TODO(alex) 2021-04-03: Check for existing hosts in different states, we do nothing
@@ -65,6 +71,7 @@ impl NetManager<Client> {
             .with::<Disconnected>()
             .iter()
             .find_map(|(host_id, (address,))| (address.0 == *server_addr).then_some(host_id));
+        debug!("existing_host_id {:#?}", existing_host_id);
 
         // NOTE(alex) 2021-04-04: Can't combine this in the `find_map` because `query` does a
         // mutable borrow of `world`, so it doesn't allow `world.spawn`.
@@ -75,13 +82,15 @@ impl NetManager<Client> {
             ));
             host_id
         });
+        debug!("host_id {:#?}", host_id);
 
-        let connection_request_header = Header::default();
+        let header = Header::default();
         let payload = Payload(Vec::new());
-        let (bytes, footer) = Packet::encode(&connection_request_header, &payload, None).unwrap();
+        let (bytes, footer) = Packet::encode(&header, &payload, None).unwrap();
+        debug!("footer {:#?}", footer);
 
         let packet_id = world.spawn((
-            connection_request_header,
+            header,
             payload,
             footer,
             Address(server_addr.clone()),
@@ -91,16 +100,21 @@ impl NetManager<Client> {
             ConnectionRequest,
             Destination { host_id },
         ));
+        debug!("spawning packet with id: {:#?}", packet_id);
 
         let raw_packet_id = world.spawn((RawPacket {
             packet_id,
             bytes,
             address: server_addr.clone(),
         },));
+        debug!("spawning raw packet with id: {:#?}", raw_packet_id);
 
-        let _event_id = world.spawn((SendPacket {
+        let event_id = world.spawn((SendPacket {
             packet_id: raw_packet_id,
         },));
+        debug!("spawning event `SendPacket` with id: {:#?}", event_id);
+
+        debug!("Client::connect end");
     }
 
     pub fn connected(&mut self) {}
@@ -115,8 +129,18 @@ impl NetManager<Client> {
     /// possibilities, like `HasMessagesToRetrieve`, `ConnectionLost`. The only success cases I can
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
-    pub fn poll(&mut self) -> () {
-        todo!()
+    pub fn tick(&mut self) -> () {
+        debug!("Client::tick start");
+
+        self.receiver();
+        self.on_received_new_packet();
+        self.on_received_connection_request();
+        self.on_received_connection_accepted();
+        self.on_received_connection_denied();
+        self.prepare_packet_to_send();
+        self.sender();
+
+        debug!("Client::tick end");
     }
 
     /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,

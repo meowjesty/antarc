@@ -10,6 +10,7 @@ edition = "2018"
 crc32fast = { version = "*", features = ["std", "nightly"] }
 hecs = { version = "*", features = ["std", "macros"] }
 mio = { version = "*", features = ["os-poll", "net"] }
+log = { version = "*" }
 
 [dev-dependencies]
 criterion = "*"

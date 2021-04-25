@@ -1,25 +1,33 @@
 #![feature(write_all_vectored)]
 
 use std::{
-    convert::{TryFrom, TryInto},
-    future::Future,
-    io::{BufRead, Cursor, IoSlice, Read, Write},
+    convert::TryInto,
+    io::{Cursor, IoSlice, Write},
     mem,
-    net::{SocketAddr, UdpSocket},
-    num::NonZeroU32,
-    sync::{Arc, Mutex},
-    task::{Poll, Waker},
-    thread,
-    time::{Duration, Instant},
+    net::SocketAddr,
+    num::{NonZeroU16, NonZeroU32},
+    time::Duration,
 };
 
 use antarc::{net::NetManager, server::Server};
 use hecs::{Entity, With, Without, World};
+use log::{debug, error, info, trace, warn};
+use mem::size_of;
+
+fn main() {
+    env_logger::init();
+    let client = std::thread::spawn(|| client_main());
+    let server = std::thread::spawn(|| server_main());
+
+    client.join();
+    server.join();
+}
 
 fn client_main() {
     let server_addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
     let client_addr: SocketAddr = "127.0.0.1:8888".parse().unwrap();
     let mut net_client = NetManager::new_client(&client_addr);
+    net_client.connect(&server_addr);
 
     // .await ?
     // net_client.connect(&server_addr);
@@ -28,9 +36,11 @@ fn client_main() {
     // server. The user API won't be calling these inner `tick` functions, it'll call a
     // `NetworkManager.tick`.
     // let mut net_client = client_connecting.connected();
-    let world_state = vec![0x0; 32];
+    // let world_state = vec![0x0; 32];
 
     'running: loop {
+        net_client.tick();
+        std::thread::sleep(Duration::from_millis(150));
         // TODO(alex) 2021-01-27: This keeps the client running by:
         // 1. replying to hearbeat packets to the server;
         // 2. putting data packets received in the received data storage;
@@ -43,7 +53,7 @@ fn client_main() {
         // server.deny_connection(new_connections[1]);
         // net_client.poll();
 
-        let data = vec![0x1; 32];
+        // let data = vec![0x1; 32];
         // TODO(alex) 2021-01-28: Is this the exact same as the server? Do we need multiple ids?
         // The answer I have right now is, probably yes, if we have host migration then the client
         // needs to know that these changes are coming from this new server.
@@ -84,13 +94,16 @@ fn client_main() {
 }
 
 fn server_main() {
-    // let server_addr = "127.0.0.1:7777".parse().unwrap();
-    let client_addr = "127.0.0.1:8888";
+    let server_addr = "127.0.0.1:7777".parse().unwrap();
+    // let client_addr = "127.0.0.1:8888";
+    let mut server = NetManager::<Server>::new_server(&server_addr);
 
     // let mut server: NetManager<Server> = NetManager::<Server>::new_server(&server_addr);
-    let world_state = vec![0x0; 32];
+    // let world_state = vec![0x0; 32];
 
     'running: loop {
+        server.tick();
+        std::thread::sleep(Duration::from_millis(150));
         // TODO(alex) 2021-01-27: This keeps the server running by:
         // 1. sending hearbeat packets to clients;
         // 2. putting data packets received in the received data storage;
@@ -100,7 +113,7 @@ fn server_main() {
         // server.deny_connection(new_connections[1]);
         // server.tick();
 
-        let new_world_state = vec![0x1; 32];
+        // let new_world_state = vec![0x1; 32];
         // TODO(alex) 2021-01-27: Send actually means `enqueue`, as I don't think immediately
         // sending is viable (or desirable).
         // Do we even have to `await` if this actually means to enqueue?
@@ -120,163 +133,16 @@ fn server_main() {
         // just mark this host as banned, and drop the connection. The `Disconnected` ->
         // `ConnectionRequest` handling should have a special case to check if the host is in
         // a ban list, and ignore the connection request, or whatever.
-        let player_1 = 1;
+        // let player_1 = 1;
         // server.ban_host(player_1);
         // }
         // let world_state_changes = world_state.delta().serialize();
         // TODO(alex) 2021-01-27: Work priority in the future, right now I would rather not
         // deal with handling this.
         // server.send_with_priority(Priority::High, id, dead_player_world_state);
-        let world_state_changes = vec![0x2; 32];
+        // let world_state_changes = vec![0x2; 32];
         // server.enqueue(world_state_changes); // .await
     }
-}
-
-#[derive(Debug)]
-struct NumberFuture {
-    /// TODO(alex) 2021-03-05: Is this the only way to have mutable state in the `poll`?
-    value: i32,
-    waker: Option<Arc<Mutex<Waker>>>,
-}
-
-impl NumberFuture {
-    fn new() -> Self {
-        Self {
-            value: 15,
-            waker: None,
-        }
-    }
-    async fn pair(&self) -> f32 {
-        1.0
-    }
-}
-
-impl Future for NumberFuture {
-    type Output = f32;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        // First, if this is the first time the future is called, spawn the
-        // timer thread. If the timer thread is already running, ensure the
-        // stored `Waker` matches the current task's waker.
-        if let Some(waker) = &self.waker {
-            let mut waker = waker.lock().unwrap();
-
-            // Check if the stored waker matches the current task's waker.
-            // This is necessary as the `Delay` future instance may move to
-            // a different task between calls to `poll`. If this happens, the
-            // waker contained by the given `Context` will differ and we
-            // must update our stored waker to reflect this change.
-            if !waker.will_wake(cx.waker()) {
-                *waker = cx.waker().clone();
-            }
-        } else {
-            // This is the first time `poll` is called.
-            let value = self.value;
-            let waker = Arc::new(Mutex::new(cx.waker().clone()));
-            self.waker = Some(waker.clone());
-
-            thread::spawn(move || {
-                if value % 2 != 0 {
-                    thread::sleep(Duration::from_millis(150));
-                    println!("Value {:?} not pair yet.", value)
-                }
-
-                let waker = waker.lock().unwrap();
-                waker.wake_by_ref();
-            });
-        }
-        // Once the waker is stored and the timer thread is started, it is
-        // time to check if the delay has completed. This is done by
-        // checking the current instant. If the duration has elapsed, then
-        // the future has completed and `Poll::Ready` is returned.
-        if self.value % 2 == 0 {
-            println!("Value is pair now {:?}", self.value);
-            Poll::Ready(self.value as f32)
-        } else {
-            self.value += 1;
-
-            // The duration has not elapsed, the future has not completed so
-            // return `Poll::Pending`.
-            //
-            // The `Future` trait contract requires that when `Pending` is
-            // returned, the future ensures that the given waker is signalled
-            // once the future should be polled again. In our case, by
-            // returning `Pending` here, we are promising that we will
-            // invoke the given waker included in the `Context` argument
-            // once the requested duration has elapsed. We ensure this by
-            // spawning the timer thread above.
-            //
-            // If we forget to invoke the waker, the task will hang
-            // indefinitely.
-            Poll::Pending
-        }
-    }
-}
-
-fn foo() -> std::io::Result<()> {
-    let mut buffer = vec![0; 128];
-    let mut buffer2 = vec![0; 128];
-    let timer = Instant::now();
-    println!("create task");
-    // let task = async_std::task::spawn(async move {
-    //     println!("begin task");
-    //     let socket = async_std::net::UdpSocket::bind("127.0.0.1:7777")
-    //         .await
-    //         .unwrap();
-    //     println!("socket bound");
-    //     println!("before receive");
-    //     let read =
-    //         async_std::future::timeout(Duration::from_millis(1000), socket.recv_from(&mut
-    // buffer))             .await;
-    //     println!("after received, got {:?}", read);
-    //     // println!("{:?}", read_with.await);
-    //     // let foo = socket.recv_from(&mut buffer2).await;
-    //     println!("end task");
-    //     32
-    // });
-    // println!("task created");
-
-    // println!("create block");
-    // let block = async_std::task::block_on(async {
-    //     println!("await task");
-    //     let x = task.await;
-    //     println!("After task");
-    // });
-    // println!("block created");
-
-    let mut x = false;
-    let mut y = 0;
-    let foo = loop {
-        break match x {
-            true => true,
-            false => {
-                println!("x is false, continue");
-                println!("y {:?}", y);
-                y += 1;
-                if y > 3000 {
-                    x = true;
-                }
-                continue;
-            }
-        };
-    };
-
-    println!("Foo is {:?}", foo);
-
-    Ok(())
-
-    /*
-    async_std::block_on(async {
-        let manager = NumberFuture::new();
-        manager.pair().await;
-        manager.await;
-
-        Ok(())
-    })
-    */
 }
 
 #[derive(Debug)]
@@ -325,7 +191,7 @@ mod test_constants {
     pub const FULL: u16 = 0xff;
 }
 
-fn main() {
+fn test_stuff_main() {
     let mut world = World::new();
 
     let host = world.spawn((Host { tracker: 0 }, Address { addr: 1 }));
