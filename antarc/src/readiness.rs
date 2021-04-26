@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use hecs::World;
+use log::debug;
 
-use crate::net::NetworkResource;
+use crate::net::{NetManager, NetworkResource};
 
 #[derive(Debug)]
 pub(crate) struct Readable;
@@ -10,37 +11,42 @@ pub(crate) struct Readable;
 #[derive(Debug)]
 pub(crate) struct Writable;
 
-pub(crate) fn system_readiness(world: &mut World) {
-    let mut readable = None;
-    let mut writable = None;
+impl<T> NetManager<T> {
+    pub(crate) fn check_readiness(&mut self) {
+        let world = &mut self.world;
+        let mut readable = None;
+        let mut writable = None;
 
-    if let Some((_, resource)) = world.query::<&mut NetworkResource>().iter().next() {
-        let _ = resource
-            .poll
-            .poll(&mut resource.events, Some(Duration::from_millis(100)))
-            .unwrap();
+        if let Some((_, resource)) = world.query::<&mut NetworkResource>().iter().next() {
+            let _ = resource
+                .poll
+                .poll(&mut resource.events, Some(Duration::from_millis(100)))
+                .unwrap();
 
-        for event in resource.events.iter() {
-            match event.token() {
-                NetworkResource::TOKEN => {
-                    if event.is_readable() {
-                        readable = Some(Readable);
-                    } else if event.is_writable() {
-                        writable = Some(Writable);
-                    } else {
-                        panic!("Unhandled network event readiness {:#?}.", event);
+            for event in resource.events.iter() {
+                match event.token() {
+                    NetworkResource::TOKEN => {
+                        if event.is_readable() {
+                            readable = Some(Readable);
+                            debug!("check_readiness -> socket is readable");
+                        } else if event.is_writable() {
+                            writable = Some(Writable);
+                            debug!("check_readiness -> socket is writable");
+                        } else {
+                            panic!("Unhandled network event readiness {:#?}.", event);
+                        }
                     }
-                }
-                _ => {
-                    panic!("Invalid token {:#?}.", event);
+                    _ => {
+                        panic!("Invalid token {:#?}.", event);
+                    }
                 }
             }
         }
-    }
 
-    if let Some(readable) = readable {
-        let _ = world.spawn((readable,));
-    } else if let Some(writable) = writable {
-        let _ = world.spawn((writable,));
+        if let Some(readable) = readable {
+            let _ = world.spawn((readable,));
+        } else if let Some(writable) = writable {
+            let _ = world.spawn((writable,));
+        }
     }
 }

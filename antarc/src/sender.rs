@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     net::{SocketAddr, UdpSocket},
     time::Instant,
 };
@@ -32,11 +33,21 @@ pub(crate) struct PreparePacketToSend {
     pub(crate) host_id: Entity,
 }
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd)]
 pub(crate) struct RawPacket {
     pub(crate) packet_id: Entity,
     pub(crate) bytes: Vec<u8>,
     pub(crate) address: SocketAddr,
+}
+
+impl fmt::Debug for RawPacket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RawPacket")
+            .field("packet_id", &self.packet_id)
+            .field("bytes (partial)", &&self.bytes[0..18])
+            .field("address", &self.address)
+            .finish()
+    }
 }
 
 #[derive(Debug, PartialEq, PartialOrd)]
@@ -44,8 +55,6 @@ pub(crate) struct LatestSent;
 
 impl<T> NetManager<T> {
     pub(crate) fn prepare_packet_to_send(&mut self) {
-        debug!("NetManager::prepare_packet_to_send start");
-
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
 
         let mut handled_events = Vec::with_capacity(8);
@@ -138,25 +147,21 @@ impl<T> NetManager<T> {
                 packet_id: raw_packet_id,
             },));
         }
-
-        debug!("NetManager::prepare_packet_to_send end");
     }
 
     pub(crate) fn sender(&mut self) {
-        debug!("NetManager::sender start");
-
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
 
         let mut handled_events = Vec::with_capacity(8);
         let mut sent_packets = Vec::with_capacity(8);
 
         if let Some((event_id, _writable)) = world.query::<&Writable>().iter().next() {
-            debug!("writable event with id {:#?}", event_id);
+            debug!("sender -> writable event with id {:#?}", event_id);
 
             if let Some((resource_id, resource)) =
                 world.query::<&mut NetworkResource>().iter().next()
             {
-                debug!("network resource id {:#?}", resource_id);
+                debug!("sender -> network resource id {:#?}", resource_id);
 
                 let socket = &mut resource.socket;
 
@@ -167,16 +172,16 @@ impl<T> NetManager<T> {
                 if let Some((send_event_id, (event,))) =
                     world.query::<(&SendPacket,)>().iter().next()
                 {
-                    debug!("handling send packet event {:#?}", send_event_id);
+                    debug!("sender -> handling send packet event {:#?}", send_event_id);
 
                     let mut raw_packet_query =
                         world.query_one::<(&RawPacket,)>(event.packet_id).unwrap();
                     let (raw_packet,) = raw_packet_query.get().unwrap();
-                    debug!("raw_packet {:#?}", raw_packet);
+                    debug!("sender -> raw_packet {:#?}", raw_packet);
 
                     match socket.send_to(&raw_packet.bytes, raw_packet.address) {
                         Ok(num_sent) => {
-                            debug!("sent a packet with {:#?} bytes", num_sent);
+                            debug!("sender -> sent a packet with {:#?} bytes", num_sent);
                             debug_assert!(num_sent > 0);
 
                             sent_packets.push((event.packet_id, raw_packet.packet_id));
@@ -193,11 +198,17 @@ impl<T> NetManager<T> {
 
         while let Some((writable_id, send_event_id)) = handled_events.pop() {
             let _ = world.despawn(writable_id).unwrap();
-            debug!("despawning handled writable event {:#?}", writable_id);
+            debug!(
+                "sender -> despawning handled writable event {:#?}",
+                writable_id
+            );
 
             if let Some(send_event_id) = send_event_id {
                 let _ = world.despawn(send_event_id).unwrap();
-                debug!("despawning handled send event {:#?}", send_event_id);
+                debug!(
+                    "sender -> despawning handled send event {:#?}",
+                    send_event_id
+                );
             }
         }
 
@@ -205,7 +216,7 @@ impl<T> NetManager<T> {
             // TODO(alex) 2021-04-24: Just despawning the raw packets after they've been sent, is
             // there any reason to keep them for longer?
             let _ = world.despawn(raw_id).unwrap();
-            debug!("despawning sent raw packet {:#?}", raw_id);
+            debug!("sender -> despawning sent raw packet {:#?}", raw_id);
 
             let _ = world
                 .insert(

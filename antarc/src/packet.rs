@@ -219,15 +219,20 @@ impl Packet {
         Ok((packet_bytes, footer))
     }
 
+    /// NOTE(alex) 2021-04-26: This `buffer` should contain only the packet, be careful not to pass
+    /// the whole receiver buffer into here.
     pub(crate) fn decode(buffer: &[u8]) -> Result<(Header, Payload, Footer), String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
+        debug!("length {:?}", buffer_length);
 
         let crc32_position = buffer_length - size_of::<NonZeroU32>();
+        debug!("crc32 position {:?}", crc32_position);
 
         let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
             buffer[crc32_position..].try_into().unwrap();
+        debug!("crc32 bytes {:?}", crc32_bytes);
         let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
         // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
@@ -257,7 +262,6 @@ impl Packet {
             let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
             let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
             let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
-            // TODO(alex): There is an alignment issue, would this be solved by using `Reader`?
             debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
 
             let header = Header {

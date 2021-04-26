@@ -60,39 +60,30 @@ pub(crate) struct ReceivedConnectionRequest {
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedConnectionDenied {
     pub(crate) packet_id: Entity,
-    host_id: Entity,
+    pub(crate) host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedConnectionAccepted {
     pub(crate) packet_id: Entity,
-    host_id: Entity,
+    pub(crate) host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedDataTransfer {
     pub(crate) packet_id: Entity,
-    host_id: Entity,
+    pub(crate) host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedHeartbeat {
     pub(crate) packet_id: Entity,
-    host_id: Entity,
+    pub(crate) host_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct SendPacket {
     pub(crate) packet_id: Entity,
-}
-
-#[derive(Debug, PartialEq)]
-enum ReceivedType {
-    ConnectionRequest,
-    ConnectionDenied,
-    ConnectionAccepted,
-    DataTransfer,
-    Heartbeat,
 }
 
 /// Event: `Host` has `Sent` packets that require acking (remote acks local).
@@ -116,31 +107,34 @@ impl<T> NetManager<T> {
     ///
     /// - Raises the `ReceivedNewPacket` event.
     pub(crate) fn receiver(&mut self) {
-        debug!("NetManager::receiver start");
-
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
 
         let mut handled_events = Vec::with_capacity(8);
         let mut received_new_packet = None;
 
         if let Some((event_id, _readable)) = world.query::<&Readable>().iter().next() {
-            debug!("readable event with id {:#?}", event_id);
+            debug!("receiver -> readable event with id {:#?}", event_id);
 
             if let Some((resource_id, resource)) =
                 world.query::<&mut NetworkResource>().iter().next()
             {
-                debug!("network resource id {:#?}", resource_id);
+                debug!("receiver -> network resource id {:#?}", resource_id);
 
                 let socket = &mut resource.socket;
 
                 match socket.recv_from(buffer) {
                     Ok((num_recv, from_addr)) => {
-                        debug!("received a packet {:#?} with {:#?} bytes", buffer, num_recv);
+                        debug!(
+                            "receiver -> received a packet {:?} with {:#?} bytes",
+                            &buffer[0..18],
+                            num_recv
+                        );
 
                         if num_recv > 0 {
                             let remote_address = Address(from_addr);
 
-                            let (header, payload, footer) = Packet::decode(&buffer).unwrap();
+                            let (header, payload, footer) =
+                                Packet::decode(&buffer[0..num_recv]).unwrap();
 
                             let received = Received {
                                 time: timer.elapsed(),
@@ -163,18 +157,19 @@ impl<T> NetManager<T> {
 
         if let Some((header, payload, footer, address, received)) = received_new_packet {
             let packet_id = world.spawn((header, payload, footer, address, received));
-            debug!("spawning new packet received {:#?}", packet_id);
+            debug!("receiver -> spawning packet {:#?}", packet_id);
 
             let event_id = world.spawn((ReceivedNewPacket { packet_id },));
-            debug!("spawning received new packet event {:#?}", event_id);
+            debug!(
+                "receiver -> spawning received new packet event {:#?}",
+                event_id
+            );
         }
 
         while let Some(event_id) = handled_events.pop() {
             let _ = world.despawn(event_id).unwrap();
-            debug!("despawning handled event {:#?}", event_id);
+            debug!("receiver -> despawning handled event {:#?}", event_id);
         }
-
-        debug!("NetManager::receiver end");
     }
 
     /// System responsible for attributing a `Source` host to a packet entity, if the host matches
@@ -184,9 +179,7 @@ impl<T> NetManager<T> {
     /// Also handles the changes to a host's `LatestReceived` packet.
     ///
     /// - Raises the `OnReceivedConnectionRequest` event.
-    pub(crate) fn on_received_new_packet(&mut self) {
-        debug!("NetManager::on_received_new_packet start");
-
+    pub(crate) fn _on_received_new_packet(&mut self) {
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
 
         let mut handled_events = Vec::with_capacity(8);
@@ -250,6 +243,7 @@ impl<T> NetManager<T> {
             } else if packet_type_flags == CONNECTION_REQUEST && connection_id.is_none() {
                 debug!("packet belongs to an unknown host ");
                 // NOTE(alex): `Source`less packet is a connection request, this is ok.
+                // TODO(alex) 2021-04-25: This is only valid for the server.
                 debug_assert_eq!(header.status_code, CONNECTION_REQUEST);
                 unknown_host_packets.push(packet_id);
             } else {
@@ -277,6 +271,7 @@ impl<T> NetManager<T> {
             let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
             match (packet_type_flags, connection_id) {
                 (CONNECTION_REQUEST, None) => {
+                    // TODO(alex) 2021-04-25: This is only valid for the server.
                     let event_id = world.spawn((ReceivedConnectionRequest { packet_id },));
                     debug!("spawning received connection request event {:#?}", event_id);
                 }
@@ -359,7 +354,7 @@ impl<T> NetManager<T> {
 
     // NOTE(alex): This handler is specific for the server, as the client doesn't receive connection
     // requests, at least not yet.
-    pub(crate) fn on_received_connection_request(&mut self) {
+    pub(crate) fn _on_received_connection_request(&mut self) {
         debug!("NetManager::on_received_connection_request start");
 
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
@@ -440,7 +435,7 @@ impl<T> NetManager<T> {
         debug!("NetManager::on_received_connection_request end");
     }
 
-    pub(crate) fn on_received_connection_accepted(&mut self) {
+    pub(crate) fn _on_received_connection_accepted(&mut self) {
         debug!("NetManager::on_received_connection_accepted start");
 
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
@@ -509,7 +504,7 @@ impl<T> NetManager<T> {
         debug!("NetManager::on_received_connection_accepted end");
     }
 
-    pub(crate) fn on_received_connection_denied(&mut self) {
+    pub(crate) fn _on_received_connection_denied(&mut self) {
         let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
 
         let mut handled_events = Vec::with_capacity(8);
