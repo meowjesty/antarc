@@ -68,7 +68,7 @@ impl NetManager<Server> {
 
         for (event_id, (event,)) in world.query::<(&ReceivedNewPacket,)>().iter() {
             debug!(
-                "Server::on_received_new_packet new packet event {:#?}",
+                "Server::on_received_new_packet handle ReceivedNewPacket {:#?}",
                 event_id
             );
 
@@ -85,8 +85,6 @@ impl NetManager<Server> {
 
             // TODO(alex) 2021-04-26: Fail here, as we're not dealing with this kind of status_code
             // correctly at packet creation.
-            let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
-            let connection_id = footer.connection_id;
 
             // NOTE(alex): Check if this packet has a `Source`.
             if let Some(host_id) = world
@@ -124,9 +122,9 @@ impl NetManager<Server> {
                     host_id,
                     old_latest_id,
                     header.clone(),
-                    connection_id,
+                    footer.connection_id,
                 ));
-            } else if packet_type_flags == CONNECTION_REQUEST && connection_id.is_none() {
+            } else if header.status_code == CONNECTION_REQUEST && footer.connection_id.is_none() {
                 debug!("Server::on_received_new_packet packet belongs to an unknown host ");
                 // NOTE(alex): `Source`less packet is a connection request, this is ok.
                 debug_assert_eq!(header.status_code, CONNECTION_REQUEST);
@@ -143,7 +141,7 @@ impl NetManager<Server> {
         while let Some(event_id) = handled_events.pop() {
             let _ = world.despawn(event_id).unwrap();
             debug!(
-                "Server::on_received_new_packet despawning handled event {:#?}",
+                "Server::on_received_new_packet despawning ReceivedNewPacket {:#?}",
                 event_id
             );
         }
@@ -156,26 +154,25 @@ impl NetManager<Server> {
             // behaviour, and short-circuit whatever comes after the first non-imported name!
             // rust-analyzer will at least squiggle it suggesting that you use lower-case instead of
             // all-caps, as it thinks you're just creating a binding.
-            let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
-            match (packet_type_flags, connection_id) {
+            match (header.status_code, connection_id) {
                 (CONNECTION_REQUEST, None) => {
                     let event_id = world.spawn((ReceivedConnectionRequest { packet_id },));
                     debug!(
-                        "Server::on_received_new_packet spawning connection request event {:#?}",
+                        "Server::on_received_new_packet spawning ReceivedConnectionRequest {:#?}",
                         event_id
                     );
                 }
                 (DATA_TRANSFER, Some(_)) => {
                     let event_id = world.spawn((ReceivedDataTransfer { packet_id, host_id },));
                     debug!(
-                        "Server::on_received_new_packet spawning data transfer event {:#?}",
+                        "Server::on_received_new_packet spawning ReceivedDataTransfer {:#?}",
                         event_id
                     );
                 }
                 (HEARTBEAT, Some(_)) => {
                     let event_id = world.spawn((ReceivedHeartbeat { packet_id, host_id },));
                     debug!(
-                        "Server::on_received_new_packet spawning heartbeat event {:#?}",
+                        "Server::on_received_new_packet spawning ReceivedHeartbeat {:#?}",
                         event_id
                     );
                 }
@@ -196,7 +193,7 @@ impl NetManager<Server> {
             if let Some(packet_id) = old_latest_id {
                 let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
                 debug!(
-                    "Server::on_received_new_packet swapping latest received modifier {:#?}",
+                    "Server::on_received_new_packet swapping LatestReceived {:#?}",
                     packet_id
                 );
             }
@@ -204,7 +201,7 @@ impl NetManager<Server> {
             if header.ack != 0 {
                 let event_id = world.spawn((AckLocalPacket { packet_id, host_id },));
                 debug!(
-                    "Server::on_received_new_packet spawning ack local packet event {:#?}",
+                    "Server::on_received_new_packet spawning AckLocalPacket {:#?}",
                     event_id
                 );
             }
@@ -219,7 +216,7 @@ impl NetManager<Server> {
             // meanwhile the connection request handler raises it after adding a `Source`.
             let event_id = world.spawn((AckRemotePacket { packet_id, host_id },));
             debug!(
-                "Server::on_received_new_packet spawning ack remote packet event {:#?}",
+                "Server::on_received_new_packet spawning AckRemotePacket {:#?}",
                 event_id
             );
         }
@@ -235,10 +232,12 @@ impl NetManager<Server> {
                 },)
             }))
             .collect::<Vec<_>>();
-        debug!(
-            "Server::on_received_new_packet spawning connection request events (len) {:#?}",
-            events.len()
-        );
+        if !events.is_empty() {
+            debug!(
+                "Server::on_received_new_packet spawning ReceivedConnectionRequest (len) {:#?}",
+                events.len()
+            );
+        }
 
         while let Some(packet_id) = invalid_packets.pop() {
             let _ = world.despawn(packet_id).unwrap();
@@ -261,7 +260,7 @@ impl NetManager<Server> {
 
         for (event_id, event) in world.query::<&ReceivedConnectionRequest>().iter() {
             debug!(
-                "Server::on_received_connection_request event {:#?}",
+                "Server::on_received_connection_request handle ReceivedConnectionRequest {:#?}",
                 event_id
             );
 
@@ -289,12 +288,12 @@ impl NetManager<Server> {
                     .get()
                 {
                     reconnecting_hosts.push((event.packet_id, source.host_id));
-                    debug!("Server::on_received_connection_request disconnected");
+                    debug!("Server::on_received_connection_request host is disconnected");
                 } else {
                     // NOTE(alex): Host is in an incompatible state to receive this kind of
                     // packet.
                     invalid_packets.push(event.packet_id);
-                    debug!("Server::on_received_connection_request invalid");
+                    debug!("Server::on_received_connection_request host is in invalid state");
                 }
             } else {
                 // NOTE(alex): Create a new host and add it as the source for this packet.
@@ -308,7 +307,7 @@ impl NetManager<Server> {
         while let Some(event_id) = handled_events.pop() {
             let _ = world.despawn(event_id).unwrap();
             debug!(
-                "Server::on_received_connection_request despawning handled event {:#?}",
+                "Server::on_received_connection_request despawning ReceivedConnectionRequest {:#?}",
                 event_id
             );
         }
@@ -327,7 +326,7 @@ impl NetManager<Server> {
                 .insert(host_id, (RequestingConnection { attempts: 0 },))
                 .unwrap();
             debug!(
-                "Server::on_received_connection_request swapping host state {:#?}",
+                "Server::on_received_connection_request Disconnected -> RequestingConnection {:#?}",
                 host_id
             );
         }
@@ -341,11 +340,20 @@ impl NetManager<Server> {
                 .insert(packet_id, (LatestReceived, Source { host_id }))
                 .unwrap();
             debug!(
-                "Server::on_received_connection_request spawning new host as the source {:#?}",
+                "Server::on_received_connection_request spawning Source {:#?}",
                 host_id
             );
         }
     }
+
+    // TODO(alex) 2021-04-27: Handle the `RequestingConnection` host state, we get the connection
+    // request, create a host (if one does not exist with the same address already), but nothing is
+    // being done to actually send back a connection accepted (or denied). I should start handling
+    // only the accepted case, leave the option to deny a connection to later. I'm thinking about
+    // this connection handler mechanism as being a simple syn/ack, and leaving proper connection
+    // management to the user, so a connection denied would only be sent if a host belongs to a ban
+    // list that the user has created. This means that the first time the connection will always be
+    // replied with accepted.
 
     pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {
         todo!();

@@ -112,10 +112,7 @@ impl NetManager<Client> {
             ConnectionRequest,
             Destination { host_id },
         ));
-        debug!(
-            "Client::connect -> spawning packet with id: {:#?}",
-            packet_id
-        );
+        debug!("Client::connect -> spawning packet {:#?}", packet_id);
 
         let raw_packet_id = world.spawn((RawPacket {
             packet_id,
@@ -123,17 +120,14 @@ impl NetManager<Client> {
             address: server_addr.clone(),
         },));
         debug!(
-            "Client::connect -> spawning raw packet with id: {:#?}",
+            "Client::connect -> spawning raw packet {:#?}",
             raw_packet_id
         );
 
         let event_id = world.spawn((SendPacket {
             packet_id: raw_packet_id,
         },));
-        debug!(
-            "Client::connect -> spawning event `SendPacket` with id: {:#?}",
-            event_id
-        );
+        debug!("Client::connect -> spawning `SendPacket` {:#?}", event_id);
     }
 
     pub fn connected(&mut self) {}
@@ -175,7 +169,7 @@ impl NetManager<Client> {
 
         for (event_id, (event,)) in world.query::<(&ReceivedNewPacket,)>().iter() {
             debug!(
-                "Client::on_received_new_packet received new packet event {:#?}",
+                "Client::on_received_new_packet handle ReceivedNewPacket {:#?}",
                 event_id
             );
 
@@ -189,8 +183,6 @@ impl NetManager<Client> {
                 "Client::on_received_new_packet packet {:#?} info {:#?} {:#?} {:#?}",
                 packet_id, header, footer, address
             );
-
-            let connection_id = footer.connection_id;
 
             // NOTE(alex): Check if this packet has a `Source`.
             if let Some(host_id) = world
@@ -228,10 +220,10 @@ impl NetManager<Client> {
                     host_id,
                     old_latest_id,
                     header.clone(),
-                    connection_id,
+                    footer.connection_id,
                 ));
             } else {
-                debug!("Client::on_received_new_packet packet is invalid");
+                debug!("Client::on_received_new_packet packet is invalid (not connection request)");
                 // NOTE(alex): `Source`less packets can only be connection requests.
                 invalid_packets.push(packet_id);
             }
@@ -242,7 +234,7 @@ impl NetManager<Client> {
         while let Some(event_id) = handled_events.pop() {
             let _ = world.despawn(event_id).unwrap();
             debug!(
-                "Client::on_received_new_packet despawning handled event {:#?}",
+                "Client::on_received_new_packet despawning ReceivedNewPacket {:#?}",
                 event_id
             );
         }
@@ -255,12 +247,11 @@ impl NetManager<Client> {
             // behaviour, and short-circuit whatever comes after the first non-imported name!
             // rust-analyzer will at least squiggle it suggesting that you use lower-case instead of
             // all-caps, as it thinks you're just creating a binding.
-            let packet_type_flags = (header.status_code >> 4) & 0b1111_1111_1111;
-            match (packet_type_flags, connection_id) {
+            match (header.status_code, connection_id) {
                 (CONNECTION_DENIED, None) => {
                     let event_id = world.spawn((ReceivedConnectionDenied { packet_id, host_id },));
                     debug!(
-                        "Client::on_received_new_packet spawning connection denied event {:#?}",
+                        "Client::on_received_new_packet spawning ReceivedConnectionDenied {:#?}",
                         event_id
                     );
                 }
@@ -268,21 +259,21 @@ impl NetManager<Client> {
                     let event_id =
                         world.spawn((ReceivedConnectionAccepted { packet_id, host_id },));
                     debug!(
-                        "Client::on_received_new_packet spawning connection accepted event {:#?}",
+                        "Client::on_received_new_packet spawning ReceivedConnectionAccepted {:#?}",
                         event_id
                     );
                 }
                 (DATA_TRANSFER, Some(_)) => {
                     let event_id = world.spawn((ReceivedDataTransfer { packet_id, host_id },));
                     debug!(
-                        "Client::on_received_new_packet spawning data transfer event {:#?}",
+                        "Client::on_received_new_packet spawning ReceivedDataTransfer {:#?}",
                         event_id
                     );
                 }
                 (HEARTBEAT, Some(_)) => {
                     let event_id = world.spawn((ReceivedHeartbeat { packet_id, host_id },));
                     debug!(
-                        "Client::on_received_new_packet spawning heartbeat event {:#?}",
+                        "Client::on_received_new_packet spawning ReceivedHeartbeat {:#?}",
                         event_id
                     );
                 }
@@ -303,7 +294,7 @@ impl NetManager<Client> {
             if let Some(packet_id) = old_latest_id {
                 let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
                 debug!(
-                    "Client::on_received_new_packet swapping latest received modifier {:#?}",
+                    "Client::on_received_new_packet swapping LatestReceived {:#?}",
                     packet_id
                 );
             }
@@ -311,7 +302,7 @@ impl NetManager<Client> {
             if header.ack != 0 {
                 let event_id = world.spawn((AckLocalPacket { packet_id, host_id },));
                 debug!(
-                    "Client::on_received_new_packet spawning ack local packet event {:#?}",
+                    "Client::on_received_new_packet spawning AckLocalPacket {:#?}",
                     event_id
                 );
             }
@@ -326,7 +317,7 @@ impl NetManager<Client> {
             // meanwhile the connection request handler raises it after adding a `Source`.
             let event_id = world.spawn((AckRemotePacket { packet_id, host_id },));
             debug!(
-                "Client::on_received_new_packet spawning ack remote packet event {:#?}",
+                "Client::on_received_new_packet spawning AckRemotePacket {:#?}",
                 event_id
             );
         }
@@ -398,7 +389,7 @@ impl NetManager<Client> {
 
         for (event_id, event) in world.query::<&ReceivedConnectionAccepted>().iter() {
             debug!(
-                "Client::on_received_connection_accepted event {:#?}",
+                "Client::on_received_connection_accepted handle ReceivedConnectionAccepted {:#?}",
                 event_id
             );
 
@@ -454,6 +445,7 @@ impl NetManager<Client> {
 
         while let Some(packet_id) = invalid_packets.pop() {
             world.despawn(packet_id).unwrap();
+            debug!("Client::on_received_connection_accepted despawning ReceivedConnectionAccepted");
         }
     }
 

@@ -28,15 +28,15 @@ pub(crate) mod header;
 /// but this is NOT:
 /// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
 type StatusCode = u16;
-pub(crate) const SPECIAL: StatusCode = 0;
-pub(crate) const FRAGMENTED: StatusCode = 1;
-pub(crate) const DATA_TRANSFER: StatusCode = 1 << 1;
-pub(crate) const CONNECTION_REQUEST: StatusCode = 1 << 2;
-pub(crate) const CHALLENGE_REQUEST: StatusCode = 1 << 3;
-pub(crate) const CHALLENGE_RESPONSE: StatusCode = 1 << 4;
-pub(crate) const CONNECTION_ACCEPTED: StatusCode = 1 << 5;
-pub(crate) const CONNECTION_DENIED: StatusCode = 1 << 6;
-pub(crate) const HEARTBEAT: StatusCode = 1 << 7;
+pub(crate) const RESERVED: StatusCode = 0;
+// pub(crate) const FRAGMENTED: StatusCode = 1;
+pub(crate) const CONNECTION_REQUEST: StatusCode = 100;
+pub(crate) const CHALLENGE_REQUEST: StatusCode = 200;
+pub(crate) const CHALLENGE_RESPONSE: StatusCode = 300;
+pub(crate) const CONNECTION_ACCEPTED: StatusCode = 400;
+pub(crate) const CONNECTION_DENIED: StatusCode = 500;
+pub(crate) const HEARTBEAT: StatusCode = 600;
+pub(crate) const DATA_TRANSFER: StatusCode = 700;
 
 /// TODO(alex) 2021-02-09: Improve terminology:
 /// http://www.tcpipguide.com/free/t_MessagesPacketsFramesDatagramsandCells-2.htm
