@@ -18,11 +18,17 @@ struct Marker;
 struct Extra(u32);
 
 #[derive(Debug)]
+struct FirstState;
+
+#[derive(Debug)]
+struct SecondState;
+
+#[derive(Debug)]
 struct Event {
     id: Entity,
 }
 
-const MAX: usize = 100;
+const MAX: usize = 10000;
 
 fn build_data() -> Vec<Data> {
     let mut data_list = Vec::with_capacity(MAX);
@@ -45,7 +51,7 @@ fn prepare_ecs() -> World {
     let data_list = build_data();
 
     let spawned_data = world
-        .spawn_batch(data_list.into_iter().map(|data| (data,)))
+        .spawn_batch(data_list.into_iter().map(|data| (data, FirstState)))
         .collect::<Vec<_>>();
     assert!(spawned_data.len() == MAX);
 
@@ -153,6 +159,55 @@ fn hecs_spawn_despawn() {
     }
 }
 
+fn swap_state() {
+    let mut world = prepare_ecs();
+    let mut stale_states: Vec<Entity> = Vec::with_capacity(MAX / 2);
+
+    let mut entered = 0;
+    for (id, (data, first)) in world.query::<(&Data, &FirstState)>().iter() {
+        stale_states.push(id);
+        entered += 1;
+    }
+    assert_eq!(entered, MAX);
+
+    while let Some(id) = stale_states.pop() {
+        let _first = world.remove::<(FirstState,)>(id).unwrap();
+        let _second = world.insert(id, (SecondState,)).unwrap();
+    }
+
+    let mut entered = 0;
+    for (id, (data, second)) in world.query::<(&Data, &SecondState)>().iter() {
+        entered += 1;
+    }
+    assert_eq!(entered, MAX);
+}
+
+fn insert_second_state_use_without() {
+    let mut world = prepare_ecs();
+    let mut stale_states: Vec<Entity> = Vec::with_capacity(MAX / 2);
+
+    let mut entered = 0;
+    for (id, (data, first)) in world
+        .query::<(&Data, &FirstState)>()
+        .without::<SecondState>()
+        .iter()
+    {
+        stale_states.push(id);
+        entered += 1;
+    }
+    assert_eq!(entered, MAX);
+
+    while let Some(id) = stale_states.pop() {
+        let _second = world.insert(id, (SecondState,)).unwrap();
+    }
+
+    let mut entered = 0;
+    for (id, (data, second)) in world.query::<(&Data, &SecondState)>().iter() {
+        entered += 1;
+    }
+    assert_eq!(entered, MAX);
+}
+
 fn bench_insert(c: &mut Criterion) {
     c.bench_function("insert", |b| b.iter(|| insert()));
 }
@@ -169,11 +224,23 @@ fn bench_hecs_spawn_despawn(c: &mut Criterion) {
     c.bench_function("hecs_spawn_despawn", |b| b.iter(|| hecs_spawn_despawn()));
 }
 
+fn bench_swap_state(c: &mut Criterion) {
+    c.bench_function("swap_state", |b| b.iter(|| swap_state()));
+}
+
+fn bench_insert_second_state_use_without(c: &mut Criterion) {
+    c.bench_function("insert_second_state_use_without", |b| {
+        b.iter(|| insert_second_state_use_without())
+    });
+}
+
 criterion_group!(
     benches,
-    bench_spawn_despawn,
-    bench_insert,
-    bench_hecs_insert_remove,
-    bench_hecs_spawn_despawn
+    // bench_spawn_despawn,
+    // bench_insert,
+    // bench_hecs_insert_remove,
+    // bench_hecs_spawn_despawn,
+    bench_swap_state,
+    bench_insert_second_state_use_without
 );
 criterion_main!(benches);
