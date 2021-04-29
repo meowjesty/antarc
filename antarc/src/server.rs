@@ -19,6 +19,7 @@ use crate::{
         ReceivedConnectionDenied, ReceivedConnectionRequest, ReceivedDataTransfer,
         ReceivedHeartbeat, ReceivedNewPacket, SendPacket, Source,
     },
+    sender::PreparePacketToSend,
     AntarcResult, MTU_LENGTH,
 };
 
@@ -46,6 +47,7 @@ impl NetManager<Server> {
         self.receiver();
         self.on_received_new_packet();
         self.on_received_connection_request();
+        self.accept_connections();
         self.prepare_packet_to_send();
         self.sender();
     }
@@ -83,9 +85,6 @@ impl NetManager<Server> {
                 packet_id, header, footer, address
             );
 
-            // TODO(alex) 2021-04-26: Fail here, as we're not dealing with this kind of status_code
-            // correctly at packet creation.
-
             // NOTE(alex): Check if this packet has a `Source`.
             if let Some(host_id) = world
                 .query::<(&Address,)>() // both host and packet archetypes have this
@@ -104,10 +103,11 @@ impl NetManager<Server> {
                     host_id
                 );
                 // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it
-                // out. TODO(alex) 2021-04-22: The `new_sequence > old_sequence`
-                // check avoids the case where a packet arrives out of order, and
-                // should not be marked as the latest, but this won't
-                // hold if sequence wraps.
+                // out.
+
+                // TODO(alex) 2021-04-22: The `new_sequence > old_sequence` check avoids the case
+                // where a packet arrives out of order, and should not be marked as the latest, but
+                // this won't hold if sequence wraps.
                 let old_latest_id = world
                     .query::<(&Header, &Source)>()
                     .with::<LatestReceived>()
@@ -339,6 +339,8 @@ impl NetManager<Server> {
             let _ = world
                 .insert(packet_id, (LatestReceived, Source { host_id }))
                 .unwrap();
+
+            let _ = world.spawn((AckRemotePacket { packet_id, host_id },));
             debug!(
                 "Server::on_received_connection_request spawning Source {:#?}",
                 host_id
@@ -354,6 +356,37 @@ impl NetManager<Server> {
     // management to the user, so a connection denied would only be sent if a host belongs to a ban
     // list that the user has created. This means that the first time the connection will always be
     // replied with accepted.
+
+    pub(crate) fn accept_connections(&mut self) {
+        let world = &mut self.world;
+        let mut awaiting_connection_ack = Vec::with_capacity(8);
+
+        for (host_id, (address, requesting_connection)) in
+            world.query::<(&Address, &RequestingConnection)>().iter()
+        {
+            debug_assert!({
+                world
+                    .query::<(&Header, &LatestReceived, &Source, &Address)>()
+                    .iter()
+                    .any(|(_, (header, _, source, packet_address))| {
+                        source.host_id == host_id
+                            && header.status_code == CONNECTION_REQUEST
+                            && packet_address == address
+                    })
+            });
+
+            awaiting_connection_ack.push((host_id, address.clone()));
+        }
+
+        while let Some((host_id, address)) = awaiting_connection_ack.pop() {
+            let _event_id = world.spawn((PreparePacketToSend {
+                host_id,
+                payload: Payload(Vec::new()),
+                status_code: CONNECTION_ACCEPTED,
+                address,
+            },));
+        }
+    }
 
     pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {
         todo!();

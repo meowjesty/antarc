@@ -58,7 +58,7 @@ pub(crate) struct Connected {
     pub(crate) rtt: Duration,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub(crate) struct Address(pub(crate) SocketAddr);
 
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);

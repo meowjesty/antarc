@@ -117,7 +117,7 @@ impl NetManager<Client> {
         let raw_packet_id = world.spawn((RawPacket {
             packet_id,
             bytes,
-            address: server_addr.clone(),
+            address: Address(server_addr.clone()),
         },));
         debug!(
             "Client::connect -> spawning raw packet {:#?}",

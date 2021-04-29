@@ -27,7 +27,7 @@ pub(crate) mod header;
 ///
 /// but this is NOT:
 /// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
-type StatusCode = u16;
+pub(crate) type StatusCode = u16;
 pub(crate) const RESERVED: StatusCode = 0;
 // pub(crate) const FRAGMENTED: StatusCode = 1;
 pub(crate) const CONNECTION_REQUEST: StatusCode = 100;
@@ -278,7 +278,9 @@ impl Packet {
             debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
             let payload = Payload(read_payload);
 
-            let connection_id = if read_status_code & 0b1 == 0b1 {
+            // TODO(alex) 2021-04-29: Change this naked number into something meaningful before it
+            // bites me in the debug assertion again.
+            let connection_id = if read_status_code > 300 {
                 let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
                 debug_assert_ne!(read_connection_id, 0);
                 debug_assert_eq!(

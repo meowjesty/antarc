@@ -14,9 +14,9 @@ use crate::{
     },
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionRequest,
-        DataTransfer, Footer, Heartbeat, Packet, Payload, Queued, Received, Sent, Sequence,
-        CONNECTION_REQUEST,
+        header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
+        ConnectionRequest, DataTransfer, Footer, Heartbeat, Packet, Payload, Queued, Received,
+        Sent, Sequence, StatusCode, CONNECTION_REQUEST,
     },
     readiness::Writable,
     receiver::{AckRemotePacket, LatestReceived, SendPacket, Source},
@@ -27,9 +27,11 @@ pub(crate) struct Destination {
     pub(crate) host_id: Entity,
 }
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct PreparePacketToSend {
-    pub(crate) packet_id: Entity,
+    pub(crate) payload: Payload,
+    pub(crate) status_code: StatusCode,
+    pub(crate) address: Address,
     pub(crate) host_id: Entity,
 }
 
@@ -37,7 +39,7 @@ pub(crate) struct PreparePacketToSend {
 pub(crate) struct RawPacket {
     pub(crate) packet_id: Entity,
     pub(crate) bytes: Vec<u8>,
-    pub(crate) address: SocketAddr,
+    pub(crate) address: Address,
 }
 
 impl fmt::Debug for RawPacket {
@@ -55,7 +57,7 @@ pub(crate) struct LatestSent;
 
 impl<T> NetManager<T> {
     pub(crate) fn prepare_packet_to_send(&mut self) {
-        let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
+        let world = &mut self.world;
 
         let mut handled_events = Vec::with_capacity(8);
         let mut send_packets = Vec::with_capacity(8);
@@ -75,8 +77,12 @@ impl<T> NetManager<T> {
         // 5. Only move this packet into `SendPacket` event if it's time enqueued is greater than
         // the `LatestSent` time enqueued?
         for (event_id, (event,)) in world.query::<(&PreparePacketToSend,)>().iter() {
+            debug!("prepare_packet_to_send -> handle PreparePacketToSend");
+
             // TODO(alex) 2021-04-24: This needs to loop through every packet that must be acked in
             // order to properly calculate the `past_acks`.
+            //
+            // ADD(alex) 2021-04-29: When do we despawn this event?
             let ack = match world
                 .query::<&AckRemotePacket>()
                 .iter()
@@ -92,60 +98,82 @@ impl<T> NetManager<T> {
                 None => 0,
             };
 
-            let sent_sequence = match world
+            let sequence = match world
                 .query::<(&Header, &LatestSent, &Destination)>()
                 .iter()
                 .find_map(|(sent_id, (header, _, destination))| {
-                    (destination.host_id == event.host_id).then_some(header.sequence.get())
+                    (destination.host_id == event.host_id).then_some(header.sequence.get() + 1)
                 }) {
-                Some(sequence) => sequence,
-                None => {
-                    eprintln!("Only connection requests won't have a latest sent?");
-                    unreachable!();
-                }
+                Some(sequence) => Sequence::new(sequence).unwrap(),
+                None => unsafe { Sequence::new_unchecked(1) },
             };
 
-            let (payload, address) = world
-                .query_one::<(&Payload, &Address)>(event.packet_id)
-                .unwrap()
-                .get()
-                .unwrap();
+            let (payload, status_code, address) = (
+                event.payload.clone(),
+                event.status_code,
+                event.address.clone(),
+            );
 
             let header = Header {
-                sequence: unsafe { Sequence::new_unchecked(sent_sequence + 1) },
+                sequence,
                 ack,
-                past_acks: todo!(),
-                status_code: todo!(),
+                past_acks: 0,
+                status_code,
                 // TODO(alex) 2021-04-10: Do not allow packets with large payloads, this will be
                 // properly handled with fragmentation, but right now we could just check before
                 // assignment!
                 payload_length: payload.len() as u16,
             };
 
-            let connection_id = todo!();
+            // TODO(alex) 2021-04-29: Don't just create a connection id value here, we need to check
+            // for a correct connection id, maybe it could be part of the `PreparePacketToSend`
+            // event.
+            let connection_id = ConnectionId::new(1);
+
             // TODO(alex) 2021-04-05: `new_footer` will always exist here, but when we start
             // handling encoding errors, then it might not be created.
-            let (bytes, footer) = Packet::encode(&header, payload, connection_id).unwrap();
-            let raw_packet = RawPacket {
-                packet_id: event.packet_id,
-                bytes,
-                address: address.clone().0,
+            let (bytes, footer) = Packet::encode(&header, &payload, connection_id).unwrap();
+            let destination = Destination {
+                host_id: event.host_id,
             };
 
-            send_packets.push((event.packet_id, header, footer, raw_packet));
+            debug!(
+                "prepare_packet_to_send -> data {:?} {:?} {:?} {:?}",
+                header, footer, address, destination
+            );
+            send_packets.push((header, payload, footer, address, destination, bytes));
         }
 
         while let Some(event_id) = handled_events.pop() {
             let _ = world.despawn(event_id).unwrap();
+            debug!(
+                "prepare_packet_to_send -> despawning PreparePacketToSend {:?}",
+                event_id
+            );
         }
 
-        while let Some((packet_id, header, footer, raw_packet)) = send_packets.pop() {
-            let _ = world.insert(packet_id, (header, footer)).unwrap();
+        while let Some((header, payload, footer, address, destination, bytes)) = send_packets.pop()
+        {
+            let packet_id = world.spawn((header, payload, footer, address.clone(), destination));
+            let raw_packet = RawPacket {
+                packet_id,
+                bytes,
+                address,
+            };
             let raw_packet_id = world.spawn((raw_packet,));
 
-            let _ = world.spawn((SendPacket {
+            debug!(
+                "prepare_packet_to_send -> packet {:?} raw_packet {:?}",
+                packet_id, raw_packet_id
+            );
+
+            let event_id = world.spawn((SendPacket {
                 packet_id: raw_packet_id,
             },));
+            debug!(
+                "prepare_packet_to_send -> spawning SendPacket {:?}",
+                event_id
+            );
         }
     }
 
@@ -179,7 +207,7 @@ impl<T> NetManager<T> {
                     let (raw_packet,) = raw_packet_query.get().unwrap();
                     debug!("sender -> raw_packet {:#?}", raw_packet);
 
-                    match socket.send_to(&raw_packet.bytes, raw_packet.address) {
+                    match socket.send_to(&raw_packet.bytes, raw_packet.address.0) {
                         Ok(num_sent) => {
                             debug!("sender -> sent a packet with {:#?} bytes", num_sent);
                             debug_assert!(num_sent > 0);

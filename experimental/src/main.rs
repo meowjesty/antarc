@@ -16,8 +16,14 @@ use mem::size_of;
 
 fn main() {
     env_logger::init();
-    let client = std::thread::spawn(|| client_main());
-    let server = std::thread::spawn(|| server_main());
+    let client = std::thread::Builder::new()
+        .name("Client".to_string())
+        .spawn(|| client_main())
+        .unwrap();
+    let server = std::thread::Builder::new()
+        .name("Server".to_string())
+        .spawn(|| server_main())
+        .unwrap();
 
     client.join();
     server.join();
