@@ -15,13 +15,14 @@ use std::{
 use packet::header::Header;
 
 pub mod client;
+pub(crate) mod events;
 pub mod host;
 pub mod net;
 pub mod packet;
+mod readiness;
 pub mod receiver;
 pub mod sender;
 pub mod server;
-mod readiness;
 
 #[macro_export]
 macro_rules! read_buffer_inc {

@@ -8,19 +8,19 @@ use hecs::World;
 use log::debug;
 
 use crate::{
+    events::{
+        AckLocalPacketEvent, AckRemotePacketEvent, PreparePacketToSendEvent,
+        ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent,
+        ReceivedConnectionRequestEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
+        ReceivedNewPacketEvent, SendPacketEvent,
+    },
     host::{Address, Disconnected, RequestingConnection},
     net::NetManager,
     packet::{
         header::Header, ConnectionId, Footer, Payload, CONNECTION_ACCEPTED, CONNECTION_DENIED,
         CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
-    receiver::{
-        AckLocalPacket, AckRemotePacket, LatestReceived, ReceivedConnectionAccepted,
-        ReceivedConnectionDenied, ReceivedConnectionRequest, ReceivedDataTransfer,
-        ReceivedHeartbeat, ReceivedNewPacket, SendPacket, Source,
-    },
-    sender::PreparePacketToSend,
-    AntarcResult, MTU_LENGTH,
+    receiver::{LatestReceived, Source},
 };
 
 #[derive(Debug)]
@@ -68,7 +68,7 @@ impl NetManager<Server> {
         let mut known_host_packets = Vec::with_capacity(8);
         let mut invalid_packets = Vec::with_capacity(8);
 
-        for (event_id, (event,)) in world.query::<(&ReceivedNewPacket,)>().iter() {
+        for (event_id, (event,)) in world.query::<(&ReceivedNewPacketEvent,)>().iter() {
             debug!(
                 "Server::on_received_new_packet handle ReceivedNewPacket {:#?}",
                 event_id
@@ -156,21 +156,27 @@ impl NetManager<Server> {
             // all-caps, as it thinks you're just creating a binding.
             match (header.status_code, connection_id) {
                 (CONNECTION_REQUEST, None) => {
-                    let event_id = world.spawn((ReceivedConnectionRequest { packet_id },));
+                    let event_id = world.spawn((ReceivedConnectionRequestEvent { packet_id },));
                     debug!(
                         "Server::on_received_new_packet spawning ReceivedConnectionRequest {:#?}",
                         event_id
                     );
                 }
                 (DATA_TRANSFER, Some(_)) => {
-                    let event_id = world.spawn((ReceivedDataTransfer { packet_id, host_id },));
+                    let event_id = world.spawn((ReceivedDataTransferEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Server::on_received_new_packet spawning ReceivedDataTransfer {:#?}",
                         event_id
                     );
                 }
                 (HEARTBEAT, Some(_)) => {
-                    let event_id = world.spawn((ReceivedHeartbeat { packet_id, host_id },));
+                    let event_id = world.spawn((ReceivedHeartbeatEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Server::on_received_new_packet spawning ReceivedHeartbeat {:#?}",
                         event_id
@@ -199,7 +205,10 @@ impl NetManager<Server> {
             }
 
             if header.ack != 0 {
-                let event_id = world.spawn((AckLocalPacket { packet_id, host_id },));
+                let event_id = world.spawn((AckLocalPacketEvent {
+                    packet_id,
+                    source_id: host_id,
+                },));
                 debug!(
                     "Server::on_received_new_packet spawning AckLocalPacket {:#?}",
                     event_id
@@ -214,7 +223,10 @@ impl NetManager<Server> {
             // ADD(alex) 2021-04-14: This is the event, it's being raised both here, and on the
             // connection request handler. Here it's raised only if we have a `Source` already,
             // meanwhile the connection request handler raises it after adding a `Source`.
-            let event_id = world.spawn((AckRemotePacket { packet_id, host_id },));
+            let event_id = world.spawn((AckRemotePacketEvent {
+                packet_id,
+                destination_id: host_id,
+            },));
             debug!(
                 "Server::on_received_new_packet spawning AckRemotePacket {:#?}",
                 event_id
@@ -227,7 +239,7 @@ impl NetManager<Server> {
         // NOTE(alex) 2021-04-23: These packets have been checked to be `ConnectionRequest`s.
         let events = world
             .spawn_batch(unknown_host_packets.iter().map(|packet_id| {
-                (ReceivedConnectionRequest {
+                (ReceivedConnectionRequestEvent {
                     packet_id: *packet_id,
                 },)
             }))
@@ -258,7 +270,7 @@ impl NetManager<Server> {
         let mut reconnecting_hosts = Vec::with_capacity(8);
         let mut invalid_packets = Vec::with_capacity(8);
 
-        for (event_id, event) in world.query::<&ReceivedConnectionRequest>().iter() {
+        for (event_id, event) in world.query::<&ReceivedConnectionRequestEvent>().iter() {
             debug!(
                 "Server::on_received_connection_request handle ReceivedConnectionRequest {:#?}",
                 event_id
@@ -340,7 +352,10 @@ impl NetManager<Server> {
                 .insert(packet_id, (LatestReceived, Source { host_id }))
                 .unwrap();
 
-            let _ = world.spawn((AckRemotePacket { packet_id, host_id },));
+            let _ = world.spawn((AckRemotePacketEvent {
+                packet_id,
+                destination_id: host_id,
+            },));
             debug!(
                 "Server::on_received_connection_request spawning Source {:#?}",
                 host_id
@@ -379,8 +394,8 @@ impl NetManager<Server> {
         }
 
         while let Some((host_id, address)) = awaiting_connection_ack.pop() {
-            let _event_id = world.spawn((PreparePacketToSend {
-                host_id,
+            let _event_id = world.spawn((PreparePacketToSendEvent {
+                destination_id: host_id,
                 payload: Payload(Vec::new()),
                 status_code: CONNECTION_ACCEPTED,
                 address,

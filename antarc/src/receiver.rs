@@ -26,78 +26,36 @@ use hecs::{Entity, Ref, World};
 use log::debug;
 
 use crate::{
+    events::{AckLocalPacketEvent, ReceivedNewPacketEvent},
     host::{Address, AwaitingConnectionAck, Connected, Disconnected, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
         header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
         ConnectionRequest, DataTransfer, Footer, Heartbeat, Internal, Packet, Payload, Received,
-        Retrieved, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
-        HEARTBEAT,
+        Retrieved, Sent, StatusCode, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
+        DATA_TRANSFER, HEARTBEAT,
     },
     readiness::Readable,
     sender::Destination,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Source {
     pub(crate) host_id: Entity,
 }
 
-/// Raised when a packet is first received by the `socket`.
-#[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedNewPacket {
-    pub(crate) packet_id: Entity,
+impl From<Destination> for Source {
+    fn from(destination: Destination) -> Self {
+        Source {
+            host_id: destination.host_id,
+        }
+    }
 }
 
-/// Raised when the packet `status_code` is identified as being a subset of a connection request.
-/// TODO(alex) 2021-04-21: These events could hold more information than just the ids of each entity
-/// to avoid the need to query for additional data on each event handler.
-#[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedConnectionRequest {
-    pub(crate) packet_id: Entity,
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedConnectionDenied {
-    pub(crate) packet_id: Entity,
-    pub(crate) host_id: Entity,
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedConnectionAccepted {
-    pub(crate) packet_id: Entity,
-    pub(crate) host_id: Entity,
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedDataTransfer {
-    pub(crate) packet_id: Entity,
-    pub(crate) host_id: Entity,
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct ReceivedHeartbeat {
-    pub(crate) packet_id: Entity,
-    pub(crate) host_id: Entity,
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct SendPacket {
-    pub(crate) packet_id: Entity,
-}
-
-/// Event: `Host` has `Sent` packets that require acking (remote acks local).
-#[derive(Debug, PartialEq)]
-pub(crate) struct AckLocalPacket {
-    pub(crate) packet_id: Entity,
-    pub(crate) host_id: Entity,
-}
-
-/// Event: `Host` has `Received` packets that will be acked on the next `send` (local acks remote).
-#[derive(Debug, PartialEq)]
-pub(crate) struct AckRemotePacket {
-    pub(crate) packet_id: Entity,
-    pub(crate) host_id: Entity,
+impl PartialEq<Destination> for Source {
+    fn eq(&self, other: &Destination) -> bool {
+        other.host_id == self.host_id
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -159,7 +117,7 @@ impl<T> NetManager<T> {
             let packet_id = world.spawn((header, payload, footer, address, received));
             debug!("receiver -> spawning packet {:#?}", packet_id);
 
-            let event_id = world.spawn((ReceivedNewPacket { packet_id },));
+            let event_id = world.spawn((ReceivedNewPacketEvent { packet_id },));
             debug!("receiver -> spawning ReceivedNewPacket {:#?}", event_id);
         }
 
@@ -179,8 +137,11 @@ impl<T> NetManager<T> {
         let mut handled_events = Vec::with_capacity(8);
         let mut sent_to_ack_list = Vec::with_capacity(8);
 
-        for (event_id, (event,)) in world.query::<(&AckLocalPacket,)>().iter() {
-            let AckLocalPacket { packet_id, host_id } = event;
+        for (event_id, (event,)) in world.query::<(&AckLocalPacketEvent,)>().iter() {
+            let AckLocalPacketEvent {
+                packet_id,
+                source_id: source,
+            } = event;
 
             let mut acker_query = world.query_one::<(&Header,)>(*packet_id).unwrap();
             let (received,) = acker_query.get().unwrap();
@@ -196,7 +157,7 @@ impl<T> NetManager<T> {
                 .without::<Acked>()
                 .iter()
                 .find_map(|(sent_id, (header, sent, destination))| {
-                    (destination.host_id == *host_id && header.sequence.get() == received.ack)
+                    (destination.host_id == *source && header.sequence.get() == received.ack)
                         .then_some(sent_id)
                 })
             {

@@ -3,14 +3,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hecs::World;
+use hecs::{Entity, World};
 use log::{debug, info};
 use mio::{net::UdpSocket, Events, Poll};
 
 use crate::{
+    events::{
+        AckLocalPacketEvent, AckRemotePacketEvent, ReceivedConnectionAcceptedEvent,
+        ReceivedConnectionDeniedEvent, ReceivedConnectionRequestEvent, ReceivedDataTransferEvent,
+        ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SendPacketEvent,
+    },
     host::{
-        Address, AwaitingConnectionAck, Connected, Disconnected, RequestingConnection,
-        SendingConnectionRequest,
+        Address, AwaitingConnectionAck, AwaitingConnectionResponse, Connected, Disconnected,
+        RequestingConnection, SendingConnectionRequest,
     },
     net::NetManager,
     packet::{
@@ -18,11 +23,7 @@ use crate::{
         Queued, Received, Retrieved, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
         DATA_TRANSFER, HEARTBEAT,
     },
-    receiver::{
-        AckLocalPacket, AckRemotePacket, LatestReceived, ReceivedConnectionAccepted,
-        ReceivedConnectionDenied, ReceivedConnectionRequest, ReceivedDataTransfer,
-        ReceivedHeartbeat, ReceivedNewPacket, SendPacket, Source,
-    },
+    receiver::{LatestReceived, Source},
     sender::{Destination, RawPacket},
     MTU_LENGTH,
 };
@@ -39,6 +40,23 @@ use crate::{
 /// server? This idea is not clear yet.
 pub struct Client {}
 
+/// TODO(alex) 2021-04-24: `LatestReceived` makes sense to be part of the `Host` entity, this
+/// way we can do `world.insert` and not have to remove and then insert (packet case).
+#[derive(Debug)]
+pub(crate) struct LastReceived {
+    packet_id: Entity,
+}
+
+#[derive(Debug)]
+pub(crate) struct LastSent {
+    packet_id: Entity,
+}
+
+#[derive(Debug)]
+pub(crate) struct LastAcked {
+    packet_id: Entity,
+}
+
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
         let client = Client {};
@@ -46,24 +64,8 @@ impl NetManager<Client> {
         net_manager
     }
 
-    /// Creates a new `Host<Connecting>` or updates an existing `Host<Disconnected>`, then adds a
-    /// connection request packet to this host's `to_send` list.
-    /// TODO(alex) 2021-02-07: Handle the connection request to a server, there are a few points
-    /// to consider:
-    ///
-    /// 1. Is it okay to connect to another client, when this one is already connected to a server?
-    ///    - probably not, keep connected checks to empty or single element in the client;
-    /// 2. Create connection request packet:
-    ///    - must check if there is an outgoing request already, that has not yet been acked.
-    ///    - this function should keep itself to packet handling only, do not try to escalate it
-    ///    into handling packet loss or anything like that, this will be part of the network
-    ///    implementation, as it requires reading incoming packets.
-    ///
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
-    ///
-    /// TODO(alex) 2021-04-24: `LatestReceived` makes sense to be part of the `Host` entity, this
-    /// way we can do `world.insert` and not have to remove adn then insert (packet case).
     pub fn connect(&mut self, server_addr: &SocketAddr) -> () {
         let world = &mut self.world;
 
@@ -83,11 +85,12 @@ impl NetManager<Client> {
         );
 
         // NOTE(alex) 2021-04-04: Can't combine this in the `find_map` because `query` does a
-        // mutable borrow of `world`, so it doesn't allow `world.spawn`.
+        // mutable borrow of `world`, so it doesn't allow `world.spawn` when using the
+        // `unwrap_or_else` closure, even though the code should be completely equivalent.
         let host_id = existing_host_id.unwrap_or_else(|| {
             let host_id = world.spawn((
                 Address(server_addr.clone()),
-                SendingConnectionRequest { attempts: 0 },
+                RequestingConnection { attempts: 0 },
             ));
             host_id
         });
@@ -101,6 +104,7 @@ impl NetManager<Client> {
         let (bytes, footer) = Packet::encode(&header, &payload, None).unwrap();
         debug!("Client::connect -> footer {:#?}", footer);
 
+        let status_code = header.status_code;
         let packet_id = world.spawn((
             header,
             payload,
@@ -124,8 +128,9 @@ impl NetManager<Client> {
             raw_packet_id
         );
 
-        let event_id = world.spawn((SendPacket {
-            packet_id: raw_packet_id,
+        let event_id = world.spawn((SendPacketEvent {
+            raw_packet_id,
+            status_code,
         },));
         debug!("Client::connect -> spawning `SendPacket` {:#?}", event_id);
     }
@@ -150,6 +155,7 @@ impl NetManager<Client> {
         self.on_received_connection_denied();
         self.prepare_packet_to_send();
         self.sender();
+        self.on_sent_connection_request();
     }
 
     /// System responsible for attributing a `Source` host to a packet entity, if the host matches
@@ -167,7 +173,7 @@ impl NetManager<Client> {
         let mut known_host_packets = Vec::with_capacity(8);
         let mut invalid_packets = Vec::with_capacity(8);
 
-        for (event_id, (event,)) in world.query::<(&ReceivedNewPacket,)>().iter() {
+        for (event_id, (event,)) in world.query::<(&ReceivedNewPacketEvent,)>().iter() {
             debug!(
                 "Client::on_received_new_packet handle ReceivedNewPacket {:#?}",
                 event_id
@@ -184,7 +190,7 @@ impl NetManager<Client> {
                 packet_id, header, footer, address
             );
 
-            // NOTE(alex): Check if this packet has a `Source`.
+            // NOTE(alex): Check if there is an existing host with this address.
             if let Some(host_id) = world
                 .query::<(&Address,)>() // both host and packet archetypes have this
                 .without::<Header>() // only packets have a `Header` component
@@ -249,29 +255,40 @@ impl NetManager<Client> {
             // all-caps, as it thinks you're just creating a binding.
             match (header.status_code, connection_id) {
                 (CONNECTION_DENIED, None) => {
-                    let event_id = world.spawn((ReceivedConnectionDenied { packet_id, host_id },));
+                    let event_id = world.spawn((ReceivedConnectionDeniedEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Client::on_received_new_packet spawning ReceivedConnectionDenied {:#?}",
                         event_id
                     );
                 }
                 (CONNECTION_ACCEPTED, Some(_)) => {
-                    let event_id =
-                        world.spawn((ReceivedConnectionAccepted { packet_id, host_id },));
+                    let event_id = world.spawn((ReceivedConnectionAcceptedEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Client::on_received_new_packet spawning ReceivedConnectionAccepted {:#?}",
                         event_id
                     );
                 }
                 (DATA_TRANSFER, Some(_)) => {
-                    let event_id = world.spawn((ReceivedDataTransfer { packet_id, host_id },));
+                    let event_id = world.spawn((ReceivedDataTransferEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Client::on_received_new_packet spawning ReceivedDataTransfer {:#?}",
                         event_id
                     );
                 }
                 (HEARTBEAT, Some(_)) => {
-                    let event_id = world.spawn((ReceivedHeartbeat { packet_id, host_id },));
+                    let event_id = world.spawn((ReceivedHeartbeatEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Client::on_received_new_packet spawning ReceivedHeartbeat {:#?}",
                         event_id
@@ -300,7 +317,10 @@ impl NetManager<Client> {
             }
 
             if header.ack != 0 {
-                let event_id = world.spawn((AckLocalPacket { packet_id, host_id },));
+                let event_id = world.spawn((AckLocalPacketEvent {
+                    packet_id,
+                    source_id: host_id,
+                },));
                 debug!(
                     "Client::on_received_new_packet spawning AckLocalPacket {:#?}",
                     event_id
@@ -315,7 +335,10 @@ impl NetManager<Client> {
             // ADD(alex) 2021-04-14: This is the event, it's being raised both here, and on the
             // connection request handler. Here it's raised only if we have a `Source` already,
             // meanwhile the connection request handler raises it after adding a `Source`.
-            let event_id = world.spawn((AckRemotePacket { packet_id, host_id },));
+            let event_id = world.spawn((AckRemotePacketEvent {
+                packet_id,
+                destination_id: host_id,
+            },));
             debug!(
                 "Client::on_received_new_packet spawning AckRemotePacket {:#?}",
                 event_id
@@ -387,7 +410,7 @@ impl NetManager<Client> {
         let mut connected_hosts = Vec::with_capacity(8);
         let mut invalid_packets = Vec::with_capacity(8);
 
-        for (event_id, event) in world.query::<&ReceivedConnectionAccepted>().iter() {
+        for (event_id, event) in world.query::<&ReceivedConnectionAcceptedEvent>().iter() {
             debug!(
                 "Client::on_received_connection_accepted handle ReceivedConnectionAccepted {:#?}",
                 event_id
@@ -397,11 +420,11 @@ impl NetManager<Client> {
                 .query_one::<(&Header, &Footer, &Source)>(event.packet_id)
                 .unwrap();
             let (header, footer, source) = packet_query.get().unwrap();
-            debug_assert_eq!(source.host_id, event.host_id);
+            debug_assert_eq!(source.host_id, event.source_id);
             debug_assert!(footer.connection_id.is_some());
 
             let mut host_query = world
-                .query_one::<&AwaitingConnectionAck>(source.host_id)
+                .query_one::<&AwaitingConnectionResponse>(source.host_id)
                 .unwrap();
             match host_query.get() {
                 Some(_) => {
@@ -427,11 +450,11 @@ impl NetManager<Client> {
             let _ = world.despawn(event_id).unwrap();
         }
 
-        while let Some((host_id, packet_id, connection_id)) = connected_hosts.pop() {
-            world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
+        while let Some((source_id, packet_id, connection_id)) = connected_hosts.pop() {
+            world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
             world
                 .insert(
-                    host_id,
+                    source_id,
                     (Connected {
                         connection_id,
                         rtt: Duration::default(),
@@ -457,12 +480,12 @@ impl NetManager<Client> {
         let mut denied_hosts = Vec::with_capacity(8);
         let mut invalid_packets = Vec::with_capacity(8);
 
-        for (event_id, event) in world.query::<&ReceivedConnectionDenied>().iter() {
+        for (event_id, event) in world.query::<&ReceivedConnectionDeniedEvent>().iter() {
             let mut packet_query = world
                 .query_one::<(&Header, &Source)>(event.packet_id)
                 .unwrap();
             let (header, source) = packet_query.get().unwrap();
-            debug_assert_eq!(source.host_id, event.host_id);
+            debug_assert_eq!(source.host_id, event.source_id);
 
             let mut host_query = world
                 .query_one::<&AwaitingConnectionAck>(source.host_id)
@@ -487,9 +510,9 @@ impl NetManager<Client> {
             let _ = world.despawn(event_id).unwrap();
         }
 
-        while let Some((host_id, packet_id)) = denied_hosts.pop() {
-            let _ = world.remove::<(AwaitingConnectionAck,)>(host_id).unwrap();
-            let _ = world.insert(host_id, (Disconnected,)).unwrap();
+        while let Some((source_id, packet_id)) = denied_hosts.pop() {
+            let _ = world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
+            let _ = world.insert(source_id, (Disconnected,)).unwrap();
             // TODO(alex): Mark this packet as handled, somehow.
         }
 
@@ -497,6 +520,9 @@ impl NetManager<Client> {
             let _ = world.despawn(packet_id).unwrap();
         }
     }
+
+    // TODO(alex) 2021-04-30: How does it know that it sent a connection request?
+    pub(crate) fn on_sent_connection_request(&mut self) {}
 
     /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user
     /// may use it to remove the packet (if wanted). It'll be an API for users that might want to

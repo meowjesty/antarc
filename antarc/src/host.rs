@@ -45,6 +45,11 @@ pub(crate) struct AwaitingConnectionAck {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct AwaitingConnectionResponse {
+    pub(crate) attempts: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct AckingConnection {
     attempts: u32,
     pub(crate) connection_id: ConnectionId,

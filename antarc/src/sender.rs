@@ -8,6 +8,11 @@ use hecs::{Entity, Ref, World};
 use log::debug;
 
 use crate::{
+    events::{
+        AckRemotePacketEvent, PreparePacketToSendEvent, SendPacketEvent,
+        SentConnectionAcceptedEvent, SentConnectionRequestEvent, SentDataTransferEvent,
+        SentHeartbeatEvent,
+    },
     host::{
         AckingConnection, Address, AwaitingConnectionAck, Connected, Disconnected,
         RequestingConnection,
@@ -19,20 +24,25 @@ use crate::{
         Sent, Sequence, StatusCode, CONNECTION_REQUEST,
     },
     readiness::Writable,
-    receiver::{AckRemotePacket, LatestReceived, SendPacket, Source},
+    receiver::{LatestReceived, Source},
 };
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Destination {
     pub(crate) host_id: Entity,
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) struct PreparePacketToSend {
-    pub(crate) payload: Payload,
-    pub(crate) status_code: StatusCode,
-    pub(crate) address: Address,
-    pub(crate) host_id: Entity,
+impl From<Source> for Destination {
+    fn from(source: Source) -> Self {
+        Self {
+            host_id: source.host_id,
+        }
+    }
+}
+impl PartialEq<Source> for Destination {
+    fn eq(&self, other: &Source) -> bool {
+        other.host_id == self.host_id
+    }
 }
 
 #[derive(PartialEq, PartialOrd)]
@@ -76,33 +86,33 @@ impl<T> NetManager<T> {
         //
         // 5. Only move this packet into `SendPacket` event if it's time enqueued is greater than
         // the `LatestSent` time enqueued?
-        for (event_id, (event,)) in world.query::<(&PreparePacketToSend,)>().iter() {
+        for (event_id, (event,)) in world.query::<(&PreparePacketToSendEvent,)>().iter() {
             debug!("prepare_packet_to_send -> handle PreparePacketToSend");
 
             // TODO(alex) 2021-04-24: This needs to loop through every packet that must be acked in
             // order to properly calculate the `past_acks`.
             //
             // ADD(alex) 2021-04-29: When do we despawn this event?
-            let ack = match world
-                .query::<&AckRemotePacket>()
-                .iter()
-                .find(|(ack_event_id, ack_event)| ack_event.host_id == event.host_id)
-            {
-                Some((ack_event_id, ack_event)) => world
-                    .query_one::<&Header>(ack_event.packet_id)
-                    .unwrap()
-                    .get()
-                    .unwrap()
-                    .sequence
-                    .get(),
-                None => 0,
-            };
+            let ack =
+                match world.query::<&AckRemotePacketEvent>().iter().find(
+                    |(ack_event_id, ack_event)| ack_event.destination_id == event.destination_id,
+                ) {
+                    Some((ack_event_id, ack_event)) => world
+                        .query_one::<&Header>(ack_event.packet_id)
+                        .unwrap()
+                        .get()
+                        .unwrap()
+                        .sequence
+                        .get(),
+                    None => 0,
+                };
 
             let sequence = match world
                 .query::<(&Header, &LatestSent, &Destination)>()
                 .iter()
                 .find_map(|(sent_id, (header, _, destination))| {
-                    (destination.host_id == event.host_id).then_some(header.sequence.get() + 1)
+                    (destination.host_id == event.destination_id)
+                        .then_some(header.sequence.get() + 1)
                 }) {
                 Some(sequence) => Sequence::new(sequence).unwrap(),
                 None => unsafe { Sequence::new_unchecked(1) },
@@ -133,9 +143,7 @@ impl<T> NetManager<T> {
             // TODO(alex) 2021-04-05: `new_footer` will always exist here, but when we start
             // handling encoding errors, then it might not be created.
             let (bytes, footer) = Packet::encode(&header, &payload, connection_id).unwrap();
-            let destination = Destination {
-                host_id: event.host_id,
-            };
+            let destination = event.destination_id;
 
             debug!(
                 "prepare_packet_to_send -> data {:?} {:?} {:?} {:?}",
@@ -154,6 +162,7 @@ impl<T> NetManager<T> {
 
         while let Some((header, payload, footer, address, destination, bytes)) = send_packets.pop()
         {
+            let status_code = header.status_code;
             let packet_id = world.spawn((header, payload, footer, address.clone(), destination));
             let raw_packet = RawPacket {
                 packet_id,
@@ -167,8 +176,9 @@ impl<T> NetManager<T> {
                 packet_id, raw_packet_id
             );
 
-            let event_id = world.spawn((SendPacket {
-                packet_id: raw_packet_id,
+            let event_id = world.spawn((SendPacketEvent {
+                raw_packet_id,
+                status_code,
             },));
             debug!(
                 "prepare_packet_to_send -> spawning SendPacket {:?}",
@@ -193,17 +203,14 @@ impl<T> NetManager<T> {
 
                 let socket = &mut resource.socket;
 
-                // TODO(alex) 2021-04-24: We get here after the packet is pre-processed and is ready
-                // to be sent, no reason to encode it here! There is a previous
-                // event to this one, the `PreparePacketToSend`, which encodes the
-                // packet and creates a `RawPacket`.
                 if let Some((send_event_id, (event,))) =
-                    world.query::<(&SendPacket,)>().iter().next()
+                    world.query::<(&SendPacketEvent,)>().iter().next()
                 {
                     debug!("sender -> handling send packet event {:#?}", send_event_id);
 
-                    let mut raw_packet_query =
-                        world.query_one::<(&RawPacket,)>(event.packet_id).unwrap();
+                    let mut raw_packet_query = world
+                        .query_one::<(&RawPacket,)>(event.raw_packet_id)
+                        .unwrap();
                     let (raw_packet,) = raw_packet_query.get().unwrap();
                     debug!("sender -> raw_packet {:#?}", raw_packet);
 
@@ -212,7 +219,11 @@ impl<T> NetManager<T> {
                             debug!("sender -> sent a packet with {:#?} bytes", num_sent);
                             debug_assert!(num_sent > 0);
 
-                            sent_packets.push((event.packet_id, raw_packet.packet_id));
+                            sent_packets.push((
+                                event.raw_packet_id,
+                                event.status_code,
+                                raw_packet.packet_id,
+                            ));
                             handled_events.push((event_id, Some(send_event_id)));
                         }
                         Err(fail) => {
@@ -240,7 +251,7 @@ impl<T> NetManager<T> {
             }
         }
 
-        while let Some((raw_id, packet_id)) = sent_packets.pop() {
+        while let Some((raw_id, status_code, packet_id)) = sent_packets.pop() {
             // TODO(alex) 2021-04-24: Just despawning the raw packets after they've been sent, is
             // there any reason to keep them for longer?
             let _ = world.despawn(raw_id).unwrap();
@@ -257,6 +268,31 @@ impl<T> NetManager<T> {
                     ),
                 )
                 .unwrap();
+
+            match status_code {
+                CONNECTION_REQUEST => {
+                    let event_id = world.spawn((SentConnectionRequestEvent { packet_id },));
+                    debug!("sender -> spawning SentConnectionRequest {:#?}", event_id);
+                }
+                CONNECTION_ACCEPTED => {
+                    let event_id = world.spawn((SentConnectionAcceptedEvent { packet_id },));
+                    debug!("sender -> spawning SentHeartbeat {:#?}", event_id);
+                }
+                DATA_TRANSFER => {
+                    let event_id = world.spawn((SentDataTransferEvent { packet_id },));
+                    debug!("sender -> spawning SentDataTransfer {:#?}", event_id);
+                }
+
+                HEARTBEAT => {
+                    let event_id = world.spawn((SentHeartbeatEvent { packet_id },));
+                    debug!("sender -> spawning SentHeartbeat {:#?}", event_id);
+                }
+                invalid => {
+                    eprintln!("sender -> invalid packet type sent {:#?}.", invalid);
+                    let _ = world.despawn(packet_id).unwrap();
+                    unreachable!();
+                }
+            };
         }
 
         if let Some(packet) = world
