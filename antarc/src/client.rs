@@ -29,6 +29,9 @@ use crate::{
     MTU_LENGTH,
 };
 
+/// TODO(alex) 2021-05-01: Consider adding a `DebugName` component for every entity, such as when
+/// doing `world.spawn((format!("Packet {:?}", header), components...))`.
+
 /// TODO(alex) 2021-02-26: References for ideas about connection:
 /// http://www.tcpipguide.com/free/t_PPPLinkSetupandPhases.htm
 ///
@@ -167,6 +170,7 @@ impl NetManager<Client> {
         self.on_received_connection_denied();
         self.prepare_packet_to_send();
         self.sender();
+        self.on_sent_packet();
         self.on_sent_connection_request();
     }
 
@@ -220,7 +224,9 @@ impl NetManager<Client> {
                     host_id
                 );
                 // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it
-                // out. TODO(alex) 2021-04-22: The `new_sequence > old_sequence`
+                // out.
+                //
+                // TODO(alex) 2021-04-22: The `new_sequence > old_sequence`
                 // check avoids the case where a packet arrives out of order, and
                 // should not be marked as the latest, but this won't
                 // hold if sequence wraps.
@@ -590,11 +596,42 @@ impl NetManager<Client> {
         }
     }
 
-    // TODO(alex) 2021-04-30: How does it know that it sent a connection request?
     pub(crate) fn on_sent_connection_request(&mut self) {
         let world = &mut self.world;
 
-        for (event_id, event) in world.query::<&SentConnectionRequestEvent>().iter() {}
+        let mut handled_events = Vec::with_capacity(8);
+        let mut awaiting_connection_ack_hosts = Vec::with_capacity(8);
+
+        for (event_id, event) in world.query::<&SentConnectionRequestEvent>().iter() {
+            let mut destination_query = world.query_one::<&Destination>(event.packet_id).unwrap();
+            let destination = destination_query.get().unwrap();
+
+            awaiting_connection_ack_hosts.push(destination.host_id);
+            handled_events.push(event_id);
+            // TODO(alex) 2021-05-01: Transition host state into `AwaitingConnectionAck`, or
+            // whatever name makes the most sense.
+            //
+            // - update packet (what exactly?);
+        }
+
+        while let Some(event_id) = handled_events.pop() {
+            let _ = world.despawn(event_id).unwrap();
+        }
+
+        while let Some(host_id) = awaiting_connection_ack_hosts.pop() {
+            // TODO(alex) 2021-05-01: There must be someplace ensuring that this kind of packet is
+            // only sent from `RequestingConnection` hosts, or this invariant will fail.
+            let (requesting_connection,) =
+                world.remove::<(RequestingConnection,)>(host_id).unwrap();
+            let _ = world
+                .insert(
+                    host_id,
+                    (AwaitingConnectionAck {
+                        attempts: requesting_connection.attempts,
+                    },),
+                )
+                .unwrap();
+        }
     }
 
     /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user

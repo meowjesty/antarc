@@ -53,6 +53,7 @@ impl NetManager<Server> {
         self.accept_connections();
         self.prepare_packet_to_send();
         self.sender();
+        self.on_sent_packet();
     }
 
     /// System responsible for attributing a `Source` host to a packet entity, if the host matches
