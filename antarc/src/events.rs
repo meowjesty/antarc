@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use hecs::Entity;
 
 use crate::{
@@ -15,6 +17,14 @@ pub(crate) struct PreparePacketToSendEvent {
     pub(crate) destination_id: Entity,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub(crate) struct SentPacketEvent {
+    pub(crate) packet_id: Entity,
+    pub(crate) raw_packet_id: Entity,
+    pub(crate) time: Duration,
+    pub(crate) status_code: u16,
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct SentConnectionRequestEvent {
     pub(crate) packet_id: Entity,
@@ -22,6 +32,11 @@ pub(crate) struct SentConnectionRequestEvent {
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct SentConnectionAcceptedEvent {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct SentConnectionDeniedEvent {
     pub(crate) packet_id: Entity,
 }
 

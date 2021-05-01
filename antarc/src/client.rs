@@ -12,6 +12,7 @@ use crate::{
         AckLocalPacketEvent, AckRemotePacketEvent, ReceivedConnectionAcceptedEvent,
         ReceivedConnectionDeniedEvent, ReceivedConnectionRequestEvent, ReceivedDataTransferEvent,
         ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SendPacketEvent,
+        SentConnectionRequestEvent, SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
         Address, AwaitingConnectionAck, AwaitingConnectionResponse, Connected, Disconnected,
@@ -20,11 +21,11 @@ use crate::{
     net::NetManager,
     packet::{
         header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Packet, Payload,
-        Queued, Received, Retrieved, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
-        DATA_TRANSFER, HEARTBEAT,
+        Queued, Received, Retrieved, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::{LatestReceived, Source},
-    sender::{Destination, RawPacket},
+    sender::{Destination, LatestSent, RawPacket},
     MTU_LENGTH,
 };
 
@@ -87,12 +88,13 @@ impl NetManager<Client> {
         // NOTE(alex) 2021-04-04: Can't combine this in the `find_map` because `query` does a
         // mutable borrow of `world`, so it doesn't allow `world.spawn` when using the
         // `unwrap_or_else` closure, even though the code should be completely equivalent.
+        type Host = (Address, RequestingConnection);
         let host_id = existing_host_id.unwrap_or_else(|| {
-            let host_id = world.spawn((
+            let host: Host = (
                 Address(server_addr.clone()),
                 RequestingConnection { attempts: 0 },
-            ));
-            host_id
+            );
+            world.spawn(host)
         });
         debug!("Client::connect -> host_id {:#?}", host_id);
 
@@ -105,7 +107,16 @@ impl NetManager<Client> {
         debug!("Client::connect -> footer {:#?}", footer);
 
         let status_code = header.status_code;
-        let packet_id = world.spawn((
+        type BasicPacket = (
+            Header,
+            Payload,
+            Footer,
+            Address,
+            Queued,
+            ConnectionRequest,
+            Destination,
+        );
+        let packet: BasicPacket = (
             header,
             payload,
             footer,
@@ -115,7 +126,8 @@ impl NetManager<Client> {
             },
             ConnectionRequest,
             Destination { host_id },
-        ));
+        );
+        let packet_id = world.spawn(packet);
         debug!("Client::connect -> spawning packet {:#?}", packet_id);
 
         let raw_packet_id = world.spawn((RawPacket {
@@ -521,8 +533,69 @@ impl NetManager<Client> {
         }
     }
 
+    pub(crate) fn on_sent_packet(&mut self) {
+        let world = &mut self.world;
+
+        let mut handled_events = Vec::with_capacity(8);
+        let mut sent_packets = Vec::with_capacity(8);
+
+        for (event_id, event) in world.query::<&SentPacketEvent>().iter() {
+            handled_events.push(event_id);
+            sent_packets.push(event.clone());
+        }
+
+        while let Some(event_id) = handled_events.pop() {
+            let _ = world.despawn(event_id).unwrap();
+            debug!(
+                "sender -> despawning handled SentPacketEvent {:#?}",
+                event_id
+            );
+        }
+
+        while let Some(event) = sent_packets.pop() {
+            let SentPacketEvent {
+                packet_id,
+                raw_packet_id,
+                time,
+                status_code,
+            } = event;
+            // TODO(alex) 2021-04-24: Just despawning the raw packets after they've been sent, is
+            // there any reason to keep them for longer?
+            let _ = world.despawn(raw_packet_id).unwrap();
+            debug!("sender -> despawning sent raw packet {:#?}", raw_packet_id);
+            let _ = world
+                .insert(packet_id, (Sent { time }, LatestSent))
+                .unwrap();
+
+            match status_code {
+                CONNECTION_REQUEST => {
+                    let event_id = world.spawn((SentConnectionRequestEvent { packet_id },));
+                    debug!("sender -> spawning SentConnectionRequest {:#?}", event_id);
+                }
+                DATA_TRANSFER => {
+                    let event_id = world.spawn((SentDataTransferEvent { packet_id },));
+                    debug!("sender -> spawning SentDataTransferEvent {:#?}", event_id);
+                }
+
+                HEARTBEAT => {
+                    let event_id = world.spawn((SentHeartbeatEvent { packet_id },));
+                    debug!("sender -> spawning SentHeartbeatEvent {:#?}", event_id);
+                }
+                invalid => {
+                    eprintln!("sender -> invalid packet type sent {:#?}.", invalid);
+                    let _ = world.despawn(packet_id).unwrap();
+                    unreachable!();
+                }
+            }
+        }
+    }
+
     // TODO(alex) 2021-04-30: How does it know that it sent a connection request?
-    pub(crate) fn on_sent_connection_request(&mut self) {}
+    pub(crate) fn on_sent_connection_request(&mut self) {
+        let world = &mut self.world;
+
+        for (event_id, event) in world.query::<&SentConnectionRequestEvent>().iter() {}
+    }
 
     /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user
     /// may use it to remove the packet (if wanted). It'll be an API for users that might want to

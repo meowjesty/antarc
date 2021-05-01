@@ -12,15 +12,18 @@ use crate::{
         AckLocalPacketEvent, AckRemotePacketEvent, PreparePacketToSendEvent,
         ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent,
         ReceivedConnectionRequestEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
-        ReceivedNewPacketEvent, SendPacketEvent,
+        ReceivedNewPacketEvent, SendPacketEvent, SentConnectionAcceptedEvent,
+        SentConnectionDeniedEvent, SentConnectionRequestEvent, SentDataTransferEvent,
+        SentHeartbeatEvent, SentPacketEvent,
     },
     host::{Address, Disconnected, RequestingConnection},
     net::NetManager,
     packet::{
-        header::Header, ConnectionId, Footer, Payload, CONNECTION_ACCEPTED, CONNECTION_DENIED,
-        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        header::Header, ConnectionId, Footer, Payload, Sent, CONNECTION_ACCEPTED,
+        CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::{LatestReceived, Source},
+    sender::LatestSent,
 };
 
 #[derive(Debug)]
@@ -360,6 +363,67 @@ impl NetManager<Server> {
                 "Server::on_received_connection_request spawning Source {:#?}",
                 host_id
             );
+        }
+    }
+
+    pub(crate) fn on_sent_packet(&mut self) {
+        let world = &mut self.world;
+
+        let mut handled_events = Vec::with_capacity(8);
+        let mut sent_packets = Vec::with_capacity(8);
+
+        for (event_id, event) in world.query::<&SentPacketEvent>().iter() {
+            handled_events.push(event_id);
+            sent_packets.push(event.clone());
+        }
+
+        while let Some(event_id) = handled_events.pop() {
+            let _ = world.despawn(event_id).unwrap();
+            debug!(
+                "sender -> despawning handled SentPacketEvent {:#?}",
+                event_id
+            );
+        }
+
+        while let Some(event) = sent_packets.pop() {
+            let SentPacketEvent {
+                packet_id,
+                raw_packet_id,
+                time,
+                status_code,
+            } = event;
+            // TODO(alex) 2021-04-24: Just despawning the raw packets after they've been sent, is
+            // there any reason to keep them for longer?
+            let _ = world.despawn(raw_packet_id).unwrap();
+            debug!("sender -> despawning sent raw packet {:#?}", raw_packet_id);
+            let _ = world
+                .insert(packet_id, (Sent { time }, LatestSent))
+                .unwrap();
+
+            match status_code {
+                CONNECTION_ACCEPTED => {
+                    let event_id = world.spawn((SentConnectionAcceptedEvent { packet_id },));
+                    debug!("sender -> spawning SentConnectionAccepted {:#?}", event_id);
+                }
+                CONNECTION_DENIED => {
+                    let event_id = world.spawn((SentConnectionDeniedEvent { packet_id },));
+                    debug!("sender -> spawning SentConnectionDenied {:#?}", event_id);
+                }
+                DATA_TRANSFER => {
+                    let event_id = world.spawn((SentDataTransferEvent { packet_id },));
+                    debug!("sender -> spawning SentDataTransferEvent {:#?}", event_id);
+                }
+
+                HEARTBEAT => {
+                    let event_id = world.spawn((SentHeartbeatEvent { packet_id },));
+                    debug!("sender -> spawning SentHeartbeatEvent {:#?}", event_id);
+                }
+                invalid => {
+                    eprintln!("sender -> invalid packet type sent {:#?}.", invalid);
+                    let _ = world.despawn(packet_id).unwrap();
+                    unreachable!();
+                }
+            }
         }
     }
 
