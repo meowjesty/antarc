@@ -1,10 +1,5 @@
 use core::fmt;
-use std::{
-    marker::PhantomData,
-    net::SocketAddr,
-    num::{NonZeroU16, NonZeroU32, NonZeroU8},
-    time::Instant,
-};
+use std::{net::SocketAddr, time::Instant};
 
 use hecs::{Entity, World};
 use mio::{net::UdpSocket, Events, Interest, Poll, Token};

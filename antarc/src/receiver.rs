@@ -17,24 +17,14 @@
 /// inserting/removing markers to a packet.
 
 /// TODO(alex) 2021-04-20: Packets may be sent twice (or more) and we're not handling this.
-use std::{
-    net::UdpSocket,
-    time::{Duration, Instant},
-};
-
-use hecs::{Entity, Ref, World};
+use hecs::Entity;
 use log::debug;
 
 use crate::{
     events::{AckLocalPacketEvent, ReceivedNewPacketEvent},
-    host::{Address, AwaitingConnectionAck, Connected, Disconnected, RequestingConnection},
+    host::Address,
     net::{NetManager, NetworkResource},
-    packet::{
-        header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
-        ConnectionRequest, DataTransfer, Footer, Heartbeat, Internal, Packet, Payload, Received,
-        Retrieved, Sent, StatusCode, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
-        DATA_TRANSFER, HEARTBEAT,
-    },
+    packet::{header::Header, Acked, Packet, Received, Sent},
     readiness::Readable,
     sender::Destination,
 };

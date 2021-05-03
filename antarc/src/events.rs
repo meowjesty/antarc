@@ -5,8 +5,6 @@ use hecs::Entity;
 use crate::{
     host::Address,
     packet::{Payload, StatusCode},
-    receiver::Source,
-    sender::Destination,
 };
 
 #[derive(Debug, PartialEq)]

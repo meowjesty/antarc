@@ -1,9 +1,7 @@
 use core::mem::size_of;
 use std::{
     convert::TryInto,
-    io::{BufRead, Cursor, IoSlice, Read, Write},
-    marker::PhantomData,
-    num::{NonZeroU16, NonZeroU32, NonZeroU8},
+    num::{NonZeroU16, NonZeroU32},
     time::Duration,
 };
 
@@ -11,10 +9,7 @@ use crc32fast::Hasher;
 use log::debug;
 
 use self::header::Header;
-use crate::{
-    read_buffer_inc, AntarcResult, PacketMarker, ProtocolId, BUFFER_CAP, END_OF_PACKET_BYTES,
-    PACKED_LEN, PROTOCOL_ID, PROTOCOL_ID_BYTES,
-};
+use crate::{read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES};
 
 pub(crate) mod header;
 

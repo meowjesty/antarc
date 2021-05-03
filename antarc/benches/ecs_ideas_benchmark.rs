@@ -1,4 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+#![allow(unused_variables, dead_code)]
+
+use criterion::{criterion_group, criterion_main, Criterion};
 use hecs::{Entity, World};
 
 #[derive(Debug)]
@@ -66,13 +68,14 @@ fn prepare_ecs() -> World {
     world
 }
 
+#[allow(dead_code)]
 fn insert() {
     let mut world = prepare_ecs();
     let mut to_change: Vec<Entity> = Vec::with_capacity(MAX / 2);
 
     let mut entered = 0;
 
-    for (id, (data,)) in world.query::<(&Data,)>().iter() {
+    for (id, (_data,)) in world.query::<(&Data,)>().iter() {
         to_change.push(id);
         entered += 1;
     }
@@ -84,6 +87,7 @@ fn insert() {
     }
 }
 
+#[allow(dead_code)]
 fn spawn_despawn() {
     let mut world = prepare_ecs();
     let mut to_change: Vec<Entity> = Vec::with_capacity(MAX / 2);
@@ -108,6 +112,7 @@ fn spawn_despawn() {
     }
 }
 
+#[allow(dead_code)]
 fn hecs_insert_remove() {
     let mut world = World::new();
     let mut ids = world
@@ -134,6 +139,7 @@ fn hecs_insert_remove() {
     }
 }
 
+#[allow(dead_code)]
 fn hecs_spawn_despawn() {
     let mut world = World::new();
     let mut ids = world
@@ -164,7 +170,7 @@ fn swap_state() {
     let mut stale_states: Vec<Entity> = Vec::with_capacity(MAX / 2);
 
     let mut entered = 0;
-    for (id, (data, first)) in world.query::<(&Data, &FirstState)>().iter() {
+    for (id, (_data, _first)) in world.query::<(&Data, &FirstState)>().iter() {
         stale_states.push(id);
         entered += 1;
     }

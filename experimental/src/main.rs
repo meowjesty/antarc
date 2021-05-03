@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports)]
 #![feature(write_all_vectored)]
 
 use std::{
@@ -25,8 +26,8 @@ fn main() {
         .spawn(|| server_main())
         .unwrap();
 
-    client.join();
-    server.join();
+    let _ = client.join();
+    let _ = server.join();
 }
 
 fn client_main() {
@@ -44,7 +45,7 @@ fn client_main() {
     // let mut net_client = client_connecting.connected();
     // let world_state = vec![0x0; 32];
 
-    'running: loop {
+    loop {
         net_client.tick();
         std::thread::sleep(Duration::from_millis(150));
         // TODO(alex) 2021-01-27: This keeps the client running by:
@@ -107,7 +108,7 @@ fn server_main() {
     // let mut server: NetManager<Server> = NetManager::<Server>::new_server(&server_addr);
     // let world_state = vec![0x0; 32];
 
-    'running: loop {
+    loop {
         server.tick();
         std::thread::sleep(Duration::from_millis(150));
         // TODO(alex) 2021-01-27: This keeps the server running by:
@@ -289,12 +290,12 @@ fn test_stuff_main() {
     }
 
     println!("Packets with destination");
-    for (packet_id, (destination)) in world.query::<(&Destination,)>().iter() {
+    for (packet_id, destination) in world.query::<(&Destination,)>().iter() {
         println!("Destination {:#?} {:#?}", packet_id, destination);
     }
 
     println!("Packets with source");
-    for (packet_id, (source)) in world.query::<(&Source,)>().iter() {
+    for (packet_id, source) in world.query::<(&Source,)>().iter() {
         println!("Source {:#?} {:#?}", packet_id, source);
     }
 

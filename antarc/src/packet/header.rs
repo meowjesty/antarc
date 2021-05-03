@@ -1,9 +1,7 @@
 use core::mem;
 use std::io::Cursor;
 
-use hecs::Bundle;
-
-use super::{Ack, ConnectionId, Sequence, StatusCode, CONNECTION_REQUEST};
+use super::{Ack, Sequence, StatusCode};
 use crate::{AntarcResult, ProtocolId};
 
 /// ### Network Component

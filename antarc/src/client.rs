@@ -11,7 +11,7 @@ use crate::{
         SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
-        Address, AwaitingConnectionAck, AwaitingConnectionResponse, Connected, Disconnected,
+        Address, AwaitingConnectionAck, Connected, Disconnected,
         LatestReceived, LatestSent, RequestingConnection, StateEnteredTime,
     },
     net::NetManager,
@@ -228,15 +228,15 @@ impl NetManager<Client> {
                 // this won't hold if sequence wraps.
                 let mut latest_received_query =
                     world.query_one::<(&LatestReceived,)>(host_id).unwrap();
-                let latest = if let Some((latest_received,)) = latest_received_query.get() {
-                    let mut packet_query = world
-                        .query_one::<(&Header,)>(latest_received.packet_id)
-                        .unwrap();
-                    let (old_header,) = packet_query.get().unwrap();
-                    header.sequence > old_header.sequence
-                } else {
-                    false
-                };
+                let latest = latest_received_query
+                    .get()
+                    .map_or(false, |(latest_received,)| {
+                        let mut packet_query = world
+                            .query_one::<(&Header,)>(latest_received.packet_id)
+                            .unwrap();
+                        let (old_header,) = packet_query.get().unwrap();
+                        header.sequence > old_header.sequence
+                    });
 
                 known_host_packets.push((
                     packet_id,
@@ -437,7 +437,7 @@ impl NetManager<Client> {
             debug_assert!(footer.connection_id.is_some());
 
             let mut host_query = world
-                .query_one::<&AwaitingConnectionResponse>(source.host_id)
+                .query_one::<&AwaitingConnectionAck>(source.host_id)
                 .unwrap();
             match host_query.get() {
                 Some(_) => {
@@ -464,14 +464,18 @@ impl NetManager<Client> {
         }
 
         while let Some((source_id, packet_id, connection_id)) = connected_hosts.pop() {
-            world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
-            world
+            let (_awaiting_connection_ack,) =
+                world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
+            let _ = world
                 .insert(
                     source_id,
-                    (Connected {
-                        connection_id,
-                        rtt: Duration::default(),
-                    },),
+                    (
+                        Connected {
+                            connection_id,
+                            rtt: Duration::default(),
+                        },
+                        StateEnteredTime(self.timer.elapsed()),
+                    ),
                 )
                 .unwrap();
 
@@ -531,8 +535,14 @@ impl NetManager<Client> {
         }
 
         while let Some((source_id, packet_id)) = denied_hosts.pop() {
-            let _ = world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
-            let _ = world.insert(source_id, (Disconnected,)).unwrap();
+            let (_awaiting_connection_ack,) =
+                world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
+            let _ = world
+                .insert(
+                    source_id,
+                    (Disconnected, StateEnteredTime(self.timer.elapsed())),
+                )
+                .unwrap();
             // TODO(alex): Mark this packet as handled, somehow.
             world
                 .insert(
@@ -637,9 +647,12 @@ impl NetManager<Client> {
             let _ = world
                 .insert(
                     host_id,
-                    (AwaitingConnectionAck {
-                        attempts: requesting_connection.attempts,
-                    },),
+                    (
+                        AwaitingConnectionAck {
+                            attempts: requesting_connection.attempts,
+                        },
+                        StateEnteredTime(self.timer.elapsed()),
+                    ),
                 )
                 .unwrap();
         }

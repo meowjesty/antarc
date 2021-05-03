@@ -1,11 +1,8 @@
-use std::{
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, time::Duration};
 
 use hecs::Entity;
 
-use crate::packet::{ConnectionId, Sequence};
+use crate::packet::ConnectionId;
 
 pub(crate) mod requesting_connection;
 pub(crate) mod sending_connection_request;

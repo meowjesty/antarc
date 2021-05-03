@@ -16,13 +16,17 @@ use crate::{
         SentConnectionDeniedEvent, SentConnectionRequestEvent, SentDataTransferEvent,
         SentHeartbeatEvent, SentPacketEvent,
     },
-    host::{Address, Disconnected, LatestReceived, LatestSent, RequestingConnection},
+    host::{
+        Address, AwaitingConnectionAck, Disconnected, LatestReceived, LatestSent,
+        RequestingConnection, StateEnteredTime,
+    },
     net::NetManager,
     packet::{
         header::Header, ConnectionId, Footer, Payload, Sent, CONNECTION_ACCEPTED,
         CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::Source,
+    sender::Destination,
 };
 
 #[derive(Debug)]
@@ -49,7 +53,7 @@ impl NetManager<Server> {
         self.receiver();
         self.on_received_new_packet();
         self.on_received_connection_request();
-        self.accept_connections();
+        self.on_sent_connection_accepted();
         self.prepare_packet_to_send();
         self.sender();
         self.on_sent_packet();
@@ -90,10 +94,9 @@ impl NetManager<Server> {
 
             // NOTE(alex): Check if this packet has a `Source`.
             if let Some(host_id) = world
-                .query::<(&Address,)>() // both host and packet archetypes have this
-                .without::<Header>() // only packets have a `Header` component
+                .query::<(&Address, &StateEnteredTime)>() // both host and packet archetypes have this
                 .iter()
-                .find_map(|(host_id, (host_address,))| {
+                .find_map(|(host_id, (host_address, _))| {
                     if host_address == address {
                         Some(host_id)
                     } else {
@@ -113,16 +116,15 @@ impl NetManager<Server> {
                 // this won't hold if sequence wraps.
                 let mut latest_received_query =
                     world.query_one::<(&LatestReceived,)>(host_id).unwrap();
-                let latest = if let Some((latest_received,)) = latest_received_query.get() {
-                    let mut packet_query = world
-                        .query_one::<(&Header,)>(latest_received.packet_id)
-                        .unwrap();
-                    let (old_header,) = packet_query.get().unwrap();
-                    header.sequence > old_header.sequence
-                } else {
-                    false
-                };
-
+                let latest = latest_received_query
+                    .get()
+                    .map_or(false, |(latest_received,)| {
+                        let mut packet_query = world
+                            .query_one::<(&Header,)>(latest_received.packet_id)
+                            .unwrap();
+                        let (old_header,) = packet_query.get().unwrap();
+                        header.sequence > old_header.sequence
+                    });
                 known_host_packets.push((
                     packet_id,
                     host_id,
@@ -334,10 +336,16 @@ impl NetManager<Server> {
             );
         }
 
-        while let Some((packet_id, host_id)) = reconnecting_hosts.pop() {
-            let _ = world.remove::<(Disconnected,)>(host_id).unwrap();
+        while let Some((_packet_id, host_id)) = reconnecting_hosts.pop() {
+            let (_disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
             let _ = world
-                .insert(host_id, (RequestingConnection { attempts: 0 },))
+                .insert(
+                    host_id,
+                    (
+                        RequestingConnection { attempts: 0 },
+                        StateEnteredTime(self.timer.elapsed()),
+                    ),
+                )
                 .unwrap();
             debug!(
                 "Server::on_received_connection_request Disconnected -> RequestingConnection {:#?}",
@@ -349,11 +357,20 @@ impl NetManager<Server> {
         // `spawn_batch` something like: `spawn_batch(list.iter()).for_each(|id|
         // world.insert(id, component))`.
         while let Some((packet_id, address)) = new_hosts.pop() {
-            let host_id = world.spawn((address, RequestingConnection { attempts: 0 }));
+            type NewHost = (
+                Address,
+                RequestingConnection,
+                StateEnteredTime,
+                LatestReceived,
+            );
+            let new_host: NewHost = (
+                address,
+                RequestingConnection { attempts: 0 },
+                StateEnteredTime(self.timer.elapsed()),
+                LatestReceived { packet_id },
+            );
+            let host_id = world.spawn((new_host,));
             let _ = world.insert(packet_id, (Source { host_id },)).unwrap();
-            let _ = world
-                .insert(host_id, (LatestReceived { packet_id },))
-                .unwrap();
 
             let _ = world.spawn((AckRemotePacketEvent {
                 packet_id,
@@ -438,34 +455,36 @@ impl NetManager<Server> {
     // list that the user has created. This means that the first time the connection will always be
     // replied with accepted.
 
-    pub(crate) fn accept_connections(&mut self) {
+    pub(crate) fn on_sent_connection_accepted(&mut self) {
         let world = &mut self.world;
-        let mut awaiting_connection_ack = Vec::with_capacity(8);
 
-        for (host_id, (address, requesting_connection)) in
-            world.query::<(&Address, &RequestingConnection)>().iter()
-        {
-            debug_assert!({
-                world
-                    .query::<(&Header, &LatestReceived, &Source, &Address)>()
-                    .iter()
-                    .any(|(_, (header, _, source, packet_address))| {
-                        source.host_id == host_id
-                            && header.status_code == CONNECTION_REQUEST
-                            && packet_address == address
-                    })
-            });
+        let mut handled_events = Vec::with_capacity(8);
+        let mut accepted_connection_hosts = Vec::with_capacity(8);
 
-            awaiting_connection_ack.push((host_id, address.clone()));
+        for (event_id, (event,)) in world.query::<(&SentConnectionAcceptedEvent,)>().iter() {
+            let mut destination_query = world.query_one::<&Destination>(event.packet_id).unwrap();
+            let destination = destination_query.get().unwrap();
+
+            accepted_connection_hosts.push(destination.host_id);
+            handled_events.push(event_id);
         }
 
-        while let Some((host_id, address)) = awaiting_connection_ack.pop() {
-            let _event_id = world.spawn((PreparePacketToSendEvent {
-                destination_id: host_id,
-                payload: Payload(Vec::new()),
-                status_code: CONNECTION_ACCEPTED,
-                address,
-            },));
+        while let Some(host_id) = accepted_connection_hosts.pop() {
+            // TODO(alex) 2021-05-01: There must be someplace ensuring that this kind of packet is
+            // only sent to `RequestingConnection` hosts, or this invariant will fail.
+            let (requesting_connection,) =
+                world.remove::<(RequestingConnection,)>(host_id).unwrap();
+            let _ = world
+                .insert(
+                    host_id,
+                    (
+                        AwaitingConnectionAck {
+                            attempts: requesting_connection.attempts,
+                        },
+                        StateEnteredTime(self.timer.elapsed()),
+                    ),
+                )
+                .unwrap();
         }
     }
 
@@ -473,11 +492,11 @@ impl NetManager<Server> {
         todo!();
     }
 
-    pub fn enqueue(&self, data: Vec<u8>) {
-        todo!()
-    }
+    // pub fn enqueue(&self, data: Vec<u8>) {
+    //     todo!()
+    // }
 
-    pub fn ban_host(&self, host_id: u32) {
-        todo!();
-    }
+    // pub fn ban_host(&self, host_id: u32) {
+    //     todo!();
+    // }
 }

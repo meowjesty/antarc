@@ -1,3 +1,4 @@
+#![allow(unused_variables, dead_code, unused_imports)]
 #![feature(const_panic)]
 #![feature(write_all_vectored)]
 #![feature(bool_to_option)]

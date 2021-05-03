@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use hecs::World;
 use log::debug;
 
 use crate::net::{NetManager, NetworkResource};
