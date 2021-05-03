@@ -16,14 +16,13 @@ use crate::{
         SentConnectionDeniedEvent, SentConnectionRequestEvent, SentDataTransferEvent,
         SentHeartbeatEvent, SentPacketEvent,
     },
-    host::{Address, Disconnected, RequestingConnection},
+    host::{Address, Disconnected, LatestReceived, LatestSent, RequestingConnection},
     net::NetManager,
     packet::{
         header::Header, ConnectionId, Footer, Payload, Sent, CONNECTION_ACCEPTED,
         CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
-    receiver::{LatestReceived, Source},
-    sender::LatestSent,
+    receiver::Source,
 };
 
 #[derive(Debug)]
@@ -108,23 +107,26 @@ impl NetManager<Server> {
                 );
                 // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it
                 // out.
-
+                //
                 // TODO(alex) 2021-04-22: The `new_sequence > old_sequence` check avoids the case
                 // where a packet arrives out of order, and should not be marked as the latest, but
                 // this won't hold if sequence wraps.
-                let old_latest_id = world
-                    .query::<(&Header, &Source)>()
-                    .with::<LatestReceived>()
-                    .iter()
-                    .find_map(|(packet_id, (old_header, source))| {
-                        (source.host_id == host_id && header.sequence > old_header.sequence)
-                            .then_some(packet_id)
-                    });
+                let mut latest_received_query =
+                    world.query_one::<(&LatestReceived,)>(host_id).unwrap();
+                let latest = if let Some((latest_received,)) = latest_received_query.get() {
+                    let mut packet_query = world
+                        .query_one::<(&Header,)>(latest_received.packet_id)
+                        .unwrap();
+                    let (old_header,) = packet_query.get().unwrap();
+                    header.sequence > old_header.sequence
+                } else {
+                    false
+                };
 
                 known_host_packets.push((
                     packet_id,
                     host_id,
-                    old_latest_id,
+                    latest,
                     header.clone(),
                     footer.connection_id,
                 ));
@@ -150,7 +152,7 @@ impl NetManager<Server> {
             );
         }
 
-        while let Some((packet_id, host_id, old_latest_id, header, connection_id)) =
+        while let Some((packet_id, host_id, latest, header, connection_id)) =
             known_host_packets.pop()
         {
             // WARNING(alex): rust and rust-analyzer won't give an error if you forget to import the
@@ -196,16 +198,12 @@ impl NetManager<Server> {
                 }
             };
 
-            let _ = world
-                .insert(packet_id, (Source { host_id }, LatestReceived))
-                .unwrap();
+            let _ = world.insert(packet_id, (Source { host_id },)).unwrap();
 
-            if let Some(packet_id) = old_latest_id {
-                let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
-                debug!(
-                    "Server::on_received_new_packet swapping LatestReceived {:#?}",
-                    packet_id
-                );
+            if latest {
+                let _ = world
+                    .insert(host_id, (LatestReceived { packet_id },))
+                    .unwrap();
             }
 
             if header.ack != 0 {
@@ -352,8 +350,9 @@ impl NetManager<Server> {
         // world.insert(id, component))`.
         while let Some((packet_id, address)) = new_hosts.pop() {
             let host_id = world.spawn((address, RequestingConnection { attempts: 0 }));
+            let _ = world.insert(packet_id, (Source { host_id },)).unwrap();
             let _ = world
-                .insert(packet_id, (LatestReceived, Source { host_id }))
+                .insert(host_id, (LatestReceived { packet_id },))
                 .unwrap();
 
             let _ = world.spawn((AckRemotePacketEvent {
@@ -388,6 +387,7 @@ impl NetManager<Server> {
 
         while let Some(event) = sent_packets.pop() {
             let SentPacketEvent {
+                destination_id,
                 packet_id,
                 raw_packet_id,
                 time,
@@ -397,8 +397,9 @@ impl NetManager<Server> {
             // there any reason to keep them for longer?
             let _ = world.despawn(raw_packet_id).unwrap();
             debug!("sender -> despawning sent raw packet {:#?}", raw_packet_id);
+            let _ = world.insert(packet_id, (Sent { time },)).unwrap();
             let _ = world
-                .insert(packet_id, (Sent { time }, LatestSent))
+                .insert(destination_id, (LatestSent { packet_id },))
                 .unwrap();
 
             match status_code {

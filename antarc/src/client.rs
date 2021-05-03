@@ -1,32 +1,27 @@
-use std::{
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, time::Duration};
 
-use hecs::{Entity, World};
-use log::{debug, info};
-use mio::{net::UdpSocket, Events, Poll};
+use hecs::Entity;
+use log::debug;
 
 use crate::{
     events::{
         AckLocalPacketEvent, AckRemotePacketEvent, ReceivedConnectionAcceptedEvent,
-        ReceivedConnectionDeniedEvent, ReceivedConnectionRequestEvent, ReceivedDataTransferEvent,
-        ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SendPacketEvent,
-        SentConnectionRequestEvent, SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
+        ReceivedConnectionDeniedEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
+        ReceivedNewPacketEvent, SendPacketEvent, SentConnectionRequestEvent, SentDataTransferEvent,
+        SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
         Address, AwaitingConnectionAck, AwaitingConnectionResponse, Connected, Disconnected,
-        RequestingConnection, SendingConnectionRequest,
+        LatestReceived, LatestSent, RequestingConnection, StateEnteredTime,
     },
     net::NetManager,
     packet::{
-        header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Packet, Payload,
-        Queued, Received, Retrieved, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Internal, Packet,
+        Payload, Queued, Received, Retrieved, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
         CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
-    receiver::{LatestReceived, Source},
-    sender::{Destination, LatestSent, RawPacket},
-    MTU_LENGTH,
+    receiver::Source,
+    sender::{Destination, RawPacket},
 };
 
 /// TODO(alex) 2021-05-01: Consider adding a `DebugName` component for every entity, such as when
@@ -91,11 +86,13 @@ impl NetManager<Client> {
         // NOTE(alex) 2021-04-04: Can't combine this in the `find_map` because `query` does a
         // mutable borrow of `world`, so it doesn't allow `world.spawn` when using the
         // `unwrap_or_else` closure, even though the code should be completely equivalent.
-        type Host = (Address, RequestingConnection);
+        type Host = (Address, RequestingConnection, StateEnteredTime);
+        let time = self.timer.elapsed();
         let host_id = existing_host_id.unwrap_or_else(|| {
             let host: Host = (
                 Address(server_addr.clone()),
                 RequestingConnection { attempts: 0 },
+                StateEnteredTime(time),
             );
             world.spawn(host)
         });
@@ -134,6 +131,7 @@ impl NetManager<Client> {
         debug!("Client::connect -> spawning packet {:#?}", packet_id);
 
         let raw_packet_id = world.spawn((RawPacket {
+            destination_id: host_id,
             packet_id,
             bytes,
             address: Address(server_addr.clone()),
@@ -208,10 +206,9 @@ impl NetManager<Client> {
 
             // NOTE(alex): Check if there is an existing host with this address.
             if let Some(host_id) = world
-                .query::<(&Address,)>() // both host and packet archetypes have this
-                .without::<Header>() // only packets have a `Header` component
+                .query::<(&Address, &StateEnteredTime)>() // both host and packet archetypes have this
                 .iter()
-                .find_map(|(host_id, (host_address,))| {
+                .find_map(|(host_id, (host_address, _))| {
                     if host_address == address {
                         Some(host_id)
                     } else {
@@ -226,23 +223,25 @@ impl NetManager<Client> {
                 // NOTE(alex): Get the current `LatestReceived` packet for this host, to swap it
                 // out.
                 //
-                // TODO(alex) 2021-04-22: The `new_sequence > old_sequence`
-                // check avoids the case where a packet arrives out of order, and
-                // should not be marked as the latest, but this won't
-                // hold if sequence wraps.
-                let old_latest_id = world
-                    .query::<(&Header, &Source)>()
-                    .with::<LatestReceived>()
-                    .iter()
-                    .find_map(|(packet_id, (old_header, source))| {
-                        (source.host_id == host_id && header.sequence > old_header.sequence)
-                            .then_some(packet_id)
-                    });
+                // TODO(alex) 2021-04-22: The `new_sequence > old_sequence` check avoids the case
+                // where a packet arrives out of order, and should not be marked as the latest, but
+                // this won't hold if sequence wraps.
+                let mut latest_received_query =
+                    world.query_one::<(&LatestReceived,)>(host_id).unwrap();
+                let latest = if let Some((latest_received,)) = latest_received_query.get() {
+                    let mut packet_query = world
+                        .query_one::<(&Header,)>(latest_received.packet_id)
+                        .unwrap();
+                    let (old_header,) = packet_query.get().unwrap();
+                    header.sequence > old_header.sequence
+                } else {
+                    false
+                };
 
                 known_host_packets.push((
                     packet_id,
                     host_id,
-                    old_latest_id,
+                    latest,
                     header.clone(),
                     footer.connection_id,
                 ));
@@ -263,7 +262,7 @@ impl NetManager<Client> {
             );
         }
 
-        while let Some((packet_id, host_id, old_latest_id, header, connection_id)) =
+        while let Some((packet_id, host_id, latest, header, connection_id)) =
             known_host_packets.pop()
         {
             // WARNING(alex): rust and rust-analyzer won't give an error if you forget to import the
@@ -322,16 +321,11 @@ impl NetManager<Client> {
                 }
             };
 
-            let _ = world
-                .insert(packet_id, (Source { host_id }, LatestReceived))
-                .unwrap();
-
-            if let Some(packet_id) = old_latest_id {
-                let _ = world.remove::<(LatestReceived,)>(packet_id).unwrap();
-                debug!(
-                    "Client::on_received_new_packet swapping LatestReceived {:#?}",
-                    packet_id
-                );
+            let _ = world.insert(packet_id, (Source { host_id },)).unwrap();
+            if latest {
+                let _ = world
+                    .insert(host_id, (LatestReceived { packet_id },))
+                    .unwrap();
             }
 
             if header.ack != 0 {
@@ -438,6 +432,7 @@ impl NetManager<Client> {
                 .query_one::<(&Header, &Footer, &Source)>(event.packet_id)
                 .unwrap();
             let (header, footer, source) = packet_query.get().unwrap();
+
             debug_assert_eq!(source.host_id, event.source_id);
             debug_assert!(footer.connection_id.is_some());
 
@@ -481,7 +476,14 @@ impl NetManager<Client> {
                 .unwrap();
 
             // TODO(alex): Mark this packet as handled, somehow.
-            // world.insert(packet_id, (Internal { time: timer.elapsed(),},),).unwrap();
+            world
+                .insert(
+                    packet_id,
+                    (Internal {
+                        time: self.timer.elapsed(),
+                    },),
+                )
+                .unwrap();
         }
 
         while let Some(packet_id) = invalid_packets.pop() {
@@ -532,6 +534,14 @@ impl NetManager<Client> {
             let _ = world.remove::<(AwaitingConnectionAck,)>(source_id).unwrap();
             let _ = world.insert(source_id, (Disconnected,)).unwrap();
             // TODO(alex): Mark this packet as handled, somehow.
+            world
+                .insert(
+                    packet_id,
+                    (Internal {
+                        time: self.timer.elapsed(),
+                    },),
+                )
+                .unwrap();
         }
 
         while let Some(packet_id) = invalid_packets.pop() {
@@ -560,6 +570,7 @@ impl NetManager<Client> {
 
         while let Some(event) = sent_packets.pop() {
             let SentPacketEvent {
+                destination_id,
                 packet_id,
                 raw_packet_id,
                 time,
@@ -569,8 +580,12 @@ impl NetManager<Client> {
             // there any reason to keep them for longer?
             let _ = world.despawn(raw_packet_id).unwrap();
             debug!("sender -> despawning sent raw packet {:#?}", raw_packet_id);
+
+            let _ = world.insert(packet_id, (Sent { time },)).unwrap();
+
+            // TODO(alex) 2021-05-02: Check if this packet has sequence > previous latest sent.
             let _ = world
-                .insert(packet_id, (Sent { time }, LatestSent))
+                .insert(destination_id, (LatestSent { packet_id },))
                 .unwrap();
 
             match status_code {
@@ -608,10 +623,6 @@ impl NetManager<Client> {
 
             awaiting_connection_ack_hosts.push(destination.host_id);
             handled_events.push(event_id);
-            // TODO(alex) 2021-05-01: Transition host state into `AwaitingConnectionAck`, or
-            // whatever name makes the most sense.
-            //
-            // - update packet (what exactly?);
         }
 
         while let Some(event_id) = handled_events.pop() {
@@ -632,6 +643,21 @@ impl NetManager<Client> {
                 )
                 .unwrap();
         }
+    }
+
+    pub(crate) fn poll_requesting_connection(&mut self) {
+        // TODO(alex) 2021-05-02: Check if the connection timed out, and resend the connection
+        // request, if the number of attempts is still valid.
+        let world = &mut self.world;
+
+        for (host_id, (requesting_connection, address)) in
+            world.query::<(&RequestingConnection, &Address)>().iter()
+        {}
+    }
+
+    pub(crate) fn poll_awaiting_connection_ack(&mut self) {
+        // TODO(alex) 2021-05-02: Check if the connection timed out, and resend the connection
+        // request, if the number of attempts is still valid.
     }
 
     /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user

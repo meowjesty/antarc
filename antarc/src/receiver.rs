@@ -58,9 +58,6 @@ impl PartialEq<Destination> for Source {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) struct LatestReceived;
-
 impl<T> NetManager<T> {
     ///
     /// - Raises the `ReceivedNewPacket` event.

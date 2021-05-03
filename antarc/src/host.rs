@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hecs::Entity;
+
 use crate::packet::{ConnectionId, Sequence};
 
 pub(crate) mod requesting_connection;
@@ -28,6 +30,9 @@ pub(crate) mod sending_connection_request;
 /// littered with `todo!()`, as I need to get a better understanding on what states belong where.
 #[derive(Debug, Clone)]
 pub(crate) struct Disconnected;
+
+#[derive(Debug, Clone)]
+pub(crate) struct StateEnteredTime(pub(crate) Duration);
 
 #[derive(Debug, Clone)]
 pub(crate) struct RequestingConnection {
@@ -61,6 +66,16 @@ pub(crate) struct Connected {
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
     pub(crate) rtt: Duration,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct LatestReceived {
+    pub(crate) packet_id: Entity,
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
+pub(crate) struct LatestSent {
+    pub(crate) packet_id: Entity,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]

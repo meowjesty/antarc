@@ -19,6 +19,7 @@ pub(crate) struct PreparePacketToSendEvent {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) struct SentPacketEvent {
+    pub(crate) destination_id: Entity,
     pub(crate) packet_id: Entity,
     pub(crate) raw_packet_id: Entity,
     pub(crate) time: Duration,

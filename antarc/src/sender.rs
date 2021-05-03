@@ -1,31 +1,15 @@
-use std::{
-    fmt,
-    net::{SocketAddr, UdpSocket},
-    time::Instant,
-};
+use std::fmt;
 
-use hecs::{Entity, Ref, World};
+use hecs::Entity;
 use log::debug;
 
 use crate::{
-    events::{
-        AckRemotePacketEvent, PreparePacketToSendEvent, SendPacketEvent,
-        SentConnectionAcceptedEvent, SentConnectionDeniedEvent, SentConnectionRequestEvent,
-        SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
-    },
-    host::{
-        AckingConnection, Address, AwaitingConnectionAck, Connected, Disconnected,
-        RequestingConnection,
-    },
+    events::{AckRemotePacketEvent, PreparePacketToSendEvent, SendPacketEvent, SentPacketEvent},
+    host::Address,
     net::{NetManager, NetworkResource},
-    packet::{
-        header::Header, Acked, ConnectionAccepted, ConnectionDenied, ConnectionId,
-        ConnectionRequest, DataTransfer, Footer, Heartbeat, Packet, Payload, Queued, Received,
-        Sent, Sequence, StatusCode, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
-        DATA_TRANSFER, HEARTBEAT,
-    },
+    packet::{header::Header, ConnectionId, Footer, Packet, Payload, Queued, Sent, Sequence},
     readiness::Writable,
-    receiver::{LatestReceived, Source},
+    receiver::Source,
 };
 
 #[derive(Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
@@ -49,6 +33,7 @@ impl PartialEq<Source> for Destination {
 #[derive(PartialEq, PartialOrd)]
 pub(crate) struct RawPacket {
     pub(crate) packet_id: Entity,
+    pub(crate) destination_id: Entity,
     pub(crate) bytes: Vec<u8>,
     pub(crate) address: Address,
 }
@@ -62,9 +47,6 @@ impl fmt::Debug for RawPacket {
             .finish()
     }
 }
-
-#[derive(Debug, PartialEq, PartialOrd)]
-pub(crate) struct LatestSent;
 
 impl<T> NetManager<T> {
     pub(crate) fn prepare_packet_to_send(&mut self) {
@@ -96,9 +78,9 @@ impl<T> NetManager<T> {
             // ADD(alex) 2021-04-29: When do we despawn this event?
             let ack =
                 match world.query::<&AckRemotePacketEvent>().iter().find(
-                    |(ack_event_id, ack_event)| ack_event.destination_id == event.destination_id,
+                    |(_ack_event_id, ack_event)| ack_event.destination_id == event.destination_id,
                 ) {
-                    Some((ack_event_id, ack_event)) => world
+                    Some((_ack_event_id, ack_event)) => world
                         .query_one::<&Header>(ack_event.packet_id)
                         .unwrap()
                         .get()
@@ -108,13 +90,12 @@ impl<T> NetManager<T> {
                     None => 0,
                 };
 
-            let sequence = match world
-                .query::<(&Header, &LatestSent, &Destination)>()
-                .iter()
-                .find_map(|(sent_id, (header, _, destination))| {
+            let sequence = match world.query::<(&Header, &Destination)>().iter().find_map(
+                |(_sent_id, (header, destination))| {
                     (destination.host_id == event.destination_id)
                         .then_some(header.sequence.get() + 1)
-                }) {
+                },
+            ) {
                 Some(sequence) => Sequence::new(sequence).unwrap(),
                 None => unsafe { Sequence::new_unchecked(1) },
             };
@@ -151,6 +132,7 @@ impl<T> NetManager<T> {
                 header, footer, address, destination_id
             );
             send_packets.push((header, payload, footer, address, destination_id, bytes));
+            handled_events.push(event_id);
         }
 
         while let Some(event_id) = handled_events.pop() {
@@ -172,6 +154,7 @@ impl<T> NetManager<T> {
             let packet: BasicPacket = (header, payload, footer, address.clone(), destination);
             let packet_id = world.spawn(packet);
             let raw_packet = RawPacket {
+                destination_id,
                 packet_id,
                 bytes,
                 address,
@@ -195,7 +178,7 @@ impl<T> NetManager<T> {
     }
 
     pub(crate) fn sender(&mut self) {
-        let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
+        let (world, timer) = (&mut self.world, &self.timer);
 
         let mut handled_events = Vec::with_capacity(8);
         let mut sent_packets = Vec::with_capacity(8);
@@ -229,6 +212,7 @@ impl<T> NetManager<T> {
                             sent_packets.push((
                                 event.raw_packet_id,
                                 event.status_code,
+                                raw_packet.destination_id,
                                 raw_packet.packet_id,
                             ));
                             handled_events.push((event_id, Some(send_event_id)));
@@ -258,8 +242,9 @@ impl<T> NetManager<T> {
             }
         }
 
-        while let Some((raw_id, status_code, packet_id)) = sent_packets.pop() {
-            let event_id = world.spawn((SentPacketEvent {
+        while let Some((raw_id, status_code, destination_id, packet_id)) = sent_packets.pop() {
+            let _event_id = world.spawn((SentPacketEvent {
+                destination_id,
                 packet_id,
                 status_code,
                 raw_packet_id: raw_id,
@@ -267,7 +252,7 @@ impl<T> NetManager<T> {
             },));
         }
 
-        if let Some(packet) = world
+        if let Some(_packet) = world
             .query::<(&Payload, &Destination, &Address)>()
             .with::<Queued>()
             .without::<Sent>()
