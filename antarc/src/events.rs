@@ -107,3 +107,9 @@ pub(crate) struct AckRemotePacketEvent {
     pub(crate) packet_id: Entity,
     pub(crate) destination_id: Entity,
 }
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct EnqueuedPacket {
+    pub(crate) packet_id: Entity,
+    pub(crate) destination_id: Entity,
+}

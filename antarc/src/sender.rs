@@ -90,6 +90,14 @@ impl<T> NetManager<T> {
                     None => 0,
                 };
 
+            // TODO(alex) 2021-05-05: How do we avoid a stale sequence? The sequence for this
+            // specific packet is incremented here, and the tracker is only incremented after the
+            // latest packet is actually sent, but the way it works right now, if the user were to
+            // enqueue multiple packets, before the previous one was sent, then duplicated sequences
+            // become possible.
+            //
+            // This applies not only to the user enqueue case, but also if the systems enqueue too
+            // many packets at almost the same time.
             let sequence = match world.query::<(&Header, &Destination)>().iter().find_map(
                 |(_sent_id, (header, destination))| {
                     (destination.host_id == event.destination_id)

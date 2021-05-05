@@ -5,10 +5,10 @@ use log::debug;
 
 use crate::{
     events::{
-        AckLocalPacketEvent, AckRemotePacketEvent, ReceivedConnectionAcceptedEvent,
-        ReceivedConnectionDeniedEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
-        ReceivedNewPacketEvent, SendPacketEvent, SentConnectionRequestEvent, SentDataTransferEvent,
-        SentHeartbeatEvent, SentPacketEvent,
+        AckLocalPacketEvent, AckRemotePacketEvent, PreparePacketToSendEvent,
+        ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent, ReceivedDataTransferEvent,
+        ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SendPacketEvent,
+        SentConnectionRequestEvent, SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
         Address, AwaitingConnectionAck, Connected, Disconnected, LatestReceived, LatestSent,
@@ -148,6 +148,37 @@ impl NetManager<Client> {
         debug!("Client::connect -> spawning `SendPacket` {:#?}", event_id);
     }
 
+    pub fn enqueue(&mut self, message: Vec<u8>) {
+        debug!("Client::enqueue -> user requested packet enqueue");
+        let mut packet_event = None;
+
+        if let Some((host_id, (address, connected))) =
+            self.world.query::<(&Address, &Connected)>().iter().last()
+        {
+            debug!(
+                "Client::enqueue -> connected host {:?} {:?}",
+                host_id, address
+            );
+            let payload = Payload(message);
+            let prepare_packet_to_send = PreparePacketToSendEvent {
+                payload,
+                status_code: DATA_TRANSFER,
+                address: address.clone(),
+                destination_id: host_id,
+            };
+
+            packet_event = Some(prepare_packet_to_send);
+        }
+
+        if let Some(prepare_packet_to_send) = packet_event {
+            let event_id = self.world.spawn((prepare_packet_to_send,));
+            debug!(
+                "Client::enqueue -> spawning PreparePacketToSendEvent {:?}",
+                event_id
+            );
+        }
+    }
+
     pub fn connected(&mut self) {}
 
     pub fn denied(&mut self) {
@@ -170,6 +201,10 @@ impl NetManager<Client> {
         self.sender();
         self.on_sent_packet();
         self.on_sent_connection_request();
+
+        // TODO(alex) 2021-05-05: Check if there are packets to ack here, and maybe send a heartbeat
+        // back to the server, just to ack the packet + confirm the connection was estabilished.
+        // This query will look for enqueued packets, if there are none, then send a heartbeat.
     }
 
     /// System responsible for attributing a `Source` host to a packet entity, if the host matches
