@@ -136,7 +136,7 @@ impl NetManager<Server> {
                 debug!("Server::on_received_new_packet packet belongs to an unknown host ");
                 // NOTE(alex): `Source`less packet is a connection request, this is ok.
                 debug_assert_eq!(header.status_code, CONNECTION_REQUEST);
-                unknown_host_packets.push(packet_id);
+                unknown_host_packets.push((packet_id, address.clone(), header.clone()));
             } else {
                 debug!("Server::on_received_new_packet packet is invalid");
                 // NOTE(alex): `Source`less packets can only be connection requests.
@@ -152,6 +152,23 @@ impl NetManager<Server> {
                 "Server::on_received_new_packet despawning ReceivedNewPacket {:#?}",
                 event_id
             );
+        }
+
+        while let Some((packet_id, address, header)) = unknown_host_packets.pop() {
+            type NewHost = (Address, Disconnected, StateEnteredTime);
+            let new_host: NewHost = (
+                address,
+                Disconnected,
+                StateEnteredTime(self.timer.elapsed()),
+            );
+
+            let host_id = world.spawn((new_host,));
+            debug!(
+                "Server::on_received_new_packet spawning new host {:?}",
+                host_id
+            );
+
+            known_host_packets.push((packet_id, host_id, true, header, None));
         }
 
         while let Some((packet_id, host_id, latest, header, connection_id)) =
@@ -237,24 +254,6 @@ impl NetManager<Server> {
             );
         }
 
-        // NOTE(alex) 2021-04-21: As the packets here are `Source`less, this won't conflict with the
-        // spawning of connection requests of `Source`d packets above, this check is done in the
-        // event handling iteration.
-        // NOTE(alex) 2021-04-23: These packets have been checked to be `ConnectionRequest`s.
-        let events = world
-            .spawn_batch(unknown_host_packets.iter().map(|packet_id| {
-                (ReceivedConnectionRequestEvent {
-                    packet_id: *packet_id,
-                },)
-            }))
-            .collect::<Vec<_>>();
-        if !events.is_empty() {
-            debug!(
-                "Server::on_received_new_packet spawning ReceivedConnectionRequest (len) {:#?}",
-                events.len()
-            );
-        }
-
         while let Some(packet_id) = invalid_packets.pop() {
             let _ = world.despawn(packet_id).unwrap();
             debug!(
@@ -270,8 +269,7 @@ impl NetManager<Server> {
         let world = &mut self.world;
 
         let mut handled_events = Vec::with_capacity(8);
-        let mut new_hosts = Vec::with_capacity(8);
-        let mut reconnecting_hosts = Vec::with_capacity(8);
+        let mut connecting_hosts = Vec::with_capacity(8);
         let mut invalid_packets = Vec::with_capacity(8);
 
         for (event_id, event) in world.query::<&ReceivedConnectionRequestEvent>().iter() {
@@ -281,40 +279,30 @@ impl NetManager<Server> {
             );
 
             let mut packet_query = world
-                .query_one::<&Address>(event.packet_id)
+                .query_one::<(&Source, &Address)>(event.packet_id)
                 .unwrap()
                 .with::<Header>();
-            let address = packet_query.get().unwrap();
+            let (source, address) = packet_query.get().unwrap();
             debug!(
                 "Server::on_received_connection_request packet {:#?} info {:#?}",
                 event.packet_id, address
             );
 
-            // NOTE(alex): This packet is a connection request from a known host (must be in a
-            // `Disconnected` state).
-            if let Some(source) = world.query_one::<&Source>(event.packet_id).unwrap().get() {
-                debug!(
-                    "Server::on_received_connection_request packet has a source {:#?}",
-                    source
-                );
-
-                if let Some(_disconnected) = world
-                    .query_one::<&Disconnected>(source.host_id)
-                    .unwrap()
-                    .get()
-                {
-                    reconnecting_hosts.push((event.packet_id, source.host_id));
-                    debug!("Server::on_received_connection_request host is disconnected");
-                } else {
-                    // NOTE(alex): Host is in an incompatible state to receive this kind of
-                    // packet.
-                    invalid_packets.push(event.packet_id);
-                    debug!("Server::on_received_connection_request host is in invalid state");
-                }
+            // NOTE(alex): New hosts are created by the `on_received_new_packet` event handler, so
+            // they always arrive here with a `Source`. This checks if such a `Source` is in a valid
+            // state to receive a `ConnectionRequest`.
+            if let Some(_disconnected) = world
+                .query_one::<&Disconnected>(source.host_id)
+                .unwrap()
+                .get()
+            {
+                connecting_hosts.push((event.packet_id, source.host_id));
+                debug!("Server::on_received_connection_request host is disconnected");
             } else {
-                // NOTE(alex): Create a new host and add it as the source for this packet.
-                new_hosts.push((event.packet_id, address.clone()));
-                debug!("Server::on_received_connection_request packet has no source");
+                // NOTE(alex): Host is in an incompatible state to receive this kind of
+                // packet.
+                invalid_packets.push(event.packet_id);
+                debug!("Server::on_received_connection_request host is in invalid state");
             }
 
             handled_events.push(event_id);
@@ -336,7 +324,8 @@ impl NetManager<Server> {
             );
         }
 
-        while let Some((_packet_id, host_id)) = reconnecting_hosts.pop() {
+        // TODO(alex) 2021-05-03: Spawn a `PreparePacketToSend` with the connection accepted packet.
+        while let Some((_packet_id, host_id)) = connecting_hosts.pop() {
             let (_disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
             let _ = world
                 .insert(
@@ -349,35 +338,6 @@ impl NetManager<Server> {
                 .unwrap();
             debug!(
                 "Server::on_received_connection_request Disconnected -> RequestingConnection {:#?}",
-                host_id
-            );
-        }
-
-        // TODO(alex) 2021-04-22: This and every other case of `spawn` could be changed to
-        // `spawn_batch` something like: `spawn_batch(list.iter()).for_each(|id|
-        // world.insert(id, component))`.
-        while let Some((packet_id, address)) = new_hosts.pop() {
-            type NewHost = (
-                Address,
-                RequestingConnection,
-                StateEnteredTime,
-                LatestReceived,
-            );
-            let new_host: NewHost = (
-                address,
-                RequestingConnection { attempts: 0 },
-                StateEnteredTime(self.timer.elapsed()),
-                LatestReceived { packet_id },
-            );
-            let host_id = world.spawn((new_host,));
-            let _ = world.insert(packet_id, (Source { host_id },)).unwrap();
-
-            let _ = world.spawn((AckRemotePacketEvent {
-                packet_id,
-                destination_id: host_id,
-            },));
-            debug!(
-                "Server::on_received_connection_request spawning Source {:#?}",
                 host_id
             );
         }
@@ -462,6 +422,11 @@ impl NetManager<Server> {
         let mut accepted_connection_hosts = Vec::with_capacity(8);
 
         for (event_id, (event,)) in world.query::<(&SentConnectionAcceptedEvent,)>().iter() {
+            debug!(
+                "Server::on_sent_connection_accepted handle SentConnectionAcceptedEvent {:#?}",
+                event_id
+            );
+
             let mut destination_query = world.query_one::<&Destination>(event.packet_id).unwrap();
             let destination = destination_query.get().unwrap();
 
@@ -474,6 +439,11 @@ impl NetManager<Server> {
             // only sent to `RequestingConnection` hosts, or this invariant will fail.
             let (requesting_connection,) =
                 world.remove::<(RequestingConnection,)>(host_id).unwrap();
+            debug!(
+                "Server::on_sent_connection_accepted remove RequestingConnection {:#?} {:#?}",
+                requesting_connection, host_id
+            );
+
             let _ = world
                 .insert(
                     host_id,
@@ -485,6 +455,10 @@ impl NetManager<Server> {
                     ),
                 )
                 .unwrap();
+            debug!(
+                "Server::on_sent_connection_accepted insert AwaitingConnectionAck {:#?}",
+                host_id
+            );
         }
     }
 
