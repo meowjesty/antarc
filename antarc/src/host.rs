@@ -26,7 +26,9 @@ pub(crate) mod sending_connection_request;
 /// This is why writing some client and server APIs right now makes more sense, even if it's just
 /// littered with `todo!()`, as I need to get a better understanding on what states belong where.
 #[derive(Debug, Clone)]
-pub(crate) struct Disconnected;
+pub(crate) struct Disconnected {
+    pub(crate) x: u32,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct StateEnteredTime(pub(crate) Duration);

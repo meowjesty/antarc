@@ -155,14 +155,18 @@ impl NetManager<Server> {
         }
 
         while let Some((packet_id, address, header)) = unknown_host_packets.pop() {
-            type NewHost = (Address, Disconnected, StateEnteredTime);
+            // WARNING(alex): Be very careful when using tupled types like this + `world.spawn`, if
+            // you add up an extra pair of `()`, it becomes a tuple of tuples, which breaks down
+            // the queries.
+            type NewHost = (Address, StateEnteredTime, Disconnected);
             let new_host: NewHost = (
                 address,
-                Disconnected,
                 StateEnteredTime(self.timer.elapsed()),
+                Disconnected { x: 0 },
             );
+            debug!("Server::on_received_new_packet new_host {:#?}", new_host);
 
-            let host_id = world.spawn((new_host,));
+            let host_id = world.spawn(new_host);
             debug!(
                 "Server::on_received_new_packet spawning new host {:?}",
                 host_id
@@ -181,7 +185,10 @@ impl NetManager<Server> {
             // all-caps, as it thinks you're just creating a binding.
             match (header.status_code, connection_id) {
                 (CONNECTION_REQUEST, None) => {
-                    let event_id = world.spawn((ReceivedConnectionRequestEvent { packet_id },));
+                    let event_id = world.spawn((ReceivedConnectionRequestEvent {
+                        packet_id,
+                        source_id: host_id,
+                    },));
                     debug!(
                         "Server::on_received_new_packet spawning ReceivedConnectionRequest {:#?}",
                         event_id
@@ -279,24 +286,24 @@ impl NetManager<Server> {
             );
 
             let mut packet_query = world
-                .query_one::<(&Source, &Address)>(event.packet_id)
+                .query_one::<(&Address,)>(event.packet_id)
                 .unwrap()
                 .with::<Header>();
-            let (source, address) = packet_query.get().unwrap();
+            let (address,) = packet_query.get().unwrap();
             debug!(
-                "Server::on_received_connection_request packet {:#?} info {:#?}",
-                event.packet_id, address
+                "Server::on_received_connection_request packet {:#?} info {:#?} {:#?}",
+                event.packet_id, address, event.source_id
             );
 
             // NOTE(alex): New hosts are created by the `on_received_new_packet` event handler, so
             // they always arrive here with a `Source`. This checks if such a `Source` is in a valid
             // state to receive a `ConnectionRequest`.
-            if let Some(_disconnected) = world
-                .query_one::<&Disconnected>(source.host_id)
+            if let Some((address, disconnected)) = world
+                .query_one::<(&Address, &Disconnected)>(event.source_id)
                 .unwrap()
                 .get()
             {
-                connecting_hosts.push((event.packet_id, source.host_id));
+                connecting_hosts.push((event.packet_id, event.source_id, address.clone()));
                 debug!("Server::on_received_connection_request host is disconnected");
             } else {
                 // NOTE(alex): Host is in an incompatible state to receive this kind of
@@ -325,8 +332,8 @@ impl NetManager<Server> {
         }
 
         // TODO(alex) 2021-05-03: Spawn a `PreparePacketToSend` with the connection accepted packet.
-        while let Some((_packet_id, host_id)) = connecting_hosts.pop() {
-            let (_disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
+        while let Some((_packet_id, host_id, address)) = connecting_hosts.pop() {
+            let (disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
             let _ = world
                 .insert(
                     host_id,
@@ -336,6 +343,15 @@ impl NetManager<Server> {
                     ),
                 )
                 .unwrap();
+
+            let prepare_packet_to_send = PreparePacketToSendEvent {
+                payload: Payload::default(),
+                status_code: CONNECTION_ACCEPTED,
+                address,
+                destination_id: host_id,
+            };
+            let event_id = world.spawn((prepare_packet_to_send,));
+
             debug!(
                 "Server::on_received_connection_request Disconnected -> RequestingConnection {:#?}",
                 host_id
@@ -432,6 +448,14 @@ impl NetManager<Server> {
 
             accepted_connection_hosts.push(destination.host_id);
             handled_events.push(event_id);
+        }
+
+        while let Some(event_id) = handled_events.pop() {
+            let _ = world.despawn(event_id).unwrap();
+            debug!(
+                "Server::on_sent_connection_accepted despawning SentConnectionAcceptedEvent {:#?}",
+                event_id
+            );
         }
 
         while let Some(host_id) = accepted_connection_hosts.pop() {

@@ -11,8 +11,8 @@ use crate::{
         SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
-        Address, AwaitingConnectionAck, Connected, Disconnected,
-        LatestReceived, LatestSent, RequestingConnection, StateEnteredTime,
+        Address, AwaitingConnectionAck, Connected, Disconnected, LatestReceived, LatestSent,
+        RequestingConnection, StateEnteredTime,
     },
     net::NetManager,
     packet::{
@@ -102,7 +102,7 @@ impl NetManager<Client> {
             status_code: CONNECTION_REQUEST,
             ..Default::default()
         };
-        let payload = Payload(Vec::new());
+        let payload = Payload::default();
         let (bytes, footer) = Packet::encode(&header, &payload, None).unwrap();
         debug!("Client::connect -> footer {:#?}", footer);
 
@@ -540,7 +540,10 @@ impl NetManager<Client> {
             let _ = world
                 .insert(
                     source_id,
-                    (Disconnected, StateEnteredTime(self.timer.elapsed())),
+                    (
+                        Disconnected { x: 0 },
+                        StateEnteredTime(self.timer.elapsed()),
+                    ),
                 )
                 .unwrap();
             // TODO(alex): Mark this packet as handled, somehow.

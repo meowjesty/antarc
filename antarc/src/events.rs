@@ -61,6 +61,7 @@ pub(crate) struct ReceivedNewPacketEvent {
 #[derive(Debug, PartialEq)]
 pub(crate) struct ReceivedConnectionRequestEvent {
     pub(crate) packet_id: Entity,
+    pub(crate) source_id: Entity,
 }
 
 #[derive(Debug, PartialEq)]
