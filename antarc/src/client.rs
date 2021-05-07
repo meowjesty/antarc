@@ -17,8 +17,8 @@ use crate::{
     net::NetManager,
     packet::{
         header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Internal, Packet,
-        Payload, Queued, Received, Retrieved, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
-        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        Payload, Queued, Received, Retrieved, Sent, Sequence, CONNECTION_ACCEPTED,
+        CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::Source,
     sender::{Destination, RawPacket},
@@ -98,12 +98,13 @@ impl NetManager<Client> {
         });
         debug!("Client::connect -> host_id {:#?}", host_id);
 
+        let sequence = Sequence::default();
         let header = Header {
             status_code: CONNECTION_REQUEST,
             ..Default::default()
         };
         let payload = Payload::default();
-        let (bytes, footer) = Packet::encode(&header, &payload, None).unwrap();
+        let (bytes, footer) = Packet::encode(sequence, &header, &payload, None).unwrap();
         debug!("Client::connect -> footer {:#?}", footer);
 
         let status_code = header.status_code;
@@ -231,9 +232,9 @@ impl NetManager<Client> {
             let packet_id = event.packet_id;
 
             let mut packet_query = world
-                .query_one::<(&Header, &Footer, &Address)>(packet_id)
+                .query_one::<(&Sequence, &Header, &Footer, &Address)>(packet_id)
                 .unwrap();
-            let (header, footer, address) = packet_query.get().unwrap();
+            let (sequence, header, footer, address) = packet_query.get().unwrap();
             debug!(
                 "Client::on_received_new_packet packet {:#?} info {:#?} {:#?} {:#?}",
                 packet_id, header, footer, address
@@ -267,10 +268,10 @@ impl NetManager<Client> {
                     .get()
                     .map_or(false, |(latest_received,)| {
                         let mut packet_query = world
-                            .query_one::<(&Header,)>(latest_received.packet_id)
+                            .query_one::<(&Sequence,)>(latest_received.packet_id)
                             .unwrap();
-                        let (old_header,) = packet_query.get().unwrap();
-                        header.sequence > old_header.sequence
+                        let (old_sequence,) = packet_query.get().unwrap();
+                        sequence > old_sequence
                     });
 
                 known_host_packets.push((

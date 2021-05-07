@@ -45,8 +45,30 @@ pub(crate) const DATA_TRANSFER: StatusCode = 700;
 /// - Received -> Retrieved;
 /// - ToSend -> Sent -> Acked;
 pub type ConnectionId = NonZeroU16;
-pub type Sequence = NonZeroU32;
 pub type Ack = u32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Sequence(NonZeroU32);
+
+impl Sequence {
+    pub(crate) fn new(non_zero_value: u32) -> Option<Self> {
+        NonZeroU32::new(non_zero_value).map(|non_zero| Sequence(non_zero))
+    }
+
+    pub(crate) unsafe fn new_unchecked(non_zero_value: u32) -> Self {
+        Self(NonZeroU32::new_unchecked(non_zero_value))
+    }
+
+    pub(crate) fn get(&self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl Default for Sequence {
+    fn default() -> Self {
+        unsafe { Self::new_unchecked(1) }
+    }
+}
 
 // REGION(alex) 2021-03-23: Types of packet (event types).
 #[derive(Debug)]
@@ -164,11 +186,12 @@ pub(crate) struct Packet {
 
 impl Packet {
     pub(crate) fn encode(
+        sequence: Sequence,
         header: &Header,
         payload: &Payload,
         connection_id: Option<ConnectionId>,
     ) -> Result<(Vec<u8>, Footer), String> {
-        let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
+        let sequence_bytes = sequence.get().to_be_bytes().to_vec();
         let ack_bytes = header.ack.to_be_bytes().to_vec();
         let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
         let status_code_bytes = header.status_code.to_be_bytes().to_vec();
@@ -259,8 +282,8 @@ impl Packet {
             let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
             debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
 
+            let sequence = Sequence(read_sequence.try_into().unwrap());
             let header = Header {
-                sequence: read_sequence.try_into().unwrap(),
                 ack: read_ack,
                 past_acks: read_past_acks,
                 status_code: read_status_code,

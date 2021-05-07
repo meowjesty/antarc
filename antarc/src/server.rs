@@ -22,7 +22,7 @@ use crate::{
     },
     net::NetManager,
     packet::{
-        header::Header, ConnectionId, Footer, Payload, Sent, CONNECTION_ACCEPTED,
+        header::Header, ConnectionId, Footer, Payload, Sent, Sequence, CONNECTION_ACCEPTED,
         CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::Source,
@@ -84,9 +84,9 @@ impl NetManager<Server> {
             let packet_id = event.packet_id;
 
             let mut packet_query = world
-                .query_one::<(&Header, &Footer, &Address)>(packet_id)
+                .query_one::<(&Sequence, &Header, &Footer, &Address)>(packet_id)
                 .unwrap();
-            let (header, footer, address) = packet_query.get().unwrap();
+            let (sequence, header, footer, address) = packet_query.get().unwrap();
             debug!(
                 "Server::on_received_new_packet packet {:#?} info {:#?} {:#?} {:#?}",
                 packet_id, header, footer, address
@@ -120,10 +120,10 @@ impl NetManager<Server> {
                     .get()
                     .map_or(false, |(latest_received,)| {
                         let mut packet_query = world
-                            .query_one::<(&Header,)>(latest_received.packet_id)
+                            .query_one::<(&Sequence,)>(latest_received.packet_id)
                             .unwrap();
-                        let (old_header,) = packet_query.get().unwrap();
-                        header.sequence > old_header.sequence
+                        let (old_sequence,) = packet_query.get().unwrap();
+                        sequence > old_sequence
                     });
                 known_host_packets.push((
                     packet_id,

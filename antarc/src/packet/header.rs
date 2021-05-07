@@ -50,8 +50,6 @@ pub(crate) struct Header {
     /// `Packet` validity.
     // pub(crate) protocol_id: ProtocolId,
 
-    /// Incremented individually for each `Host`.
-    pub(crate) sequence: Sequence,
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
     pub(crate) ack: Ack,
     /// Represents the ack bitfields to send previous acked state in a compact manner.
@@ -110,7 +108,6 @@ impl Header {
 impl Default for Header {
     fn default() -> Self {
         Self {
-            sequence: unsafe { Sequence::new_unchecked(1) },
             ack: 0,
             past_acks: 0b0,
             status_code: 0x0,

@@ -81,11 +81,10 @@ impl<T> NetManager<T> {
                     |(_ack_event_id, ack_event)| ack_event.destination_id == event.destination_id,
                 ) {
                     Some((_ack_event_id, ack_event)) => world
-                        .query_one::<&Header>(ack_event.packet_id)
+                        .query_one::<&Sequence>(ack_event.packet_id)
                         .unwrap()
                         .get()
                         .unwrap()
-                        .sequence
                         .get(),
                     None => 0,
                 };
@@ -98,12 +97,12 @@ impl<T> NetManager<T> {
             //
             // This applies not only to the user enqueue case, but also if the systems enqueue too
             // many packets at almost the same time.
-            let sequence = match world.query::<(&Header, &Destination)>().iter().find_map(
-                |(_sent_id, (header, destination))| {
-                    (destination.host_id == event.destination_id)
-                        .then_some(header.sequence.get() + 1)
-                },
-            ) {
+            let sequence = match world
+                .query::<(&Sequence, &Header, &Destination)>()
+                .iter()
+                .find_map(|(_sent_id, (sequence, header, destination))| {
+                    (destination.host_id == event.destination_id).then_some(sequence.get() + 1)
+                }) {
                 Some(sequence) => Sequence::new(sequence).unwrap(),
                 None => unsafe { Sequence::new_unchecked(1) },
             };
@@ -115,7 +114,6 @@ impl<T> NetManager<T> {
             );
 
             let header = Header {
-                sequence,
                 ack,
                 past_acks: 0,
                 status_code,
@@ -132,7 +130,11 @@ impl<T> NetManager<T> {
 
             // TODO(alex) 2021-04-05: `new_footer` will always exist here, but when we start
             // handling encoding errors, then it might not be created.
-            let (bytes, footer) = Packet::encode(&header, &payload, connection_id).unwrap();
+            //
+            // TODO(alex) 2021-04-07: The packet cannot be encoded here, as we don't have a sequence
+            // value yet, only at the send time.
+            let (bytes, footer) =
+                Packet::encode(sequence, &header, &payload, connection_id).unwrap();
             let destination_id = event.destination_id;
 
             debug!(

@@ -24,7 +24,7 @@ use crate::{
     events::{AckLocalPacketEvent, ReceivedNewPacketEvent},
     host::Address,
     net::{NetManager, NetworkResource},
-    packet::{header::Header, Acked, Packet, Received, Sent},
+    packet::{header::Header, Acked, Packet, Received, Sent, Sequence},
     readiness::Readable,
     sender::Destination,
 };
@@ -140,11 +140,11 @@ impl<T> NetManager<T> {
             // belong to this specific `Host` (via `Destination`) and that have a matching
             // `sequence` (sent) to this packet's `ack` (received).
             if let Some(sent) = world
-                .query::<(&Header, &Sent, &Destination)>()
+                .query::<(&Sequence, &Header, &Sent, &Destination)>()
                 .without::<Acked>()
                 .iter()
-                .find_map(|(sent_id, (header, sent, destination))| {
-                    (destination.host_id == *source && header.sequence.get() == received.ack)
+                .find_map(|(sent_id, (sequence, header, sent, destination))| {
+                    (destination.host_id == *source && sequence.get() == received.ack)
                         .then_some(sent_id)
                 })
             {
