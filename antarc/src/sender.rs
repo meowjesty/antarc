@@ -4,7 +4,7 @@ use hecs::Entity;
 use log::debug;
 
 use crate::{
-    events::{AckRemotePacketEvent, QueuedPacketEvent, SendPacketEvent, SentPacketEvent},
+    events::{AckRemotePacketEvent, QueuedPacketEvent, SentPacketEvent},
     host::{Address, LatestSent},
     net::{NetManager, NetworkResource},
     packet::{header::Header, ConnectionId, Footer, Packet, Payload, Queued, Sent, Sequence},
@@ -136,7 +136,7 @@ impl<T> NetManager<T> {
                 queued_packet_id
             );
 
-            let event_id = world.spawn((SendPacketEvent {
+            let event_id = world.spawn((QueuedPacketEvent {
                 queued_packet_id,
                 status_code,
                 connection_id,
@@ -165,15 +165,19 @@ impl<T> NetManager<T> {
                 let socket = &mut resource.socket;
 
                 if let Some((send_event_id, (event,))) =
-                    world.query::<(&SendPacketEvent,)>().iter().next()
+                    world.query::<(&QueuedPacketEvent,)>().iter().next()
                 {
                     debug!("sender -> handling SendPacketEvent {:#?}", send_event_id);
 
                     let mut packet_query = world
-                        .query_one::<(&Payload, &Address, &Destination)>(event.queued_packet_id)
+                        .query_one::<(&Payload, &Address, &Destination)>(event.packet_id)
                         .unwrap();
                     let (payload, address, destination) = packet_query.get().unwrap();
-                    let connection_id = event.connection_id;
+
+                    let mut connection_query =
+                        world.query_one::<&ConnectionId>(event.packet_id).unwrap();
+                    let connection_id = connection_query.get().cloned();
+
                     let ack = get_ack(world, destination);
                     let sequence = get_sequence(world, destination);
 
@@ -186,7 +190,7 @@ impl<T> NetManager<T> {
                     debug!("sender -> header {:#?}", header);
 
                     let (raw_packet, footer) =
-                        Packet::encode(sequence, &header, payload, connection_id.clone()).unwrap();
+                        Packet::encode(sequence, &header, payload, connection_id).unwrap();
 
                     match socket.send_to(&raw_packet, address.0) {
                         Ok(num_sent) => {
@@ -196,7 +200,7 @@ impl<T> NetManager<T> {
                             sent_packets.push((
                                 sequence,
                                 header,
-                                event.queued_packet_id,
+                                event.packet_id,
                                 destination.clone(),
                             ));
                             handled_events.push((event_id, Some(send_event_id)));
@@ -370,6 +374,7 @@ fn get_sequence(world: &hecs::World, destination: &Destination) -> Sequence {
             let (sequence,) = sequence_query.get().unwrap();
             sequence.clone()
         }
+        // TODO(alex) 2021-05-08: Check if it's a valid status code for a new sequence value.
         None => unsafe { Sequence::new_unchecked(1) },
     };
     sequence

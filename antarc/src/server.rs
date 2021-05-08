@@ -12,7 +12,7 @@ use crate::{
         AckLocalPacketEvent, AckRemotePacketEvent, QueuedPacketEvent,
         ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent,
         ReceivedConnectionRequestEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
-        ReceivedNewPacketEvent, SendPacketEvent, SentConnectionAcceptedEvent,
+        ReceivedNewPacketEvent, QueuedPacketEvent, SentConnectionAcceptedEvent,
         SentConnectionDeniedEvent, SentConnectionRequestEvent, SentDataTransferEvent,
         SentHeartbeatEvent, SentPacketEvent,
     },

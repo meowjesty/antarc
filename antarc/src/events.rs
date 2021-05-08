@@ -9,10 +9,8 @@ use crate::{
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct QueuedPacketEvent {
-    pub(crate) payload: Payload,
+    pub(crate) packet_id: Entity,
     pub(crate) status_code: StatusCode,
-    pub(crate) address: Address,
-    pub(crate) destination_id: Entity,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -85,12 +83,12 @@ pub(crate) struct ReceivedHeartbeatEvent {
     pub(crate) source_id: Entity,
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) struct SendPacketEvent {
-    pub(crate) queued_packet_id: Entity,
-    pub(crate) status_code: StatusCode,
-    pub(crate) connection_id: Option<ConnectionId>,
-}
+// #[derive(Debug, PartialEq)]
+// pub(crate) struct QueuedPacketEvent {
+//     pub(crate) queued_packet_id: Entity,
+//     pub(crate) status_code: StatusCode,
+//     pub(crate) connection_id: Option<ConnectionId>,
+// }
 
 /// Event: `Host` has `Sent` packets that require acking (remote acks local).
 #[derive(Debug, PartialEq)]

@@ -5,7 +5,7 @@ use log::debug;
 
 use crate::{
     events::{
-        AckLocalPacketEvent, AckRemotePacketEvent, SendPacketEvent, QueuedPacketEvent,
+        AckLocalPacketEvent, AckRemotePacketEvent, QueuedPacketEvent,
         ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent, ReceivedDataTransferEvent,
         ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SentConnectionRequestEvent,
         SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
@@ -98,30 +98,14 @@ impl NetManager<Client> {
         });
         debug!("Client::connect -> host_id {:#?}", host_id);
 
-        let sequence = Sequence::default();
-        let header = Header {
-            status_code: CONNECTION_REQUEST,
-            ..Default::default()
-        };
         let payload = Payload::default();
-        let (bytes, footer) = Packet::encode(sequence, &header, &payload, None).unwrap();
-        debug!("Client::connect -> footer {:#?}", footer);
 
-        let status_code = header.status_code;
-        type BasicPacket = (
-            Header,
-            Payload,
-            Footer,
-            Address,
-            Queued,
-            ConnectionRequest,
-            Destination,
-        );
+        let status_code = CONNECTION_REQUEST;
+        let address = Address(server_addr.clone());
+        type BasicPacket = (Payload, Address, Queued, ConnectionRequest, Destination);
         let packet: BasicPacket = (
-            header,
             payload,
-            footer,
-            Address(server_addr.clone()),
+            address,
             Queued {
                 time: self.timer.elapsed(),
             },
@@ -131,19 +115,17 @@ impl NetManager<Client> {
         let packet_id = world.spawn(packet);
         debug!("Client::connect -> spawning packet {:#?}", packet_id);
 
-        let connection_id = None;
-
-        let event_id = world.spawn((SendPacketEvent {
-            queued_packet_id: packet_id,
+        let queued_packet_event = (QueuedPacketEvent {
+            packet_id,
             status_code,
-            connection_id,
-        },));
+        },);
+        let event_id = world.spawn(queued_packet_event);
         debug!("Client::connect -> spawning `SendPacket` {:#?}", event_id);
     }
 
     pub fn enqueue(&mut self, message: Vec<u8>) {
         debug!("Client::enqueue -> user requested packet enqueue");
-        let mut packet_event = None;
+        let mut enqueue_packet = None;
 
         if let Some((host_id, (address, connected))) =
             self.world.query::<(&Address, &Connected)>().iter().last()
@@ -153,18 +135,29 @@ impl NetManager<Client> {
                 host_id, address
             );
             let payload = Payload(message);
-            let prepare_packet_to_send = QueuedPacketEvent {
-                payload,
-                status_code: DATA_TRANSFER,
-                address: address.clone(),
-                destination_id: host_id,
-            };
 
-            packet_event = Some(prepare_packet_to_send);
+            type BasicPacket = (Payload, Address, Queued, DataTransfer, Destination);
+            let packet: BasicPacket = (
+                payload,
+                address.clone(),
+                Queued {
+                    time: self.timer.elapsed(),
+                },
+                DataTransfer,
+                Destination { host_id },
+            );
+
+            enqueue_packet = Some(packet);
         }
 
-        if let Some(prepare_packet_to_send) = packet_event {
-            let event_id = self.world.spawn((prepare_packet_to_send,));
+        if let Some(packet) = enqueue_packet {
+            let packet_id = self.world.spawn(packet);
+
+            let queued_packet_event = (QueuedPacketEvent {
+                packet_id,
+                status_code: DATA_TRANSFER,
+            },);
+            let event_id = self.world.spawn(queued_packet_event);
             debug!(
                 "Client::enqueue -> spawning PreparePacketToSendEvent {:?}",
                 event_id
