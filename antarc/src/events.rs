@@ -4,11 +4,11 @@ use hecs::Entity;
 
 use crate::{
     host::Address,
-    packet::{Payload, StatusCode},
+    packet::{ConnectionId, Payload, StatusCode},
 };
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct PreparePacketToSendEvent {
+pub(crate) struct QueuedPacketEvent {
     pub(crate) payload: Payload,
     pub(crate) status_code: StatusCode,
     pub(crate) address: Address,
@@ -17,10 +17,7 @@ pub(crate) struct PreparePacketToSendEvent {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) struct SentPacketEvent {
-    pub(crate) destination_id: Entity,
     pub(crate) packet_id: Entity,
-    pub(crate) raw_packet_id: Entity,
-    pub(crate) time: Duration,
     pub(crate) status_code: u16,
 }
 
@@ -90,8 +87,9 @@ pub(crate) struct ReceivedHeartbeatEvent {
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct SendPacketEvent {
-    pub(crate) raw_packet_id: Entity,
+    pub(crate) queued_packet_id: Entity,
     pub(crate) status_code: StatusCode,
+    pub(crate) connection_id: Option<ConnectionId>,
 }
 
 /// Event: `Host` has `Sent` packets that require acking (remote acks local).

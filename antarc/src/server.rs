@@ -9,7 +9,7 @@ use log::debug;
 
 use crate::{
     events::{
-        AckLocalPacketEvent, AckRemotePacketEvent, PreparePacketToSendEvent,
+        AckLocalPacketEvent, AckRemotePacketEvent, QueuedPacketEvent,
         ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent,
         ReceivedConnectionRequestEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
         ReceivedNewPacketEvent, SendPacketEvent, SentConnectionAcceptedEvent,
@@ -54,7 +54,7 @@ impl NetManager<Server> {
         self.on_received_new_packet();
         self.on_received_connection_request();
         self.on_sent_connection_accepted();
-        self.prepare_packet_to_send();
+        self.on_queued_packet();
         self.sender();
         self.on_sent_packet();
     }
@@ -344,7 +344,7 @@ impl NetManager<Server> {
                 )
                 .unwrap();
 
-            let prepare_packet_to_send = PreparePacketToSendEvent {
+            let prepare_packet_to_send = QueuedPacketEvent {
                 payload: Payload::default(),
                 status_code: CONNECTION_ACCEPTED,
                 address,
@@ -380,20 +380,9 @@ impl NetManager<Server> {
 
         while let Some(event) = sent_packets.pop() {
             let SentPacketEvent {
-                destination_id,
                 packet_id,
-                raw_packet_id,
-                time,
                 status_code,
             } = event;
-            // TODO(alex) 2021-04-24: Just despawning the raw packets after they've been sent, is
-            // there any reason to keep them for longer?
-            let _ = world.despawn(raw_packet_id).unwrap();
-            debug!("sender -> despawning sent raw packet {:#?}", raw_packet_id);
-            let _ = world.insert(packet_id, (Sent { time },)).unwrap();
-            let _ = world
-                .insert(destination_id, (LatestSent { packet_id },))
-                .unwrap();
 
             match status_code {
                 CONNECTION_ACCEPTED => {

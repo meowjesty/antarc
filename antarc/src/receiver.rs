@@ -24,7 +24,7 @@ use crate::{
     events::{AckLocalPacketEvent, ReceivedNewPacketEvent},
     host::Address,
     net::{NetManager, NetworkResource},
-    packet::{header::Header, Acked, Packet, Received, Sent, Sequence},
+    packet::{header::Header, Acked, Footer, Packet, Payload, Received, Sent, Sequence},
     readiness::Readable,
     sender::Destination,
 };
@@ -78,13 +78,14 @@ impl<T> NetManager<T> {
                         if num_recv > 0 {
                             let remote_address = Address(from_addr);
 
-                            let (header, payload, footer) =
+                            let (sequence, header, payload, footer) =
                                 Packet::decode(&buffer[0..num_recv]).unwrap();
 
                             let received = Received {
                                 time: timer.elapsed(),
                             };
-                            let packet = (header, payload, footer, remote_address, received);
+                            let packet =
+                                (sequence, header, payload, footer, remote_address, received);
                             received_new_packet = Some(packet);
                         } else {
                             eprintln!("Received 0 bytes from {:#?}.", from_addr);
@@ -100,12 +101,14 @@ impl<T> NetManager<T> {
             }
         }
 
-        if let Some((header, payload, footer, address, received)) = received_new_packet {
-            let packet_id = world.spawn((header, payload, footer, address, received));
-            debug!("receiver -> spawning packet {:#?}", packet_id);
+        if let Some((sequence, header, payload, footer, address, received)) = received_new_packet {
+            type ReceivedPacket = (Sequence, Header, Payload, Footer, Address, Received);
+            let received_packet = (sequence, header, payload, footer, address, received);
+            let packet_id = world.spawn(received_packet);
+            debug!("receiver -> spawning packet received {:#?}", packet_id);
 
             let event_id = world.spawn((ReceivedNewPacketEvent { packet_id },));
-            debug!("receiver -> spawning ReceivedNewPacket {:#?}", event_id);
+            debug!("receiver -> spawning ReceivedNewPacketEvent {:#?}", event_id);
         }
 
         while let Some(event_id) = handled_events.pop() {

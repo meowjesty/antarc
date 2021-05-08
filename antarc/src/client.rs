@@ -5,10 +5,10 @@ use log::debug;
 
 use crate::{
     events::{
-        AckLocalPacketEvent, AckRemotePacketEvent, PreparePacketToSendEvent,
+        AckLocalPacketEvent, AckRemotePacketEvent, SendPacketEvent, QueuedPacketEvent,
         ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent, ReceivedDataTransferEvent,
-        ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SendPacketEvent,
-        SentConnectionRequestEvent, SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
+        ReceivedHeartbeatEvent, ReceivedNewPacketEvent, SentConnectionRequestEvent,
+        SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
         Address, AwaitingConnectionAck, Connected, Disconnected, LatestReceived, LatestSent,
@@ -131,20 +131,12 @@ impl NetManager<Client> {
         let packet_id = world.spawn(packet);
         debug!("Client::connect -> spawning packet {:#?}", packet_id);
 
-        let raw_packet_id = world.spawn((RawPacket {
-            destination_id: host_id,
-            packet_id,
-            bytes,
-            address: Address(server_addr.clone()),
-        },));
-        debug!(
-            "Client::connect -> spawning raw packet {:#?}",
-            raw_packet_id
-        );
+        let connection_id = None;
 
         let event_id = world.spawn((SendPacketEvent {
-            raw_packet_id,
+            queued_packet_id: packet_id,
             status_code,
+            connection_id,
         },));
         debug!("Client::connect -> spawning `SendPacket` {:#?}", event_id);
     }
@@ -161,7 +153,7 @@ impl NetManager<Client> {
                 host_id, address
             );
             let payload = Payload(message);
-            let prepare_packet_to_send = PreparePacketToSendEvent {
+            let prepare_packet_to_send = QueuedPacketEvent {
                 payload,
                 status_code: DATA_TRANSFER,
                 address: address.clone(),
@@ -198,7 +190,7 @@ impl NetManager<Client> {
         self.on_received_new_packet();
         self.on_received_connection_accepted();
         self.on_received_connection_denied();
-        self.prepare_packet_to_send();
+        self.on_queued_packet();
         self.sender();
         self.on_sent_packet();
         self.on_sent_connection_request();
@@ -619,23 +611,9 @@ impl NetManager<Client> {
 
         while let Some(event) = sent_packets.pop() {
             let SentPacketEvent {
-                destination_id,
                 packet_id,
-                raw_packet_id,
-                time,
                 status_code,
             } = event;
-            // TODO(alex) 2021-04-24: Just despawning the raw packets after they've been sent, is
-            // there any reason to keep them for longer?
-            let _ = world.despawn(raw_packet_id).unwrap();
-            debug!("sender -> despawning sent raw packet {:#?}", raw_packet_id);
-
-            let _ = world.insert(packet_id, (Sent { time },)).unwrap();
-
-            // TODO(alex) 2021-05-02: Check if this packet has sequence > previous latest sent.
-            let _ = world
-                .insert(destination_id, (LatestSent { packet_id },))
-                .unwrap();
 
             match status_code {
                 CONNECTION_REQUEST => {

@@ -184,6 +184,8 @@ pub(crate) struct Packet {
     pub(crate) footer: Footer,
 }
 
+pub(crate) type Decoded = (Sequence, Header, Payload, Footer);
+
 impl Packet {
     pub(crate) fn encode(
         sequence: Sequence,
@@ -230,16 +232,23 @@ impl Packet {
         let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
 
         debug_assert!({
-            let (read_header, read_payload, read_footer) = Packet::decode(&packet_bytes).unwrap();
-            *header == read_header && read_payload == *payload && read_footer == footer
+            let (read_sequence, read_header, read_payload, read_footer) =
+                Packet::decode(&packet_bytes).unwrap();
+            sequence == read_sequence
+                && *header == read_header
+                && read_payload == *payload
+                && read_footer == footer
         });
 
         Ok((packet_bytes, footer))
     }
 
+    // NOTE(alex) 2021-05-07: Doesn't work #8995.
+    // type Decoded = (Sequence, Header, Payload, Footer);
+
     /// NOTE(alex) 2021-04-26: This `buffer` should contain only the packet, be careful not to pass
     /// the whole receiver buffer into here.
-    pub(crate) fn decode(buffer: &[u8]) -> Result<(Header, Payload, Footer), String> {
+    pub(crate) fn decode(buffer: &[u8]) -> Result<Decoded, String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -314,7 +323,7 @@ impl Packet {
                 crc32: crc32.try_into().unwrap(),
             };
 
-            Ok((header, payload, footer))
+            Ok((sequence, header, payload, footer))
         } else {
             Err(format!(
                 "Received {:#?} crc32, but calculated {:#?}.",

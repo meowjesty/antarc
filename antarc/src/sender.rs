@@ -4,13 +4,15 @@ use hecs::Entity;
 use log::debug;
 
 use crate::{
-    events::{AckRemotePacketEvent, PreparePacketToSendEvent, SendPacketEvent, SentPacketEvent},
-    host::Address,
+    events::{AckRemotePacketEvent, QueuedPacketEvent, SendPacketEvent, SentPacketEvent},
+    host::{Address, LatestSent},
     net::{NetManager, NetworkResource},
     packet::{header::Header, ConnectionId, Footer, Packet, Payload, Queued, Sent, Sequence},
     readiness::Writable,
     receiver::Source,
 };
+
+type PreparedPacket = (Header, Payload, Address, Option<ConnectionId>, Destination);
 
 #[derive(Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Destination {
@@ -49,11 +51,11 @@ impl fmt::Debug for RawPacket {
 }
 
 impl<T> NetManager<T> {
-    pub(crate) fn prepare_packet_to_send(&mut self) {
+    pub(crate) fn on_queued_packet(&mut self) {
         let world = &mut self.world;
 
         let mut handled_events = Vec::with_capacity(8);
-        let mut send_packets = Vec::with_capacity(8);
+        let mut queued_packets = Vec::with_capacity(8);
 
         // TODO(alex) 2021-04-24: Steps to do here:
         // 1. Loop through the enqueued packets event `PreparePacketToSend` and grab the
@@ -69,26 +71,13 @@ impl<T> NetManager<T> {
         //
         // 5. Only move this packet into `SendPacket` event if it's time enqueued is greater than
         // the `LatestSent` time enqueued?
-        for (event_id, (event,)) in world.query::<(&PreparePacketToSendEvent,)>().iter() {
+        for (event_id, event) in world.query::<&QueuedPacketEvent>().iter() {
             debug!("prepare_packet_to_send -> handle PreparePacketToSend");
 
             // TODO(alex) 2021-04-24: This needs to loop through every packet that must be acked in
             // order to properly calculate the `past_acks`.
             //
             // ADD(alex) 2021-04-29: When do we despawn this event?
-            let ack =
-                match world.query::<&AckRemotePacketEvent>().iter().find(
-                    |(_ack_event_id, ack_event)| ack_event.destination_id == event.destination_id,
-                ) {
-                    Some((_ack_event_id, ack_event)) => world
-                        .query_one::<&Sequence>(ack_event.packet_id)
-                        .unwrap()
-                        .get()
-                        .unwrap()
-                        .get(),
-                    None => 0,
-                };
-
             // TODO(alex) 2021-05-05: How do we avoid a stale sequence? The sequence for this
             // specific packet is incremented here, and the tracker is only incremented after the
             // latest packet is actually sent, but the way it works right now, if the user were to
@@ -97,31 +86,12 @@ impl<T> NetManager<T> {
             //
             // This applies not only to the user enqueue case, but also if the systems enqueue too
             // many packets at almost the same time.
-            let sequence = match world
-                .query::<(&Sequence, &Header, &Destination)>()
-                .iter()
-                .find_map(|(_sent_id, (sequence, header, destination))| {
-                    (destination.host_id == event.destination_id).then_some(sequence.get() + 1)
-                }) {
-                Some(sequence) => Sequence::new(sequence).unwrap(),
-                None => unsafe { Sequence::new_unchecked(1) },
-            };
 
             let (payload, status_code, address) = (
                 event.payload.clone(),
                 event.status_code,
                 event.address.clone(),
             );
-
-            let header = Header {
-                ack,
-                past_acks: 0,
-                status_code,
-                // TODO(alex) 2021-04-10: Do not allow packets with large payloads, this will be
-                // properly handled with fragmentation, but right now we could just check before
-                // assignment!
-                payload_length: payload.len() as u16,
-            };
 
             // TODO(alex) 2021-04-29: Don't just create a connection id value here, we need to check
             // for a correct connection id, maybe it could be part of the `PreparePacketToSend`
@@ -131,17 +101,17 @@ impl<T> NetManager<T> {
             // TODO(alex) 2021-04-05: `new_footer` will always exist here, but when we start
             // handling encoding errors, then it might not be created.
             //
-            // TODO(alex) 2021-04-07: The packet cannot be encoded here, as we don't have a sequence
+            // TODO(alex) 2021-05-07: The packet cannot be encoded here, as we don't have a sequence
             // value yet, only at the send time.
-            let (bytes, footer) =
-                Packet::encode(sequence, &header, &payload, connection_id).unwrap();
+            //
+            // ADD(alex) 2021-05-07: `Sequence` is not being spawned with the packet anywhere yet!
             let destination_id = event.destination_id;
 
             debug!(
-                "prepare_packet_to_send -> data {:?} {:?} {:?} {:?}",
-                header, footer, address, destination_id
+                "prepare_packet_to_send -> data {:?} {:?}",
+                address, destination_id
             );
-            send_packets.push((header, payload, footer, address, destination_id, bytes));
+            queued_packets.push((payload, address, status_code, connection_id, destination_id));
             handled_events.push(event_id);
         }
 
@@ -153,32 +123,23 @@ impl<T> NetManager<T> {
             );
         }
 
-        while let Some((header, payload, footer, address, destination_id, bytes)) =
-            send_packets.pop()
+        while let Some((payload, address, status_code, connection_id, destination_id)) =
+            queued_packets.pop()
         {
-            let status_code = header.status_code;
             let destination = Destination {
                 host_id: destination_id,
             };
-            type BasicPacket = (Header, Payload, Footer, Address, Destination);
-            let packet: BasicPacket = (header, payload, footer, address.clone(), destination);
-            let packet_id = world.spawn(packet);
-            let raw_packet = RawPacket {
-                destination_id,
-                packet_id,
-                bytes,
-                address,
-            };
-            let raw_packet_id = world.spawn((raw_packet,));
-
+            let prepared_packet = (payload, address.clone(), destination);
+            let queued_packet_id = world.spawn(prepared_packet);
             debug!(
-                "prepare_packet_to_send -> packet {:?} raw_packet {:?}",
-                packet_id, raw_packet_id
+                "prepare_packet_to_send -> spawning prepared packet {:?} ",
+                queued_packet_id
             );
 
             let event_id = world.spawn((SendPacketEvent {
-                raw_packet_id,
+                queued_packet_id,
                 status_code,
+                connection_id,
             },));
             debug!(
                 "prepare_packet_to_send -> spawning SendPacket {:?}",
@@ -194,7 +155,7 @@ impl<T> NetManager<T> {
         let mut sent_packets = Vec::with_capacity(8);
 
         if let Some((event_id, _writable)) = world.query::<&Writable>().iter().next() {
-            debug!("sender -> writable event with id {:#?}", event_id);
+            debug!("sender -> handle Writable event {:#?}", event_id);
 
             if let Some((resource_id, resource)) =
                 world.query::<&mut NetworkResource>().iter().next()
@@ -206,24 +167,37 @@ impl<T> NetManager<T> {
                 if let Some((send_event_id, (event,))) =
                     world.query::<(&SendPacketEvent,)>().iter().next()
                 {
-                    debug!("sender -> handling send packet event {:#?}", send_event_id);
+                    debug!("sender -> handling SendPacketEvent {:#?}", send_event_id);
 
-                    let mut raw_packet_query = world
-                        .query_one::<(&RawPacket,)>(event.raw_packet_id)
+                    let mut packet_query = world
+                        .query_one::<(&Payload, &Address, &Destination)>(event.queued_packet_id)
                         .unwrap();
-                    let (raw_packet,) = raw_packet_query.get().unwrap();
-                    debug!("sender -> raw_packet {:#?}", raw_packet);
+                    let (payload, address, destination) = packet_query.get().unwrap();
+                    let connection_id = event.connection_id;
+                    let ack = get_ack(world, destination);
+                    let sequence = get_sequence(world, destination);
 
-                    match socket.send_to(&raw_packet.bytes, raw_packet.address.0) {
+                    let header = Header {
+                        ack,
+                        past_acks: 0,
+                        status_code: event.status_code,
+                        payload_length: payload.len() as u16,
+                    };
+                    debug!("sender -> header {:#?}", header);
+
+                    let (raw_packet, footer) =
+                        Packet::encode(sequence, &header, payload, connection_id.clone()).unwrap();
+
+                    match socket.send_to(&raw_packet, address.0) {
                         Ok(num_sent) => {
                             debug!("sender -> sent a packet with {:#?} bytes", num_sent);
                             debug_assert!(num_sent > 0);
 
                             sent_packets.push((
-                                event.raw_packet_id,
-                                event.status_code,
-                                raw_packet.destination_id,
-                                raw_packet.packet_id,
+                                sequence,
+                                header,
+                                event.queued_packet_id,
+                                destination.clone(),
                             ));
                             handled_events.push((event_id, Some(send_event_id)));
                         }
@@ -252,13 +226,27 @@ impl<T> NetManager<T> {
             }
         }
 
-        while let Some((raw_id, status_code, destination_id, packet_id)) = sent_packets.pop() {
-            let _event_id = world.spawn((SentPacketEvent {
-                destination_id,
+        while let Some((sequence, header, packet_id, destination)) = sent_packets.pop() {
+            let status_code = header.status_code;
+            world
+                .insert(
+                    packet_id,
+                    (
+                        sequence,
+                        header,
+                        Sent {
+                            time: self.timer.elapsed(),
+                        },
+                    ),
+                )
+                .unwrap();
+            // TODO(alex) 2021-05-02: Check if this packet has sequence > previous latest sent.
+            world
+                .insert(destination.host_id, (LatestSent { packet_id },))
+                .unwrap();
+            let event_id = world.spawn((SentPacketEvent {
                 packet_id,
                 status_code,
-                raw_packet_id: raw_id,
-                time: timer.elapsed(),
             },));
         }
 
@@ -368,4 +356,38 @@ impl<T> NetManager<T> {
     // - `system_sender` doesn't care what kind of packet this is, only that it's `ToSend`;
     //
     // Calculate rtt, ack packet, calculate past_acks.
+}
+
+fn get_sequence(world: &hecs::World, destination: &Destination) -> Sequence {
+    let mut latest_query = world
+        .query_one::<(&LatestSent,)>(destination.host_id)
+        .unwrap();
+    let sequence = match latest_query.get() {
+        Some((latest_sent,)) => {
+            let mut sequence_query = world
+                .query_one::<(&Sequence,)>(latest_sent.packet_id)
+                .unwrap();
+            let (sequence,) = sequence_query.get().unwrap();
+            sequence.clone()
+        }
+        None => unsafe { Sequence::new_unchecked(1) },
+    };
+    sequence
+}
+
+fn get_ack(world: &hecs::World, destination: &Destination) -> u32 {
+    let ack = match world
+        .query::<&AckRemotePacketEvent>()
+        .iter()
+        .find(|(ack_event_id, ack_event)| ack_event.destination_id == destination.host_id)
+    {
+        Some((ack_event_id, ack_event)) => world
+            .query_one::<&Sequence>(ack_event.packet_id)
+            .unwrap()
+            .get()
+            .unwrap()
+            .get(),
+        None => 0,
+    };
+    ack
 }
