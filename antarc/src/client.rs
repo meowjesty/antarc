@@ -183,7 +183,7 @@ impl NetManager<Client> {
         self.on_received_new_packet();
         self.on_received_connection_accepted();
         self.on_received_connection_denied();
-        self.on_queued_packet();
+        // self.on_queued_packet();
         self.sender();
         self.on_sent_packet();
         self.on_sent_connection_request();

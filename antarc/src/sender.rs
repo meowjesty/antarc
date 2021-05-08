@@ -51,6 +51,7 @@ impl fmt::Debug for RawPacket {
 }
 
 impl<T> NetManager<T> {
+    /*
     pub(crate) fn on_queued_packet(&mut self) {
         let world = &mut self.world;
 
@@ -147,6 +148,7 @@ impl<T> NetManager<T> {
             );
         }
     }
+    */
 
     pub(crate) fn sender(&mut self) {
         let (world, timer) = (&mut self.world, &self.timer);

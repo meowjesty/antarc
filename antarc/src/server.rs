@@ -12,9 +12,8 @@ use crate::{
         AckLocalPacketEvent, AckRemotePacketEvent, QueuedPacketEvent,
         ReceivedConnectionAcceptedEvent, ReceivedConnectionDeniedEvent,
         ReceivedConnectionRequestEvent, ReceivedDataTransferEvent, ReceivedHeartbeatEvent,
-        ReceivedNewPacketEvent, QueuedPacketEvent, SentConnectionAcceptedEvent,
-        SentConnectionDeniedEvent, SentConnectionRequestEvent, SentDataTransferEvent,
-        SentHeartbeatEvent, SentPacketEvent,
+        ReceivedNewPacketEvent, SentConnectionAcceptedEvent, SentConnectionDeniedEvent,
+        SentConnectionRequestEvent, SentDataTransferEvent, SentHeartbeatEvent, SentPacketEvent,
     },
     host::{
         Address, AwaitingConnectionAck, Disconnected, LatestReceived, LatestSent,
@@ -22,8 +21,8 @@ use crate::{
     },
     net::NetManager,
     packet::{
-        header::Header, ConnectionId, Footer, Payload, Sent, Sequence, CONNECTION_ACCEPTED,
-        CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        header::Header, ConnectionAccepted, ConnectionId, Footer, Payload, Queued, Sent, Sequence,
+        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::Source,
     sender::Destination,
@@ -54,7 +53,7 @@ impl NetManager<Server> {
         self.on_received_new_packet();
         self.on_received_connection_request();
         self.on_sent_connection_accepted();
-        self.on_queued_packet();
+        // self.on_queued_packet();
         self.sender();
         self.on_sent_packet();
     }
@@ -332,7 +331,7 @@ impl NetManager<Server> {
         }
 
         // TODO(alex) 2021-05-03: Spawn a `PreparePacketToSend` with the connection accepted packet.
-        while let Some((_packet_id, host_id, address)) = connecting_hosts.pop() {
+        while let Some((packet_id, host_id, address)) = connecting_hosts.pop() {
             let (disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
             let _ = world
                 .insert(
@@ -344,11 +343,22 @@ impl NetManager<Server> {
                 )
                 .unwrap();
 
+            let payload = Payload::default();
+            let status_code = CONNECTION_ACCEPTED;
+
+            let queued_packet_id = world.spawn((
+                payload,
+                address.clone(),
+                Queued {
+                    time: self.timer.elapsed(),
+                },
+                ConnectionAccepted,
+                Destination { host_id },
+            ));
+
             let prepare_packet_to_send = QueuedPacketEvent {
-                payload: Payload::default(),
                 status_code: CONNECTION_ACCEPTED,
-                address,
-                destination_id: host_id,
+                packet_id: queued_packet_id,
             };
             let event_id = world.spawn((prepare_packet_to_send,));
 
