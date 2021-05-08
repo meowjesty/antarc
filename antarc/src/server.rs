@@ -330,7 +330,6 @@ impl NetManager<Server> {
             );
         }
 
-        // TODO(alex) 2021-05-03: Spawn a `PreparePacketToSend` with the connection accepted packet.
         while let Some((packet_id, host_id, address)) = connecting_hosts.pop() {
             let (disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
             let _ = world
@@ -354,6 +353,8 @@ impl NetManager<Server> {
                 },
                 ConnectionAccepted,
                 Destination { host_id },
+                // TODO(alex) 2021-05-08: Figure out a valid value for the `connection_id` field.
+                ConnectionId::new(1).unwrap(),
             ));
 
             let prepare_packet_to_send = QueuedPacketEvent {

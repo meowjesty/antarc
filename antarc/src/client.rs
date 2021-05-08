@@ -16,9 +16,9 @@ use crate::{
     },
     net::NetManager,
     packet::{
-        header::Header, ConnectionId, ConnectionRequest, DataTransfer, Footer, Internal, Packet,
-        Payload, Queued, Received, Retrieved, Sent, Sequence, CONNECTION_ACCEPTED,
-        CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        header::Header, ConnectionAccepted, ConnectionId, ConnectionRequest, DataTransfer, Footer,
+        Internal, Packet, Payload, Queued, Received, Retrieved, Sent, Sequence,
+        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     receiver::Source,
     sender::{Destination, RawPacket},
@@ -191,6 +191,18 @@ impl NetManager<Client> {
         // TODO(alex) 2021-05-05: Check if there are packets to ack here, and maybe send a heartbeat
         // back to the server, just to ack the packet + confirm the connection was estabilished.
         // This query will look for enqueued packets, if there are none, then send a heartbeat.
+        for (host_id, latest_received) in self.world.query::<&LatestReceived>().iter() {
+            let mut received_query = self
+                .world
+                .query_one::<&Received>(latest_received.packet_id)
+                .unwrap();
+            let received = received_query.get().unwrap();
+            if received.time + Duration::from_millis(150) > self.timer.elapsed() {
+                // TODO(alex) 2021-05-08: Time to send a heartbeat to ack that we're still here!
+                // This also acks the connection to the server.
+            }
+        }
+        for (host_id, latest_sent) in self.world.query::<&LatestSent>().iter() {}
     }
 
     /// System responsible for attributing a `Source` host to a packet entity, if the host matches
