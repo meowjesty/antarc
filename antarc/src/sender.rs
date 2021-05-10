@@ -157,19 +157,37 @@ impl<T> NetManager<T> {
         let mut sent_packets = Vec::with_capacity(8);
 
         if let Some((event_id, _writable)) = world.query::<&Writable>().iter().next() {
-            debug!("sender -> handle Writable event {:#?}", event_id);
+            debug!(
+                "{} {}:{} -> handle Writable event {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                event_id
+            );
 
             if let Some((resource_id, resource)) =
                 world.query::<&mut NetworkResource>().iter().next()
             {
-                debug!("sender -> network resource id {:#?}", resource_id);
+                debug!(
+                    "{} {}:{} -> network resource id {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    resource_id
+                );
 
                 let socket = &mut resource.socket;
 
                 if let Some((send_event_id, (event,))) =
                     world.query::<(&QueuedPacketEvent,)>().iter().next()
                 {
-                    debug!("sender -> handling SendPacketEvent {:#?}", send_event_id);
+                    debug!(
+                        "{} {}:{} -> handling SendPacketEvent {:#?}",
+                        file!(),
+                        line!(),
+                        column!(),
+                        send_event_id
+                    );
 
                     let mut packet_query = world
                         .query_one::<(&Payload, &Address, &Destination)>(event.packet_id)

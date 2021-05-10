@@ -57,7 +57,7 @@ impl<T> NetManager<T> {
         let mut handled_events = Vec::with_capacity(8);
         let mut received_new_packet = None;
 
-        if let Some((event_id, _readable)) = world.query::<&Readable>().iter().next() {
+        if let Some((event_id, readable)) = world.query::<&Readable>().iter().next() {
             debug!("receiver -> handle Readable {:#?}", event_id);
 
             if let Some((resource_id, resource)) =
@@ -94,7 +94,6 @@ impl<T> NetManager<T> {
                     }
                     Err(fail) => {
                         eprintln!("Failed to receive on socket with {:#?}.", fail);
-                        todo!()
                     }
                 }
                 handled_events.push(event_id);
@@ -108,7 +107,10 @@ impl<T> NetManager<T> {
             debug!("receiver -> spawning packet received {:#?}", packet_id);
 
             let event_id = world.spawn((ReceivedNewPacketEvent { packet_id },));
-            debug!("receiver -> spawning ReceivedNewPacketEvent {:#?}", event_id);
+            debug!(
+                "receiver -> spawning ReceivedNewPacketEvent {:#?}",
+                event_id
+            );
         }
 
         while let Some(event_id) = handled_events.pop() {

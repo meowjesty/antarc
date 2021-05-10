@@ -17,9 +17,10 @@ use crate::{
     net::NetManager,
     packet::{
         header::Header, ConnectionAccepted, ConnectionId, ConnectionRequest, DataTransfer, Footer,
-        Internal, Packet, Payload, Queued, Received, Retrieved, Sent, Sequence,
+        Heartbeat, Internal, Packet, Payload, Queued, Received, Retrieved, Sent, Sequence,
         CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
+    readiness::{Readable, Writable},
     receiver::Source,
     sender::{Destination, RawPacket},
 };
@@ -165,6 +166,90 @@ impl NetManager<Client> {
         }
     }
 
+    fn heartbeat(&mut self) {
+        let mut heartbeats = Vec::with_capacity(8);
+
+        for (host_id, (latest_sent, connected)) in
+            self.world.query::<(&LatestSent, &Connected)>().iter()
+        {
+            debug!("{} {}:{} -> handle heartbeats", file!(), line!(), column!());
+            if self
+                .world
+                .query::<&QueuedPacketEvent>()
+                .iter()
+                .next()
+                .is_none()
+            {
+                debug!("{} {}:{} -> no packets queued", file!(), line!(), column!());
+
+                let mut sent_query = self
+                    .world
+                    .query_one::<(&Sent, &Address)>(latest_sent.packet_id)
+                    .unwrap();
+                let (sent, address) = sent_query.get().unwrap();
+
+                if sent.time + Duration::from_millis(150) < self.timer.elapsed() {
+                    debug!(
+                        "{} {}:{} -> last sent {:#?} versus now {:#?}",
+                        file!(),
+                        line!(),
+                        column!(),
+                        sent.time,
+                        self.timer.elapsed()
+                    );
+                    let payload = Payload::default();
+                    let address = address.clone();
+
+                    type BasicPacket = (Payload, Address, Queued, Heartbeat, Destination);
+                    let packet: BasicPacket = (
+                        payload,
+                        address,
+                        Queued {
+                            time: self.timer.elapsed(),
+                        },
+                        Heartbeat,
+                        Destination { host_id },
+                    );
+
+                    debug!(
+                        "{} {}:{} -> queue packet {:#?}",
+                        file!(),
+                        line!(),
+                        column!(),
+                        packet
+                    );
+
+                    heartbeats.push(packet);
+                }
+            }
+        }
+
+        while let Some(heartbeat) = heartbeats.pop() {
+            let packet_id = self.world.spawn(heartbeat);
+            debug!(
+                "{} {}:{} -> spawning packet {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                packet_id
+            );
+
+            let status_code = HEARTBEAT;
+            let queued_packet_event = (QueuedPacketEvent {
+                packet_id,
+                status_code,
+            },);
+            let event_id = self.world.spawn(queued_packet_event);
+            debug!(
+                "{} {}:{} -> spawning `QueuedPacketEvent` {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                event_id
+            );
+        }
+    }
+
     pub fn connected(&mut self) {}
 
     pub fn denied(&mut self) {
@@ -178,6 +263,26 @@ impl NetManager<Client> {
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> () {
+        if let Some((event_id, readable)) = self.world.query::<&Readable>().iter().next() {
+            debug!(
+                "{} {}:{} -> socket is readable {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                event_id
+            );
+        }
+
+        if let Some((event_id, writable)) = self.world.query::<&Writable>().iter().next() {
+            debug!(
+                "{} {}:{} -> socket is writable {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                event_id
+            );
+        }
+
         self.check_readiness();
         self.receiver();
         self.on_received_new_packet();
@@ -187,22 +292,11 @@ impl NetManager<Client> {
         self.sender();
         self.on_sent_packet();
         self.on_sent_connection_request();
+        self.heartbeat();
 
         // TODO(alex) 2021-05-05: Check if there are packets to ack here, and maybe send a heartbeat
         // back to the server, just to ack the packet + confirm the connection was estabilished.
         // This query will look for enqueued packets, if there are none, then send a heartbeat.
-        for (host_id, latest_received) in self.world.query::<&LatestReceived>().iter() {
-            let mut received_query = self
-                .world
-                .query_one::<&Received>(latest_received.packet_id)
-                .unwrap();
-            let received = received_query.get().unwrap();
-            if received.time + Duration::from_millis(150) > self.timer.elapsed() {
-                // TODO(alex) 2021-05-08: Time to send a heartbeat to ack that we're still here!
-                // This also acks the connection to the server.
-            }
-        }
-        for (host_id, latest_sent) in self.world.query::<&LatestSent>().iter() {}
     }
 
     /// System responsible for attributing a `Source` host to a packet entity, if the host matches
@@ -525,7 +619,12 @@ impl NetManager<Client> {
 
         while let Some(packet_id) = invalid_packets.pop() {
             world.despawn(packet_id).unwrap();
-            debug!("Client::on_received_connection_accepted despawning ReceivedConnectionAccepted");
+            debug!(
+                "{} {}:{} -> despawning ReceivedConnectionAccepted",
+                file!(),
+                line!(),
+                column!()
+            );
         }
     }
 

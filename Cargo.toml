@@ -3,4 +3,6 @@
 members = [
     "antarc",
     "experimental",
+    "server",
+    "client",
 ]

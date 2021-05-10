@@ -27,10 +27,20 @@ impl<T> NetManager<T> {
                     NetworkResource::TOKEN => {
                         if event.is_readable() {
                             readable = Some(Readable);
-                            debug!("check_readiness -> socket is readable");
+                            debug!(
+                                "{} {}:{} -> socket is readable",
+                                file!(),
+                                line!(),
+                                column!()
+                            );
                         } else if event.is_writable() {
                             writable = Some(Writable);
-                            debug!("check_readiness -> socket is writable");
+                            debug!(
+                                "{} {}:{} -> socket is writable",
+                                file!(),
+                                line!(),
+                                column!()
+                            );
                         } else {
                             panic!("Unhandled network event readiness {:#?}.", event);
                         }
@@ -43,9 +53,9 @@ impl<T> NetManager<T> {
         }
 
         if let Some(readable) = readable {
-            let _ = world.spawn((readable,));
+            let readable_id = world.spawn((readable,));
         } else if let Some(writable) = writable {
-            let _ = world.spawn((writable,));
+            let writable_id = world.spawn((writable,));
         }
     }
 }
