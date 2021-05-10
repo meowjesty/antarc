@@ -288,16 +288,97 @@ impl NetManager<Client> {
                 Some(Duration::from_millis(5)),
             )
             .unwrap();
+
+        let mut sender_result = None;
+        let mut receiver_result = None;
+
         for event in self.network_resource.events.iter().clone() {
             match event.token() {
                 NetworkResource::TOKEN => {
-                    if event.is_readable() {}
+                    if event.is_readable() {
+                        receiver_result = Some(self.receiver(&mut self.buffer.clone()));
+                    }
 
                     if event.is_writable() {
-                        // self.sender();
+                        sender_result = Some(self.sender());
                     }
                 }
                 _ => unreachable!(),
+            }
+        }
+
+        if let Some((sequence, header, payload, footer, address, received)) =
+            receiver_result.flatten()
+        {
+            type ReceivedPacket = (Sequence, Header, Payload, Footer, Address, Received);
+            let received_packet = (sequence, header, payload, footer, address, received);
+            let packet_id = self.world.spawn(received_packet);
+            debug!("receiver -> spawning packet received {:#?}", packet_id);
+
+            let event_id = self.world.spawn((ReceivedNewPacketEvent { packet_id },));
+            debug!(
+                "receiver -> spawning ReceivedNewPacketEvent {:#?}",
+                event_id
+            );
+        }
+
+        if let Some((mut sent_packets, mut handled_events)) = sender_result {
+            while let Some(queued_event_id) = handled_events.pop() {
+                let _ = self.world.despawn(queued_event_id).unwrap();
+                debug!(
+                    "{} {}:{} -> despawning handled QueuedPacketEvent {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    queued_event_id
+                );
+            }
+
+            while let Some((sequence, header, packet_id, destination)) = sent_packets.pop() {
+                let status_code = header.status_code;
+                self.world
+                    .insert(
+                        packet_id,
+                        (
+                            sequence,
+                            header,
+                            Sent {
+                                time: self.timer.elapsed(),
+                            },
+                        ),
+                    )
+                    .unwrap();
+                debug!(
+                    "{} {}:{} -> insert sequence header sent into packet_id {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    packet_id
+                );
+
+                // TODO(alex) 2021-05-02: Check if this packet has sequence > previous latest sent.
+                self.world
+                    .insert(destination.host_id, (LatestSent { packet_id },))
+                    .unwrap();
+                debug!(
+                    "{} {}:{} -> insert `LatestSent` into host_id {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    destination.host_id
+                );
+
+                let event_id = self.world.spawn((SentPacketEvent {
+                    packet_id,
+                    status_code,
+                },));
+                debug!(
+                    "{} {}:{} -> spawn SentPacketEvent {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    event_id
+                );
             }
         }
 
@@ -312,12 +393,10 @@ impl NetManager<Client> {
         }
 
         // self.check_readiness();
-        self.receiver();
         self.on_received_new_packet();
         self.on_received_connection_accepted();
         self.on_received_connection_denied();
         // self.on_queued_packet();
-        self.sender();
         self.on_sent_packet();
         self.on_sent_connection_request();
         self.heartbeat();

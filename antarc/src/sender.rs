@@ -154,162 +154,76 @@ impl<T> NetManager<T> {
     // UDP socket to send unreliable packets fast.
 
     pub(crate) fn sender(&self) -> (Vec<(Sequence, Header, Entity, Destination)>, Vec<Entity>) {
-        let (world, timer, resource) = (&self.world, &self.timer, &self.network_resource);
+        let (world, timer, socket) = (&self.world, &self.timer, &self.network_resource.socket);
 
         let mut sent_packets = Vec::with_capacity(8);
         let mut handled_events = Vec::with_capacity(8);
 
-        for event in resource.events.iter() {
-            match event.token() {
-                NetworkResource::TOKEN => {
-                    debug!(
-                        "{} {}:{} -> network event {:#?}",
-                        file!(),
-                        line!(),
-                        column!(),
-                        event
-                    );
-                    let socket = &resource.socket;
-
-                    // if event.is_writable() != true {
-                    //     continue;
-                    // }
-
-                    if let Some((queued_event_id, event)) =
-                        world.query::<&QueuedPacketEvent>().iter().next()
-                    {
-                        debug!(
-                            "{} {}:{} -> handling QueuedPacketEvent {:#?}",
-                            file!(),
-                            line!(),
-                            column!(),
-                            queued_event_id
-                        );
-
-                        let mut packet_query = world
-                            .query_one::<(&Payload, &Address, &Destination)>(event.packet_id)
-                            .unwrap();
-                        let (payload, address, destination) = packet_query.get().unwrap();
-
-                        let mut connection_query =
-                            world.query_one::<&ConnectionId>(event.packet_id).unwrap();
-                        let connection_id = connection_query.get().cloned();
-
-                        let sequence = get_sequence(world, destination);
-                        let ack = get_ack(world, destination);
-
-                        let header = Header {
-                            ack,
-                            past_acks: 0,
-                            status_code: event.status_code,
-                            payload_length: payload.len() as u16,
-                        };
-                        debug!("sender -> header {:#?}", header);
-
-                        let (raw_packet, footer) =
-                            Packet::encode(sequence, &header, payload, connection_id).unwrap();
-
-                        match socket.send_to(&raw_packet, address.0) {
-                            Ok(num_sent) => {
-                                debug!(
-                                    "{} {}:{} -> sent a packet with {:#?} bytes to {:#?}",
-                                    file!(),
-                                    line!(),
-                                    column!(),
-                                    num_sent,
-                                    address
-                                );
-                                debug_assert!(num_sent > 0);
-
-                                sent_packets.push((
-                                    sequence,
-                                    header,
-                                    event.packet_id,
-                                    destination.clone(),
-                                ));
-                                handled_events.push(queued_event_id);
-                            }
-                            Err(would_block) if would_block.kind() == io::ErrorKind::WouldBlock => {
-                                warn!(
-                                    "{} {}:{} -> sender would block {:#?}",
-                                    file!(),
-                                    line!(),
-                                    column!(),
-                                    would_block
-                                );
-                            }
-                            Err(fail) => {
-                                error!(
-                                    "{} {}:{} -> Failed to receive on socket with {:#?}.",
-                                    file!(),
-                                    line!(),
-                                    column!(),
-                                    fail
-                                );
-                            }
-                        }
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        while let Some(queued_event_id) = handled_events.pop() {
-            let _ = world.despawn(queued_event_id).unwrap();
+        if let Some((queued_event_id, event)) = world.query::<&QueuedPacketEvent>().iter().next() {
             debug!(
-                "{} {}:{} -> despawning handled QueuedPacketEvent {:#?}",
+                "{} {}:{} -> handling QueuedPacketEvent {:#?}",
                 file!(),
                 line!(),
                 column!(),
                 queued_event_id
             );
-        }
 
-        while let Some((sequence, header, packet_id, destination)) = sent_packets.pop() {
-            let status_code = header.status_code;
-            world
-                .insert(
-                    packet_id,
-                    (
-                        sequence,
-                        header,
-                        Sent {
-                            time: self.timer.elapsed(),
-                        },
-                    ),
-                )
+            let mut packet_query = world
+                .query_one::<(&Payload, &Address, &Destination)>(event.packet_id)
                 .unwrap();
-            debug!(
-                "{} {}:{} -> insert sequence header sent into packet_id {:#?}",
-                file!(),
-                line!(),
-                column!(),
-                packet_id
-            );
+            let (payload, address, destination) = packet_query.get().unwrap();
 
-            // TODO(alex) 2021-05-02: Check if this packet has sequence > previous latest sent.
-            world
-                .insert(destination.host_id, (LatestSent { packet_id },))
-                .unwrap();
-            debug!(
-                "{} {}:{} -> insert `LatestSent` into host_id {:#?}",
-                file!(),
-                line!(),
-                column!(),
-                destination.host_id
-            );
+            let mut connection_query = world.query_one::<&ConnectionId>(event.packet_id).unwrap();
+            let connection_id = connection_query.get().cloned();
 
-            let event_id = world.spawn((SentPacketEvent {
-                packet_id,
-                status_code,
-            },));
-            debug!(
-                "{} {}:{} -> spawn SentPacketEvent {:#?}",
-                file!(),
-                line!(),
-                column!(),
-                event_id
-            );
+            let sequence = get_sequence(world, destination);
+            let ack = get_ack(world, destination);
+
+            let header = Header {
+                ack,
+                past_acks: 0,
+                status_code: event.status_code,
+                payload_length: payload.len() as u16,
+            };
+            debug!("sender -> header {:#?}", header);
+
+            let (raw_packet, footer) =
+                Packet::encode(sequence, &header, payload, connection_id).unwrap();
+
+            match socket.send_to(&raw_packet, address.0) {
+                Ok(num_sent) => {
+                    debug!(
+                        "{} {}:{} -> sent a packet with {:#?} bytes to {:#?}",
+                        file!(),
+                        line!(),
+                        column!(),
+                        num_sent,
+                        address
+                    );
+                    debug_assert!(num_sent > 0);
+
+                    sent_packets.push((sequence, header, event.packet_id, destination.clone()));
+                    handled_events.push(queued_event_id);
+                }
+                Err(would_block) if would_block.kind() == io::ErrorKind::WouldBlock => {
+                    warn!(
+                        "{} {}:{} -> sender would block {:#?}",
+                        file!(),
+                        line!(),
+                        column!(),
+                        would_block
+                    );
+                }
+                Err(fail) => {
+                    error!(
+                        "{} {}:{} -> Failed to receive on socket with {:#?}.",
+                        file!(),
+                        line!(),
+                        column!(),
+                        fail
+                    );
+                }
+            }
         }
 
         (sent_packets, handled_events)

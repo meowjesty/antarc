@@ -19,7 +19,7 @@ use crate::{
         Address, AwaitingConnectionAck, Disconnected, LatestReceived, LatestSent,
         RequestingConnection, StateEnteredTime,
     },
-    net::NetManager,
+    net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionAccepted, ConnectionId, Footer, Payload, Queued, Sent, Sequence,
         CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
@@ -55,13 +55,88 @@ impl NetManager<Server> {
                 Some(Duration::from_millis(5)),
             )
             .unwrap();
-        // self.check_readiness();
-        self.receiver();
+
+        let mut sender_result = None;
+        let mut receiver_result = None;
+
+        for event in self.network_resource.events.iter().clone() {
+            match event.token() {
+                NetworkResource::TOKEN => {
+                    if event.is_readable() {
+                        receiver_result = Some(self.receiver(&mut self.buffer.clone()));
+                    }
+
+                    if event.is_writable() {
+                        sender_result = Some(self.sender());
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        if let Some((mut sent_packets, mut handled_events)) = sender_result {
+            while let Some(queued_event_id) = handled_events.pop() {
+                let _ = self.world.despawn(queued_event_id).unwrap();
+                debug!(
+                    "{} {}:{} -> despawning handled QueuedPacketEvent {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    queued_event_id
+                );
+            }
+
+            while let Some((sequence, header, packet_id, destination)) = sent_packets.pop() {
+                let status_code = header.status_code;
+                self.world
+                    .insert(
+                        packet_id,
+                        (
+                            sequence,
+                            header,
+                            Sent {
+                                time: self.timer.elapsed(),
+                            },
+                        ),
+                    )
+                    .unwrap();
+                debug!(
+                    "{} {}:{} -> insert sequence header sent into packet_id {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    packet_id
+                );
+
+                // TODO(alex) 2021-05-02: Check if this packet has sequence > previous latest sent.
+                self.world
+                    .insert(destination.host_id, (LatestSent { packet_id },))
+                    .unwrap();
+                debug!(
+                    "{} {}:{} -> insert `LatestSent` into host_id {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    destination.host_id
+                );
+
+                let event_id = self.world.spawn((SentPacketEvent {
+                    packet_id,
+                    status_code,
+                },));
+                debug!(
+                    "{} {}:{} -> spawn SentPacketEvent {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    event_id
+                );
+            }
+        }
+
         self.on_received_new_packet();
         self.on_received_connection_request();
         self.on_sent_connection_accepted();
-        // self.on_queued_packet();
-        self.sender();
         self.on_sent_packet();
     }
 
@@ -396,12 +471,13 @@ impl NetManager<Server> {
                 connection_id,
             );
             debug!(
-                "{} {}:{} -> spawning queued packet {:#?}",
+                " {} {}:{} -> spawning queued packet {:#?}",
                 file!(),
                 line!(),
                 column!(),
                 queued_packet
             );
+
             let queued_packet_id = world.spawn(queued_packet);
 
             let queued_packet_event = QueuedPacketEvent {
