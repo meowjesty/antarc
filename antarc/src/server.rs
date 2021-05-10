@@ -5,7 +5,7 @@ use std::{
 };
 
 use hecs::World;
-use log::debug;
+use log::{debug, error};
 
 use crate::{
     events::{
@@ -48,7 +48,14 @@ impl NetManager<Server> {
     }
 
     pub fn tick(&mut self) -> () {
-        self.check_readiness();
+        self.network_resource
+            .poll
+            .poll(
+                &mut self.network_resource.events,
+                Some(Duration::from_millis(5)),
+            )
+            .unwrap();
+        // self.check_readiness();
         self.receiver();
         self.on_received_new_packet();
         self.on_received_connection_request();
@@ -280,7 +287,10 @@ impl NetManager<Server> {
 
         for (event_id, event) in world.query::<&ReceivedConnectionRequestEvent>().iter() {
             debug!(
-                "Server::on_received_connection_request handle ReceivedConnectionRequest {:#?}",
+                "{} {}:{} -> handle ReceivedConnectionRequestEvent {:#?}",
+                file!(),
+                line!(),
+                column!(),
                 event_id
             );
 
@@ -290,8 +300,13 @@ impl NetManager<Server> {
                 .with::<Header>();
             let (address,) = packet_query.get().unwrap();
             debug!(
-                "Server::on_received_connection_request packet {:#?} info {:#?} {:#?}",
-                event.packet_id, address, event.source_id
+                "{} {}:{} -> packet id {:#?} address {:#?} source {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                event.packet_id,
+                address,
+                event.source_id
             );
 
             // NOTE(alex): New hosts are created by the `on_received_new_packet` event handler, so
@@ -303,12 +318,22 @@ impl NetManager<Server> {
                 .get()
             {
                 connecting_hosts.push((event.packet_id, event.source_id, address.clone()));
-                debug!("Server::on_received_connection_request host is disconnected");
+                debug!(
+                    "{} {}:{} -> host is disconnected",
+                    file!(),
+                    line!(),
+                    column!()
+                );
             } else {
                 // NOTE(alex): Host is in an incompatible state to receive this kind of
                 // packet.
                 invalid_packets.push(event.packet_id);
-                debug!("Server::on_received_connection_request host is in invalid state");
+                error!(
+                    "{} {}:{} -> host is in invalid state",
+                    file!(),
+                    line!(),
+                    column!()
+                );
             }
 
             handled_events.push(event_id);
@@ -317,7 +342,10 @@ impl NetManager<Server> {
         while let Some(event_id) = handled_events.pop() {
             let _ = world.despawn(event_id).unwrap();
             debug!(
-                "Server::on_received_connection_request despawning ReceivedConnectionRequest {:#?}",
+                "{} {}:{} -> despawning ReceivedConnectionRequestEvent {:#?}",
+                file!(),
+                line!(),
+                column!(),
                 event_id
             );
         }
@@ -325,48 +353,69 @@ impl NetManager<Server> {
         while let Some(packet_id) = invalid_packets.pop() {
             let _ = world.despawn(packet_id).unwrap();
             debug!(
-                "Server::on_received_connection_request despawning invalid packet {:#?}",
+                "{} {}:{} -> despawning invalid packet {:#?}",
+                file!(),
+                line!(),
+                column!(),
                 packet_id
             );
         }
 
         while let Some((packet_id, host_id, address)) = connecting_hosts.pop() {
             let (disconnected,) = world.remove::<(Disconnected,)>(host_id).unwrap();
+            let requesting_connection = RequestingConnection { attempts: 0 };
+            let state_entered_time = StateEnteredTime(self.timer.elapsed());
+            debug!(
+                "{} {}:{} -> inserting {:#?} {:#?} into host {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                requesting_connection,
+                state_entered_time,
+                host_id
+            );
             let _ = world
-                .insert(
-                    host_id,
-                    (
-                        RequestingConnection { attempts: 0 },
-                        StateEnteredTime(self.timer.elapsed()),
-                    ),
-                )
+                .insert(host_id, (requesting_connection, state_entered_time))
                 .unwrap();
 
             let payload = Payload::default();
             let status_code = CONNECTION_ACCEPTED;
 
-            let queued_packet_id = world.spawn((
+            let queued = Queued {
+                time: self.timer.elapsed(),
+            };
+            let connection_accepted = ConnectionAccepted;
+            let destination = Destination { host_id };
+            let connection_id = ConnectionId::new(1).unwrap();
+            let queued_packet = (
                 payload,
                 address.clone(),
-                Queued {
-                    time: self.timer.elapsed(),
-                },
-                ConnectionAccepted,
-                Destination { host_id },
-                // TODO(alex) 2021-05-08: Figure out a valid value for the `connection_id` field.
-                ConnectionId::new(1).unwrap(),
-            ));
+                queued,
+                connection_accepted,
+                destination,
+                connection_id,
+            );
+            debug!(
+                "{} {}:{} -> spawning queued packet {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                queued_packet
+            );
+            let queued_packet_id = world.spawn(queued_packet);
 
-            let prepare_packet_to_send = QueuedPacketEvent {
+            let queued_packet_event = QueuedPacketEvent {
                 status_code: CONNECTION_ACCEPTED,
                 packet_id: queued_packet_id,
             };
-            let event_id = world.spawn((prepare_packet_to_send,));
-
             debug!(
-                "Server::on_received_connection_request Disconnected -> RequestingConnection {:#?}",
-                host_id
+                "{} {}:{} -> spawning QueuedPacketEvent {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                queued_packet_event
             );
+            let event_id = world.spawn((queued_packet_event,));
         }
     }
 

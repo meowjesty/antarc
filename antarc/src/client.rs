@@ -1,7 +1,7 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr, time::Duration};
 
 use hecs::Entity;
-use log::debug;
+use log::{debug, error, warn};
 
 use crate::{
     events::{
@@ -14,7 +14,7 @@ use crate::{
         Address, AwaitingConnectionAck, Connected, Disconnected, LatestReceived, LatestSent,
         RequestingConnection, StateEnteredTime,
     },
-    net::NetManager,
+    net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionAccepted, ConnectionId, ConnectionRequest, DataTransfer, Footer,
         Heartbeat, Internal, Packet, Payload, Queued, Received, Retrieved, Sent, Sequence,
@@ -22,7 +22,7 @@ use crate::{
     },
     readiness::{Readable, Writable},
     receiver::Source,
-    sender::{Destination, RawPacket},
+    sender::{get_ack, get_sequence, Destination, RawPacket},
 };
 
 /// TODO(alex) 2021-05-01: Consider adding a `DebugName` component for every entity, such as when
@@ -172,7 +172,12 @@ impl NetManager<Client> {
         for (host_id, (latest_sent, connected)) in
             self.world.query::<(&LatestSent, &Connected)>().iter()
         {
-            debug!("{} {}:{} -> handle heartbeats", file!(), line!(), column!());
+            debug!(
+                "{} {}:{} -> check if should send heartbeat",
+                file!(),
+                line!(),
+                column!()
+            );
             if self
                 .world
                 .query::<&QueuedPacketEvent>()
@@ -180,17 +185,30 @@ impl NetManager<Client> {
                 .next()
                 .is_none()
             {
-                debug!("{} {}:{} -> no packets queued", file!(), line!(), column!());
+                debug!(
+                    "{} {}:{} -> check if user queued a packet (enter here on None)",
+                    file!(),
+                    line!(),
+                    column!()
+                );
 
                 let mut sent_query = self
                     .world
                     .query_one::<(&Sent, &Address)>(latest_sent.packet_id)
                     .unwrap();
                 let (sent, address) = sent_query.get().unwrap();
+                debug!(
+                    "{} {}:{} -> latest sent packet was {:#?} {:#?}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    sent,
+                    address
+                );
 
                 if sent.time + Duration::from_millis(150) < self.timer.elapsed() {
                     debug!(
-                        "{} {}:{} -> last sent {:#?} versus now {:#?}",
+                        "{} {}:{} -> last sent {:#?} versus now {:#?}, too much time has passed",
                         file!(),
                         line!(),
                         column!(),
@@ -235,11 +253,11 @@ impl NetManager<Client> {
             );
 
             let status_code = HEARTBEAT;
-            let queued_packet_event = (QueuedPacketEvent {
+            let queued_packet_event = QueuedPacketEvent {
                 packet_id,
                 status_code,
-            },);
-            let event_id = self.world.spawn(queued_packet_event);
+            };
+            let event_id = self.world.spawn((queued_packet_event,));
             debug!(
                 "{} {}:{} -> spawning `QueuedPacketEvent` {:#?}",
                 file!(),
@@ -263,27 +281,37 @@ impl NetManager<Client> {
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> () {
-        if let Some((event_id, readable)) = self.world.query::<&Readable>().iter().next() {
+        self.network_resource
+            .poll
+            .poll(
+                &mut self.network_resource.events,
+                Some(Duration::from_millis(5)),
+            )
+            .unwrap();
+        for event in self.network_resource.events.iter().clone() {
+            match event.token() {
+                NetworkResource::TOKEN => {
+                    if event.is_readable() {}
+
+                    if event.is_writable() {
+                        // self.sender();
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        for (queued_id, event) in self.world.query::<&QueuedPacketEvent>().iter() {
             debug!(
-                "{} {}:{} -> socket is readable {:#?}",
+                "{} {}:{} -> there is a queued packet {:#?}",
                 file!(),
                 line!(),
                 column!(),
-                event_id
+                event
             );
         }
 
-        if let Some((event_id, writable)) = self.world.query::<&Writable>().iter().next() {
-            debug!(
-                "{} {}:{} -> socket is writable {:#?}",
-                file!(),
-                line!(),
-                column!(),
-                event_id
-            );
-        }
-
-        self.check_readiness();
+        // self.check_readiness();
         self.receiver();
         self.on_received_new_packet();
         self.on_received_connection_accepted();

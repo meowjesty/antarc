@@ -16,12 +16,22 @@ impl<T> NetManager<T> {
         let mut readable = None;
         let mut writable = None;
 
-        if let Some((_, resource)) = world.query::<&mut NetworkResource>().iter().next() {
+        for (resource_id, resource) in world.query_mut::<&mut NetworkResource>() {
+            debug!(
+                "{} {}:{} -> checking resource readiness {:#?}",
+                file!(),
+                line!(),
+                column!(),
+                resource
+            );
+
             let _ = resource
                 .poll
                 .poll(&mut resource.events, Some(Duration::from_millis(100)))
                 .unwrap();
 
+            // TODO(alex) 2021-05-09: Figure out a way to do this async, I don't like the blocking
+            // and it's not working properly anyway.
             for event in resource.events.iter() {
                 match event.token() {
                     NetworkResource::TOKEN => {
@@ -33,7 +43,8 @@ impl<T> NetManager<T> {
                                 line!(),
                                 column!()
                             );
-                        } else if event.is_writable() {
+                        }
+                        if event.is_writable() {
                             writable = Some(Writable);
                             debug!(
                                 "{} {}:{} -> socket is writable",
@@ -41,20 +52,17 @@ impl<T> NetManager<T> {
                                 line!(),
                                 column!()
                             );
-                        } else {
-                            panic!("Unhandled network event readiness {:#?}.", event);
                         }
                     }
-                    _ => {
-                        panic!("Invalid token {:#?}.", event);
-                    }
+                    _ => unreachable!(),
                 }
             }
         }
 
         if let Some(readable) = readable {
             let readable_id = world.spawn((readable,));
-        } else if let Some(writable) = writable {
+        }
+        if let Some(writable) = writable {
             let writable_id = world.spawn((writable,));
         }
     }

@@ -7,6 +7,8 @@
 // - every packet sent to the bound port, is just added to the socket buffer, and you tell the OS
 // what should happen in case the memory can't hold up.
 
+use std::{io, time::Duration};
+
 /// TODO(alex) 2021-04-15: Benchmarks show that spawning/despawning is faster than
 /// insert/remove, this is a positive for the ecs event system. We'll be taking a small
 /// performance hit that would be avoidable with a proper synchronization of systems (having
@@ -18,7 +20,7 @@
 
 /// TODO(alex) 2021-04-20: Packets may be sent twice (or more) and we're not handling this.
 use hecs::Entity;
-use log::debug;
+use log::{debug, error, warn};
 
 use crate::{
     events::{AckLocalPacketEvent, ReceivedNewPacketEvent},
@@ -52,51 +54,79 @@ impl<T> NetManager<T> {
     ///
     /// - Raises the `ReceivedNewPacket` event.
     pub(crate) fn receiver(&mut self) {
-        let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
+        let (buffer, world, timer, resource) = (
+            &mut self.buffer,
+            &mut self.world,
+            &self.timer,
+            &mut self.network_resource,
+        );
 
-        let mut handled_events = Vec::with_capacity(8);
         let mut received_new_packet = None;
 
-        if let Some((event_id, readable)) = world.query::<&Readable>().iter().next() {
-            debug!("receiver -> handle Readable {:#?}", event_id);
+        let socket = &mut resource.socket;
 
-            if let Some((resource_id, resource)) =
-                world.query::<&mut NetworkResource>().iter().next()
-            {
-                debug!("receiver -> get NetworkResource {:#?}", resource_id);
+        for event in resource.events.iter() {
+            match event.token() {
+                NetworkResource::TOKEN => {
+                    debug!(
+                        "{} {}:{} -> network event {:#?}",
+                        file!(),
+                        line!(),
+                        column!(),
+                        event
+                    );
+                    // if event.is_readable() != true {
+                    //     continue;
+                    // }
+                    match socket.recv_from(buffer) {
+                        Ok((num_recv, from_addr)) => {
+                            debug!(
+                                "{} {}:{} -> received a packet {:?} with {:#?} bytes",
+                                file!(),
+                                line!(),
+                                column!(),
+                                &buffer[0..18],
+                                num_recv
+                            );
 
-                let socket = &mut resource.socket;
+                            if num_recv > 0 {
+                                let remote_address = Address(from_addr);
 
-                match socket.recv_from(buffer) {
-                    Ok((num_recv, from_addr)) => {
-                        debug!(
-                            "receiver -> received a packet {:?} with {:#?} bytes",
-                            &buffer[0..18],
-                            num_recv
-                        );
+                                let (sequence, header, payload, footer) =
+                                    Packet::decode(&buffer[0..num_recv]).unwrap();
 
-                        if num_recv > 0 {
-                            let remote_address = Address(from_addr);
-
-                            let (sequence, header, payload, footer) =
-                                Packet::decode(&buffer[0..num_recv]).unwrap();
-
-                            let received = Received {
-                                time: timer.elapsed(),
-                            };
-                            let packet =
-                                (sequence, header, payload, footer, remote_address, received);
-                            received_new_packet = Some(packet);
-                        } else {
-                            eprintln!("Received 0 bytes from {:#?}.", from_addr);
-                            unreachable!();
+                                let received = Received {
+                                    time: timer.elapsed(),
+                                };
+                                let packet =
+                                    (sequence, header, payload, footer, remote_address, received);
+                                received_new_packet = Some(packet);
+                            } else {
+                                eprintln!("Received 0 bytes from {:#?}.", from_addr);
+                                unreachable!();
+                            }
+                        }
+                        Err(would_block) if would_block.kind() == io::ErrorKind::WouldBlock => {
+                            warn!(
+                                "{} {}:{} -> receiver would block {:#?}",
+                                file!(),
+                                line!(),
+                                column!(),
+                                would_block
+                            );
+                        }
+                        Err(fail) => {
+                            error!(
+                                "{} {}:{} -> Failed to receive on socket with {:#?}.",
+                                file!(),
+                                line!(),
+                                column!(),
+                                fail
+                            );
                         }
                     }
-                    Err(fail) => {
-                        eprintln!("Failed to receive on socket with {:#?}.", fail);
-                    }
                 }
-                handled_events.push(event_id);
+                _ => unreachable!(),
             }
         }
 
@@ -111,11 +141,6 @@ impl<T> NetManager<T> {
                 "receiver -> spawning ReceivedNewPacketEvent {:#?}",
                 event_id
             );
-        }
-
-        while let Some(event_id) = handled_events.pop() {
-            let _ = world.despawn(event_id).unwrap();
-            debug!("receiver -> despawning Readable {:#?}", event_id);
         }
     }
 

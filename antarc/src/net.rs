@@ -27,14 +27,15 @@ use crate::MTU_LENGTH;
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
 pub struct NetManager<ClientOrServer> {
-    pub(crate) network_id: Entity,
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) client_or_server: ClientOrServer,
     pub(crate) world: World,
+    pub(crate) network_resource: NetworkResource,
 }
 
+#[derive(Debug)]
 pub(crate) struct NetworkResource {
     pub(crate) socket: UdpSocket,
     pub(crate) poll: Poll,
@@ -47,7 +48,7 @@ impl NetworkResource {
     pub(crate) fn new(address: &SocketAddr) -> Self {
         let mut socket = UdpSocket::bind(*address).unwrap();
         let poll = Poll::new().unwrap();
-        let events = Events::with_capacity(128);
+        let events = Events::with_capacity(1024);
 
         poll.registry()
             .register(
@@ -72,14 +73,13 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let buffer = vec![0x0; MTU_LENGTH];
 
         let network_resource = NetworkResource::new(address);
-        let network_id = world.spawn((network_resource,));
 
         Self {
-            network_id,
             timer,
             buffer,
             client_or_server,
             world,
+            network_resource,
         }
     }
 }
