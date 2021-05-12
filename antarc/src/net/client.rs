@@ -1,10 +1,10 @@
-use std::{io, net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
 use hecs::Entity;
 use log::{debug, error, warn};
 
-use super::Event;
 use crate::{
+    event::Event,
     host::{Disconnected, Host},
     net::{NetManager, NetworkResource},
     packet::{
@@ -29,7 +29,7 @@ use crate::{
 /// server? This idea is not clear yet.
 #[derive(Debug)]
 pub struct Client {
-    server: Option<Host>,
+    server: Option<Arc<Host>>,
 }
 
 /// TODO(alex) 2021-04-24: `LatestReceived` makes sense to be part of the `Host` entity, this
@@ -69,34 +69,31 @@ impl NetManager<Client> {
             header,
             payload,
             time: self.timer.elapsed(),
+            destination: *server_addr,
         };
 
         // TODO(alex): How do I insert the queued packet here? Do I even want to insert it here?
         // Or just raise the queued packet event, and handle it somewhere else???
-        let mut server = Host::disconnected();
+        let mut host = Host::disconnected();
+        host.enqueue(connection_request);
+
+        let server = Arc::new(host);
+        self.events
+            .push(Event::QueuedEvent(Arc::downgrade(&server)));
     }
 
-    fn listener(&mut self) {
-        if let Some((readable, _)) = self
-            .events
-            .iter()
-            .enumerate()
-            .find(|(index, event)| **event == Event::ReadableEvent)
-        {
-            self.events.remove(readable);
-
-            match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
-                Ok((num_received, from_address)) => {
-                    debug_assert!(num_received > 0);
-                    self.events.push(Event::ReceivedEvent((
-                        self.buffer[0..num_received].to_vec(),
-                        from_address,
-                    )));
-                }
-                Err(fail) => {
-                    error!("Failed receiving with {fail}.");
-                    todo!()
-                }
+    fn receiver(&mut self) {
+        match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
+            Ok((num_received, from_address)) => {
+                debug_assert!(num_received > 0);
+                self.events.push(Event::ReceivedEvent((
+                    self.buffer[0..num_received].to_vec(),
+                    from_address,
+                )));
+            }
+            Err(fail) => {
+                error!("Failed receiving with {fail}.");
+                todo!()
             }
         }
     }
@@ -157,7 +154,7 @@ impl NetManager<Client> {
         let mut writable = false;
         for event in self.events.drain(..) {
             match event {
-                Event::ReadableEvent => self.listener(),
+                Event::ReadableEvent => self.receiver(),
                 Event::WritableEvent => writable = true,
                 Event::QueuedEvent(queued) => {
                     // TODO(alex) 2021-05-12: Send this packet, we could have a type indicating what

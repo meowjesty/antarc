@@ -7,6 +7,7 @@
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(duration_consts_2)]
+#![feature(new_uninit)]
 
 use core::mem::size_of;
 use std::{
@@ -17,7 +18,7 @@ use std::{
 use packet::header::Header;
 
 // pub mod client;
-pub(crate) mod events;
+pub(crate) mod event;
 pub mod host;
 pub mod net;
 pub mod packet;

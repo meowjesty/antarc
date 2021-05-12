@@ -1,16 +1,27 @@
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Weak, time::Duration};
 
 use hecs::Entity;
 
 use crate::{
-    host::Address,
-    packet::{ConnectionId, Payload, Queued, StatusCode},
+    host::{Address, Host},
+    packet::{ConnectionId, Payload, Queued, Sent, StatusCode},
 };
 
-#[derive(Debug, PartialEq)]
-pub(crate) struct QueuedPacketEvent<'a> {
-    pub(crate) packet: &'a Queued,
+#[derive(Debug)]
+pub(crate) enum Event {
+    ReadableEvent,
+    WritableEvent,
+    QueuedEvent(Weak<Host>),
+    SentEvent(Weak<Host>),
+    ReceivedEvent((Vec<u8>, SocketAddr)),
 }
+
+pub(crate) type EventList = Vec<Event>;
+
+// #[derive(Debug, PartialEq)]
+// pub(crate) struct QueuedPacketEvent {
+//     pub(crate) packet: Weak<Queued>,
+// }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) struct SentPacketEvent {

@@ -102,20 +102,21 @@ pub(crate) struct HostInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Host {
-    Disconnected {
-        info: HostInfo,
-        state: Disconnected,
-    },
-    RequestingConnection {
-        info: HostInfo,
-        state: RequestingConnection,
-    },
+pub(crate) enum HostState {
+    Disconnected,
+    RequestingConnection,
+    Connected,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Host {
+    info: HostInfo,
+    state: HostState,
 }
 
 impl Host {
     pub(crate) fn disconnected() -> Self {
-        let state = Disconnected;
+        let state = HostState::Disconnected;
         let info = HostInfo {
             queued_packets: Vec::with_capacity(32),
             sent_packets: Vec::with_capacity(32),
@@ -125,13 +126,17 @@ impl Host {
             rtt_tracker: Duration::default(),
         };
 
-        Self::Disconnected { info, state }
+        Self { info, state }
+    }
+
+    pub(crate) fn enqueue(&mut self, packet: Queued) {
+        self.info.queued_packets.push(packet);
     }
 }
 
 impl Default for Host {
     fn default() -> Self {
-        let state = Disconnected;
+        let state = HostState::Disconnected;
         let info = HostInfo {
             queued_packets: Vec::with_capacity(32),
             sent_packets: Vec::with_capacity(32),
@@ -141,6 +146,6 @@ impl Default for Host {
             rtt_tracker: Duration::default(),
         };
 
-        Self::Disconnected { info, state }
+        Self { info, state }
     }
 }

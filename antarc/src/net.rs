@@ -8,6 +8,7 @@ use mio::{
 };
 
 use crate::{
+    event::EventList,
     packet::{Queued, Received, Sent},
     MTU_LENGTH,
 };
@@ -35,16 +36,7 @@ pub mod server;
 /// disconnect->reconnect peer.
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Event {
-    ReadableEvent,
-    WritableEvent,
-    QueuedEvent(Queued),
-    SentEvent(Sent),
-    ReceivedEvent((Vec<u8>, SocketAddr)),
-}
 
-type EventList = Vec<Event>;
 pub struct NetManager<ClientOrServer> {
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
