@@ -2,6 +2,7 @@
 #![feature(const_panic)]
 #![feature(write_all_vectored)]
 #![feature(bool_to_option)]
+#![feature(format_args_capture)]
 // https://github.com/rust-lang/rust/issues/66753#issuecomment-644285006
 // #![feature(const_precise_live_drops)]
 #![feature(const_fn_floating_point_arithmetic)]
@@ -15,15 +16,15 @@ use std::{
 
 use packet::header::Header;
 
-pub mod client;
+// pub mod client;
 pub(crate) mod events;
 pub mod host;
 pub mod net;
 pub mod packet;
-mod readiness;
-pub mod receiver;
-pub mod sender;
-pub mod server;
+// mod readiness;
+// pub mod receiver;
+// pub mod sender;
+// pub mod server;
 
 #[macro_export]
 macro_rules! read_buffer_inc {

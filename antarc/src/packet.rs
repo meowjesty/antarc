@@ -1,8 +1,9 @@
 use core::mem::size_of;
 use std::{
     convert::TryInto,
+    net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crc32fast::Hasher;
@@ -51,6 +52,10 @@ pub type Ack = u32;
 pub(crate) struct Sequence(NonZeroU32);
 
 impl Sequence {
+    pub(crate) const fn one() -> Self {
+        unsafe { Self(NonZeroU32::new_unchecked(1)) }
+    }
+
     pub(crate) fn new(non_zero_value: u32) -> Option<Self> {
         NonZeroU32::new(non_zero_value).map(|non_zero| Sequence(non_zero))
     }
@@ -71,31 +76,50 @@ impl Default for Sequence {
 }
 
 // REGION(alex) 2021-03-23: Types of packet (event types).
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Queued {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
     pub(crate) time: Duration,
+    pub(crate) destination: SocketAddr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Received {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) footer: Footer,
     pub(crate) time: Duration,
+    pub(crate) source: SocketAddr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Sent {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) footer: Footer,
     pub(crate) time: Duration,
+    pub(crate) destination: SocketAddr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Acked {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) footer: Footer,
     pub(crate) time: Duration,
+    pub(crate) destination: SocketAddr,
 }
 
 /// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
 /// loaded them, so they're moved into this state.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Retrieved {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) footer: Footer,
     pub(crate) time: Duration,
+    pub(crate) source: SocketAddr,
 }
 
 /// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
@@ -105,13 +129,6 @@ pub(crate) struct Retrieved {
 #[derive(Debug)]
 pub(crate) struct Internal {
     pub(crate) time: Duration,
-}
-
-// REGION(alex) 2021-03-23: Types of packet (metadata).
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct HostPacket {
-    host_id: u32,
-    packet_id: u32,
 }
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
@@ -140,7 +157,7 @@ pub(crate) enum PacketType {
     Heartbeat(Heartbeat),
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, PartialOrd)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
 
 impl Payload {
@@ -149,7 +166,7 @@ impl Payload {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct Footer {
     pub(crate) connection_id: Option<ConnectionId>,
     pub(crate) crc32: NonZeroU32,
@@ -175,31 +192,37 @@ impl Footer {
 /// whatever struct metadata we want here. Each packet state will hold a different `state` data.
 #[derive(Debug)]
 // pub(crate) struct Packet;
-pub(crate) struct Packet {
+pub(crate) struct Packet<State> {
     /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
     /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
     /// packet (when encoded), but doesn't exist as an actual type here?
     pub(crate) header: Header,
     pub(crate) payload: Payload,
     pub(crate) footer: Footer,
+    pub(crate) state: State,
 }
 
-pub(crate) type Decoded = (Sequence, Header, Payload, Footer);
+impl<State> Packet<State> {
+    pub(crate) fn connection_request(state: State) -> Self {
+        let header = Header {
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            status_code: CONNECTION_REQUEST,
+            ..Default::default()
+        };
 
-impl Packet {
+        todo!()
+    }
+
     pub(crate) fn encode(
-        sequence: Sequence,
         header: &Header,
         payload: &Payload,
         connection_id: Option<ConnectionId>,
     ) -> Result<(Vec<u8>, Footer), String> {
-        let sequence_bytes = sequence.get().to_be_bytes().to_vec();
+        let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = header.ack.to_be_bytes().to_vec();
         let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
         let status_code_bytes = header.status_code.to_be_bytes().to_vec();
         let payload_length_bytes = header.payload_length.to_be_bytes().to_vec();
-        // TODO(alex) 2021-04-24: crc32 calculation is wrong when encoding, the debug assertion
-        // doesn't match.
 
         let mut hasher = Hasher::new();
         let mut bytes = vec![
@@ -231,15 +254,6 @@ impl Packet {
 
         let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
 
-        debug_assert!({
-            let (read_sequence, read_header, read_payload, read_footer) =
-                Packet::decode(&packet_bytes).unwrap();
-            sequence == read_sequence
-                && *header == read_header
-                && read_payload == *payload
-                && read_footer == footer
-        });
-
         Ok((packet_bytes, footer))
     }
 
@@ -248,7 +262,7 @@ impl Packet {
 
     /// NOTE(alex) 2021-04-26: This `buffer` should contain only the packet, be careful not to pass
     /// the whole receiver buffer into here.
-    pub(crate) fn decode(buffer: &[u8]) -> Result<Decoded, String> {
+    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<Received, String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -293,6 +307,7 @@ impl Packet {
 
             let sequence = Sequence(read_sequence.try_into().unwrap());
             let header = Header {
+                sequence,
                 ack: read_ack,
                 past_acks: read_past_acks,
                 status_code: read_status_code,
@@ -323,7 +338,14 @@ impl Packet {
                 crc32: crc32.try_into().unwrap(),
             };
 
-            Ok((sequence, header, payload, footer))
+            let received = Received {
+                header,
+                payload,
+                footer,
+                time: timer.elapsed(),
+            };
+
+            Ok(received)
         } else {
             Err(format!(
                 "Received {:#?} crc32, but calculated {:#?}.",

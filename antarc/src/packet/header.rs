@@ -49,11 +49,11 @@ pub(crate) struct Header {
     /// WARNING(alex): This is **NOT** sent, it's used only during `encoding/decoding` to check the
     /// `Packet` validity.
     // pub(crate) protocol_id: ProtocolId,
+    pub(crate) sequence: Sequence,
 
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
     pub(crate) ack: Ack,
     /// Represents the ack bitfields to send previous acked state in a compact manner.
-    /// TODO(alex): Use this.
     pub(crate) past_acks: u16,
     /// TODO(alex) 2021-04-02: This is a bit redundant, whatever is using `Header` should always
     /// know which kind it is, but the value itself still needs to be sent over the network, so
@@ -108,6 +108,7 @@ impl Header {
 impl Default for Header {
     fn default() -> Self {
         Self {
+            sequence: unsafe { Sequence::new_unchecked(1) },
             ack: 0,
             past_acks: 0b0,
             status_code: 0x0,

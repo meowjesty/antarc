@@ -4,13 +4,12 @@ use hecs::Entity;
 
 use crate::{
     host::Address,
-    packet::{ConnectionId, Payload, StatusCode},
+    packet::{ConnectionId, Payload, Queued, StatusCode},
 };
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct QueuedPacketEvent {
-    pub(crate) packet_id: Entity,
-    pub(crate) status_code: StatusCode,
+pub(crate) struct QueuedPacketEvent<'a> {
+    pub(crate) packet: &'a Queued,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]

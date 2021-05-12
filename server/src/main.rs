@@ -16,18 +16,9 @@ fn server_main() {
     // let mut server: NetManager<Server> = NetManager::<Server>::new_server(&server_addr);
     // let world_state = vec![0x0; 32];
 
-    let mut once_in_ten = 0;
     loop {
-        if once_in_ten % 9 == 0 {
-            debug!("\n SERVER TICK START \n");
-        }
-
         server.tick();
 
-        if once_in_ten % 9 == 0 {
-            debug!("\n SERVER TICK END \n");
-        }
-        once_in_ten += 1;
         std::thread::sleep(Duration::from_millis(150));
         // TODO(alex) 2021-01-27: This keeps the server running by:
         // 1. sending hearbeat packets to clients;

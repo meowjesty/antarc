@@ -23,18 +23,8 @@ fn client_main() {
     // let mut net_client = client_connecting.connected();
     // let world_state = vec![0x0; 32];
 
-    let mut once_in_ten = 0;
     loop {
-        if once_in_ten % 9 == 0 {
-            debug!("\n CLIENT TICK START \n");
-        }
-
         client.tick();
-
-        if once_in_ten % 9 == 0 {
-            debug!("\n CLIENT TICK END \n");
-        }
-        once_in_ten += 1;
         std::thread::sleep(Duration::from_millis(150));
         // TODO(alex) 2021-01-27: This keeps the client running by:
         // 1. replying to hearbeat packets to the server;

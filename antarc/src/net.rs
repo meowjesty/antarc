@@ -2,9 +2,18 @@ use core::fmt;
 use std::{net::SocketAddr, time::Instant};
 
 use hecs::{Entity, World};
-use mio::{net::UdpSocket, Events, Interest, Poll, Token};
+use mio::{
+    net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
+    Events, Interest, Poll, Token,
+};
 
-use crate::MTU_LENGTH;
+use crate::{
+    packet::{Queued, Received, Sent},
+    MTU_LENGTH,
+};
+
+pub mod client;
+pub mod server;
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
 /// receive information about the other `Peer<Client>` that are connected to the same server. They
@@ -26,18 +35,29 @@ use crate::MTU_LENGTH;
 /// disconnect->reconnect peer.
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Event {
+    ReadableEvent,
+    WritableEvent,
+    QueuedEvent(Queued),
+    SentEvent(Sent),
+    ReceivedEvent((Vec<u8>, SocketAddr)),
+}
+
+type EventList = Vec<Event>;
 pub struct NetManager<ClientOrServer> {
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) client_or_server: ClientOrServer,
-    pub(crate) world: World,
     pub(crate) network_resource: NetworkResource,
+    pub(crate) events: EventList,
 }
 
 #[derive(Debug)]
 pub(crate) struct NetworkResource {
-    pub(crate) socket: UdpSocket,
+    pub(crate) tcp_stream: TcpStream,
+    pub(crate) udp_socket: UdpSocket,
     pub(crate) poll: Poll,
     pub(crate) events: Events,
 }
@@ -46,20 +66,32 @@ impl NetworkResource {
     pub(crate) const TOKEN: Token = Token(0xdad);
 
     pub(crate) fn new(address: &SocketAddr) -> Self {
-        let mut socket = UdpSocket::bind(*address).unwrap();
+        // TODO(alex) 2021-05-11: Change this to `TcpSocket`, but then we cannot register with the
+        // poller here (tcp), the `Client::connect` will do the actual `bind` call and register.
+        let mut tcp_stream = TcpStream::connect(*address).unwrap();
+        let mut udp_socket = UdpSocket::bind(*address).unwrap();
         let poll = Poll::new().unwrap();
         let events = Events::with_capacity(1024);
 
         poll.registry()
             .register(
-                &mut socket,
+                &mut tcp_stream,
+                Self::TOKEN,
+                Interest::READABLE | Interest::WRITABLE,
+            )
+            .unwrap();
+
+        poll.registry()
+            .register(
+                &mut udp_socket,
                 Self::TOKEN,
                 Interest::READABLE | Interest::WRITABLE,
             )
             .unwrap();
 
         Self {
-            socket,
+            tcp_stream,
+            udp_socket,
             poll,
             events,
         }
@@ -69,16 +101,16 @@ impl NetworkResource {
 impl<ClientOrServer> NetManager<ClientOrServer> {
     pub(crate) fn new(address: &SocketAddr, client_or_server: ClientOrServer) -> Self {
         let timer = Instant::now();
-        let mut world = World::new();
         let buffer = vec![0x0; MTU_LENGTH];
+        let events = Vec::with_capacity(1024);
 
         let network_resource = NetworkResource::new(address);
 
         Self {
             timer,
+            events,
             buffer,
             client_or_server,
-            world,
             network_resource,
         }
     }
@@ -89,8 +121,8 @@ impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
         f.debug_struct("NetManager")
             .field("timer", &self.timer)
             .field("buffer", &self.buffer.len())
+            .field("events", &self.events.len())
             .field("client_or_server", &self.client_or_server)
-            .field("world", &self.world.len())
             .finish()
     }
 }

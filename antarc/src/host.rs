@@ -2,7 +2,7 @@ use std::{net::SocketAddr, time::Duration};
 
 use hecs::Entity;
 
-use crate::packet::ConnectionId;
+use crate::packet::{Acked, ConnectionId, Queued, Received, Retrieved, Sent};
 
 pub(crate) mod requesting_connection;
 pub(crate) mod sending_connection_request;
@@ -25,25 +25,23 @@ pub(crate) mod sending_connection_request;
 ///
 /// This is why writing some client and server APIs right now makes more sense, even if it's just
 /// littered with `todo!()`, as I need to get a better understanding on what states belong where.
-#[derive(Debug, Clone)]
-pub(crate) struct Disconnected {
-    pub(crate) x: u32,
-}
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub(crate) struct Disconnected;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct StateEnteredTime(pub(crate) Duration);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct RequestingConnection {
     pub(crate) attempts: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct SendingConnectionRequest {
     pub(crate) attempts: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct AwaitingConnectionAck {
     pub(crate) attempts: u32,
 }
@@ -83,28 +81,66 @@ pub(crate) struct Address(pub(crate) SocketAddr);
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
 
+type PacketList<T> = Vec<T>;
+
 // TODO(alex): This struct has no business existing, as we only want hosts to be in one of the
 // possible states, and most of the info here is not valid anyway. The tracker fields don't work,
 // they could add inconsistencies between the latest packet received and the ack tracker, for
 // example, so caching these values is a waste and potentially dangerous. The value that makes sense
 // holding is the `connection_id`, as this won't change until the host is in a different state.
-// #[derive(Debug, Clone)]
-// pub(crate) struct Host {
-//     /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
-//     /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets
-//     /// were lost, even in the case of them never being sent.
-//     pub(crate) sequence_tracker: Sequence,
-//     pub(crate) ack_tracker: u32,
-//     pub(crate) past_acks_tracker: u16,
-// }
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HostInfo {
+    /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
+    /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets
+    /// were lost, even in the case of them never being sent.
+    queued_packets: PacketList<Queued>,
+    sent_packets: PacketList<Sent>,
+    acked_packets: PacketList<Acked>,
+    received_packets: PacketList<Received>,
+    retrieved_packets: PacketList<Retrieved>,
+    rtt_tracker: Duration,
+}
 
-// impl Default for Host {
-//     fn default() -> Self {
-//         Self {
-//             sequence_tracker: unsafe { Sequence::new_unchecked(1) },
-//             ack_tracker: 0,
-//             past_acks_tracker: 0,
-//             rtt: Duration::default(),
-//         }
-//     }
-// }
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Host {
+    Disconnected {
+        info: HostInfo,
+        state: Disconnected,
+    },
+    RequestingConnection {
+        info: HostInfo,
+        state: RequestingConnection,
+    },
+}
+
+impl Host {
+    pub(crate) fn disconnected() -> Self {
+        let state = Disconnected;
+        let info = HostInfo {
+            queued_packets: Vec::with_capacity(32),
+            sent_packets: Vec::with_capacity(32),
+            acked_packets: Vec::with_capacity(32),
+            received_packets: Vec::with_capacity(32),
+            retrieved_packets: Vec::with_capacity(32),
+            rtt_tracker: Duration::default(),
+        };
+
+        Self::Disconnected { info, state }
+    }
+}
+
+impl Default for Host {
+    fn default() -> Self {
+        let state = Disconnected;
+        let info = HostInfo {
+            queued_packets: Vec::with_capacity(32),
+            sent_packets: Vec::with_capacity(32),
+            acked_packets: Vec::with_capacity(32),
+            received_packets: Vec::with_capacity(32),
+            retrieved_packets: Vec::with_capacity(32),
+            rtt_tracker: Duration::default(),
+        };
+
+        Self::Disconnected { info, state }
+    }
+}

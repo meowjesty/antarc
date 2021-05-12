@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use antarc::{net::NetManager, server::Server};
+use antarc::net::{server::Server, NetManager};
 use hecs::{Entity, With, Without, World};
 use log::{debug, error, info, trace, warn};
 use mem::size_of;
