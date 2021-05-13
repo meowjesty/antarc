@@ -81,7 +81,6 @@ pub(crate) struct Queued {
     pub(crate) header: Header,
     pub(crate) payload: Payload,
     pub(crate) time: Duration,
-    pub(crate) destination: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -90,7 +89,6 @@ pub(crate) struct Received {
     pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
-    pub(crate) source: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -99,7 +97,6 @@ pub(crate) struct Sent {
     pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
-    pub(crate) destination: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -108,7 +105,6 @@ pub(crate) struct Acked {
     pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
-    pub(crate) destination: SocketAddr,
 }
 
 /// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
@@ -119,7 +115,6 @@ pub(crate) struct Retrieved {
     pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
-    pub(crate) source: SocketAddr,
 }
 
 /// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
@@ -202,6 +197,52 @@ pub(crate) struct Packet<State> {
     pub(crate) state: State,
 }
 
+impl Packet<Queued> {
+    pub(crate) fn encode(
+        header: &Header,
+        payload: &Payload,
+        connection_id: Option<ConnectionId>,
+    ) -> Result<(Vec<u8>, Footer), String> {
+        let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
+        let ack_bytes = header.ack.to_be_bytes().to_vec();
+        let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
+        let status_code_bytes = header.status_code.to_be_bytes().to_vec();
+        let payload_length_bytes = header.payload_length.to_be_bytes().to_vec();
+
+        let mut hasher = Hasher::new();
+        let mut bytes = vec![
+            PROTOCOL_ID_BYTES.to_vec(),
+            sequence_bytes,
+            ack_bytes,
+            past_acks_bytes,
+            status_code_bytes,
+            payload_length_bytes,
+            payload.0.clone(),
+        ]
+        .concat();
+
+        if let Some(connection_id) = connection_id {
+            let mut connection_id_bytes = connection_id.get().to_be_bytes().to_vec();
+            bytes.append(&mut connection_id_bytes);
+        }
+
+        hasher.update(&bytes);
+        let crc32 = hasher.finalize();
+        debug_assert!(crc32 != 0);
+
+        bytes.append(&mut crc32.to_be_bytes().to_vec());
+
+        let footer = Footer {
+            connection_id,
+            crc32: unsafe { NonZeroU32::new_unchecked(crc32) },
+        };
+
+        let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
+
+        Ok((packet_bytes, footer))
+    }
+}
+
 impl<State> Packet<State> {
     pub(crate) fn connection_request(state: State) -> Self {
         let header = Header {
@@ -213,7 +254,7 @@ impl<State> Packet<State> {
         todo!()
     }
 
-    pub(crate) fn encode(
+    pub(crate) fn _encode(
         header: &Header,
         payload: &Payload,
         connection_id: Option<ConnectionId>,

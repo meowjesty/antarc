@@ -69,7 +69,6 @@ impl NetManager<Client> {
             header,
             payload,
             time: self.timer.elapsed(),
-            destination: *server_addr,
         };
 
         // TODO(alex): How do I insert the queued packet here? Do I even want to insert it here?
@@ -83,33 +82,39 @@ impl NetManager<Client> {
     }
 
     fn receiver(&mut self) {
-        match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
-            Ok((num_received, from_address)) => {
-                debug_assert!(num_received > 0);
-                self.events.push(Event::ReceivedEvent((
-                    self.buffer[0..num_received].to_vec(),
-                    from_address,
-                )));
-            }
-            Err(fail) => {
-                error!("Failed receiving with {fail}.");
-                todo!()
+        loop {
+            match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
+                Ok((num_received, from_address)) => {
+                    debug_assert!(num_received > 0);
+                    self.events.push(Event::ReceivedEvent((
+                        self.buffer[0..num_received].to_vec(),
+                        from_address,
+                    )));
+                }
+                Err(fail) => {
+                    error!("Failed receiving with {fail}.");
+                    todo!();
+                    break;
+                }
             }
         }
     }
 
-    fn sender(&mut self, queued: &Queued) {
+    fn sender(&mut self, queued: &Queued, destination: &SocketAddr) {
         // TODO(alex) 2021-05-12: This requires going back to the drawing board...
         let (encoded, footer) = Packet::encode(&queued.header, &queued.payload, None).unwrap();
-        match self
-            .network_resource
-            .udp_socket
-            .send_to(&encoded, queued.destination)
-        {
-            Ok(num_sent) => {}
-            Err(fail) => {
-                error!("Failed sending with {fail}.");
-                todo!()
+        loop {
+            match self
+                .network_resource
+                .udp_socket
+                .send_to(&encoded, *destination)
+            {
+                Ok(num_sent) => {}
+                Err(fail) => {
+                    error!("Failed sending with {fail}.");
+                    todo!();
+                    break;
+                }
             }
         }
     }
@@ -154,6 +159,8 @@ impl NetManager<Client> {
         let mut writable = false;
         for event in self.events.drain(..) {
             match event {
+                // TODO(alex) 2021-05-12: This is the "take from vector and insert into it while
+                // looping" problem.
                 Event::ReadableEvent => self.receiver(),
                 Event::WritableEvent => writable = true,
                 Event::QueuedEvent(queued) => {
