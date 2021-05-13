@@ -1,8 +1,13 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    convert::TryInto,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use hecs::Entity;
+use log::error;
 
-use crate::packet::{Acked, ConnectionId, Queued, Received, Retrieved, Sent};
+use crate::packet::{Acked, ConnectionId, Packet, PacketKind, Queued, Received, Retrieved, Sent};
 
 pub(crate) mod requesting_connection;
 pub(crate) mod sending_connection_request;
@@ -90,15 +95,16 @@ type PacketList<T> = Vec<T>;
 // holding is the `connection_id`, as this won't change until the host is in a different state.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HostInfo {
+    pub(crate) address: SocketAddr,
     /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
     /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets
     /// were lost, even in the case of them never being sent.
-    queued_packets: PacketList<Queued>,
-    sent_packets: PacketList<Sent>,
-    acked_packets: PacketList<Acked>,
-    received_packets: PacketList<Received>,
-    retrieved_packets: PacketList<Retrieved>,
-    rtt_tracker: Duration,
+    pub(crate) queued_packets: PacketList<Queued>,
+    pub(crate) sent_packets: PacketList<Sent>,
+    pub(crate) acked_packets: PacketList<Acked>,
+    pub(crate) received_packets: PacketList<Received>,
+    pub(crate) retrieved_packets: PacketList<Retrieved>,
+    pub(crate) rtt_tracker: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,14 +116,15 @@ pub(crate) enum HostState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Host {
-    info: HostInfo,
-    state: HostState,
+    pub(crate) info: HostInfo,
+    pub(crate) state: HostState,
 }
 
 impl Host {
-    pub(crate) fn disconnected() -> Self {
+    pub(crate) fn disconnected(address: SocketAddr) -> Self {
         let state = HostState::Disconnected;
         let info = HostInfo {
+            address,
             queued_packets: Vec::with_capacity(32),
             sent_packets: Vec::with_capacity(32),
             acked_packets: Vec::with_capacity(32),
@@ -129,8 +136,61 @@ impl Host {
         Self { info, state }
     }
 
+    pub(crate) fn on_received(&mut self, bytes: &[u8], timer: &Instant) {
+        let (packet, kind) = Packet::decode(bytes, timer).unwrap();
+
+        for sent in self
+            .info
+            .sent_packets
+            .drain_filter(|sent| sent.header.sequence.get() == packet.header.ack)
+        {
+            let acked = sent.to_acked(timer.elapsed());
+            self.info.acked_packets.push(acked);
+        }
+
+        // TODO(alex) 2021-05-13: Do the same `drain_filter` for `past_acks`.
+        for sent in self.info.sent_packets.drain_filter(|sent| false) {
+            todo!()
+        }
+
+        match kind {
+            PacketKind::ConnectionRequest if self.state == HostState::Disconnected => {
+                self.state = HostState::RequestingConnection;
+            }
+            PacketKind::ConnectionDenied => {
+                self.state = HostState::Disconnected;
+            }
+            PacketKind::ConnectionAccepted => {
+                self.state = HostState::Connected;
+            }
+            PacketKind::DataTransfer => {
+                todo!()
+            }
+            PacketKind::Heartbeat => {
+                todo!()
+            }
+            invalid => {
+                error!(
+                    "Packet is {:?}, but host is in an invalid state {:?}.",
+                    invalid, self
+                );
+                todo!();
+            }
+        }
+
+        self.info.received_packets.push(packet);
+    }
+
+    pub(crate) fn on_sent(&mut self, packet: Sent) {
+        self.info.sent_packets.push(packet);
+    }
+
     pub(crate) fn enqueue(&mut self, packet: Queued) {
         self.info.queued_packets.push(packet);
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<Queued> {
+        self.info.queued_packets.pop()
     }
 }
 
@@ -138,6 +198,7 @@ impl Default for Host {
     fn default() -> Self {
         let state = HostState::Disconnected;
         let info = HostInfo {
+            address: "127.0.0.1:7777".parse().unwrap(),
             queued_packets: Vec::with_capacity(32),
             sent_packets: Vec::with_capacity(32),
             acked_packets: Vec::with_capacity(32),

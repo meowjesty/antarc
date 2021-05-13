@@ -29,7 +29,7 @@ use crate::{
 /// server? This idea is not clear yet.
 #[derive(Debug)]
 pub struct Client {
-    server: Option<Arc<Host>>,
+    server: Option<Host>,
 }
 
 /// TODO(alex) 2021-04-24: `LatestReceived` makes sense to be part of the `Host` entity, this
@@ -73,7 +73,7 @@ impl NetManager<Client> {
 
         // TODO(alex): How do I insert the queued packet here? Do I even want to insert it here?
         // Or just raise the queued packet event, and handle it somewhere else???
-        let mut host = Host::disconnected();
+        let mut host = Host::disconnected(*server_addr);
         host.enqueue(connection_request);
 
         let server = Arc::new(host);
@@ -156,19 +156,44 @@ impl NetManager<Client> {
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> () {
-        let mut writable = false;
-        for event in self.events.drain(..) {
-            match event {
-                // TODO(alex) 2021-05-12: This is the "take from vector and insert into it while
-                // looping" problem.
-                Event::ReadableEvent => self.receiver(),
-                Event::WritableEvent => writable = true,
-                Event::QueuedEvent(queued) => {
-                    // TODO(alex) 2021-05-12: Send this packet, we could have a type indicating what
-                    // kind of packet this is, so `encode` works with this type correctly!
+        self.network_resource
+            .poll
+            .poll(
+                &mut self.network_resource.events,
+                Some(Duration::from_millis(150)),
+            )
+            .unwrap();
+
+        for event in self.network_resource.events.iter() {
+            if event.token() == NetworkResource::TOKEN {
+                if event.is_readable() {
+                    loop {
+                        match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
+                            Ok((num_received, source)) => {
+                                if let Some(server) = self.client_or_server.server.as_mut() {
+                                    debug_assert_eq!(server.info.address, source);
+                                    server.on_received(&self.buffer[..num_received], &self.timer);
+                                }
+                            }
+                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                                warn!("`recv_from` exhausted readable operation with {fail}.");
+                            }
+                            Err(fail) => {
+                                error!("`recv_from` failed with {fail}.");
+                                todo!()
+                            }
+                        }
+                    }
                 }
-                Event::SentEvent(sent) => {}
-                Event::ReceivedEvent(received) => {}
+
+                // TODO(alex) 2021-05-12: Looping to handle the events looks like a good idea here,
+                // but it won't work in practice, if we have no packet to send, then it won't ever
+                // reach the `WouldBlock` state required to clear the poll events.
+                if event.is_writable() {
+                    if let Some(host) = self.client_or_server.server.as_mut() {
+                        if let Some(packet) = host.pop() {}
+                    }
+                }
             }
         }
     }

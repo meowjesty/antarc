@@ -8,6 +8,7 @@
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(duration_consts_2)]
 #![feature(new_uninit)]
+#![feature(drain_filter)]
 
 use core::mem::size_of;
 use std::{

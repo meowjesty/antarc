@@ -7,7 +7,7 @@ use std::{
 };
 
 use crc32fast::Hasher;
-use log::debug;
+use log::{debug, error};
 
 use self::header::Header;
 use crate::{read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES};
@@ -47,6 +47,15 @@ pub(crate) const DATA_TRANSFER: StatusCode = 700;
 /// - ToSend -> Sent -> Acked;
 pub type ConnectionId = NonZeroU16;
 pub type Ack = u32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum PacketKind {
+    ConnectionRequest,
+    ConnectionDenied,
+    ConnectionAccepted,
+    DataTransfer,
+    Heartbeat,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Sequence(NonZeroU32);
@@ -97,6 +106,24 @@ pub(crate) struct Sent {
     pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
+}
+
+impl Sent {
+    pub(crate) fn to_acked(self, time: Duration) -> Acked {
+        let Self {
+            header,
+            payload,
+            footer,
+            time,
+        } = self;
+
+        Acked {
+            header,
+            payload,
+            footer,
+            time,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -243,6 +270,115 @@ impl Packet<Queued> {
     }
 }
 
+impl Packet<Received> {
+    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<(Received, PacketKind), String> {
+        let mut hasher = Hasher::new();
+
+        let buffer_length = buffer.len();
+        debug!("length {:?}", buffer_length);
+
+        let crc32_position = buffer_length - size_of::<NonZeroU32>();
+        debug!("crc32 position {:?}", crc32_position);
+
+        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
+            buffer[crc32_position..].try_into().unwrap();
+        debug!("crc32 bytes {:?}", crc32_bytes);
+        let crc32_received = u32::from_be_bytes(*crc32_bytes);
+
+        // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
+        // the crc32 is calculated after encoding.
+        let buffer_without_crc32 = &buffer[..crc32_position];
+
+        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, buffer_without_crc32].concat();
+
+        hasher.update(&packet_with_protocol_id);
+        let crc32 = hasher.finalize();
+        if crc32 == crc32_received {
+            let buffer = packet_with_protocol_id;
+            let mut buffer_position = 0;
+            // TODO(alex) 2021-04-01: Find out a way to `from_be_bytes::<NonZeroU32>` to work.
+            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
+            if PROTOCOL_ID.get() != read_protocol_id {
+                return Err(format!(
+                    "Decoded invalid protocol id {:#?}.",
+                    read_protocol_id
+                ));
+            }
+
+            let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
+            debug_assert_ne!(read_sequence, 0);
+
+            let read_ack = read_buffer_inc!({buffer, buffer_position } : Ack);
+            let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
+            let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
+            let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
+            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
+
+            let sequence = Sequence(read_sequence.try_into().unwrap());
+            let header = Header {
+                sequence,
+                ack: read_ack,
+                past_acks: read_past_acks,
+                status_code: read_status_code,
+                payload_length: read_payload_length,
+            };
+
+            let payload_length = read_payload_length as usize;
+            let read_payload = buffer[buffer_position..buffer_position + payload_length].to_vec();
+            buffer_position += payload_length;
+            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
+            let payload = Payload(read_payload);
+
+            // TODO(alex) 2021-04-29: Change this naked number into something meaningful before it
+            // bites me in the debug assertion again.
+            let connection_id = if read_status_code > CONNECTION_REQUEST {
+                let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
+                debug_assert_ne!(read_connection_id, 0);
+                debug_assert_eq!(
+                    buffer_position,
+                    Header::ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
+                );
+                Some(read_connection_id.try_into().unwrap())
+            } else {
+                None
+            };
+            let footer = Footer {
+                connection_id,
+                crc32: crc32.try_into().unwrap(),
+            };
+
+            let received = Received {
+                header,
+                payload,
+                footer,
+                time: timer.elapsed(),
+            };
+
+            let kind = match received.header.status_code {
+                CONNECTION_REQUEST => PacketKind::ConnectionRequest,
+                CONNECTION_DENIED => PacketKind::ConnectionDenied,
+                CONNECTION_ACCEPTED => PacketKind::ConnectionAccepted,
+                DATA_TRANSFER => PacketKind::DataTransfer,
+                HEARTBEAT => PacketKind::Heartbeat,
+                invalid => {
+                    error!(
+                        "Client::on_received_new_packet invalid packet type {:#?}.",
+                        invalid
+                    );
+                    unreachable!();
+                }
+            };
+
+            Ok((received, kind))
+        } else {
+            Err(format!(
+                "Received {:#?} crc32, but calculated {:#?}.",
+                crc32_received, crc32
+            ))
+        }
+    }
+}
+
 impl<State> Packet<State> {
     pub(crate) fn connection_request(state: State) -> Self {
         let header = Header {
@@ -303,7 +439,7 @@ impl<State> Packet<State> {
 
     /// NOTE(alex) 2021-04-26: This `buffer` should contain only the packet, be careful not to pass
     /// the whole receiver buffer into here.
-    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<Received, String> {
+    pub(crate) fn _decode(buffer: &[u8], timer: &Instant) -> Result<Received, String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
