@@ -2,18 +2,23 @@ use std::{net::SocketAddr, sync::Weak, time::Duration};
 
 use hecs::Entity;
 
-use crate::{
-    host::{Address, Host},
-    packet::{ConnectionId, Payload, Queued, Sent, StatusCode},
-};
+use crate::{host::{Address, Host}, packet::{ConnectionId, PacketKind, Payload, Queued, Received, Sent, StatusCode}};
 
 #[derive(Debug)]
 pub(crate) enum Event {
-    ReadableEvent,
-    WritableEvent,
-    QueuedEvent(Weak<Host>),
-    SentEvent(Weak<Host>),
-    ReceivedEvent((Vec<u8>, SocketAddr)),
+    QueuedEvent {
+        queued: Queued,
+        destination: SocketAddr,
+    },
+    SentEvent {
+        sent: Sent,
+        destination: SocketAddr,
+    },
+    ReceivedEvent {
+        received: Received,
+        kind: PacketKind,
+        source: SocketAddr,
+    },
 }
 
 pub(crate) type EventList = Vec<Event>;

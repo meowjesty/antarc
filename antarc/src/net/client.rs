@@ -1,7 +1,13 @@
-use std::{io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use hecs::Entity;
 use log::{debug, error, warn};
+use mio::net::UdpSocket;
 
 use crate::{
     event::Event,
@@ -12,6 +18,7 @@ use crate::{
         Heartbeat, Internal, Packet, Payload, Queued, Received, Retrieved, Sent, Sequence,
         CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
+    MTU_LENGTH,
 };
 
 /// TODO(alex) 2021-05-01: Consider adding a `DebugName` component for every entity, such as when
@@ -49,6 +56,53 @@ pub(crate) struct LastAcked {
     packet_id: Entity,
 }
 
+fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<Event> {
+    let mut new_events = Vec::with_capacity(8);
+    loop {
+        match socket.recv_from(&mut buffer) {
+            Ok((num_received, from_address)) => {
+                debug_assert!(num_received > 0);
+                let (received, kind) = Packet::decode(&buffer[..num_received], timer).unwrap();
+                new_events.push(Event::ReceivedEvent {
+                    received,
+                    kind,
+                    source: from_address,
+                });
+            }
+            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                warn!("Would block on recv_from {:?}", fail);
+                break;
+            }
+            Err(fail) => {
+                error!("Failed receiving with {fail}.");
+                todo!();
+                break;
+            }
+        }
+    }
+
+    new_events
+}
+
+fn sender(socket: &UdpSocket, queued: &Queued, destination: &SocketAddr) {
+    // TODO(alex) 2021-05-12: This requires going back to the drawing board...
+    let (encoded, footer) = Packet::encode(&queued.header, &queued.payload, None).unwrap();
+    loop {
+        match socket.send_to(&encoded, *destination) {
+            Ok(num_sent) => {}
+            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                warn!("Would block on send_to {:?}", fail);
+                break;
+            }
+            Err(fail) => {
+                error!("Failed sending with {fail}.");
+                todo!();
+                break;
+            }
+        }
+    }
+}
+
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
         let client = Client { server: None };
@@ -74,69 +128,11 @@ impl NetManager<Client> {
         // TODO(alex): How do I insert the queued packet here? Do I even want to insert it here?
         // Or just raise the queued packet event, and handle it somewhere else???
         let mut host = Host::disconnected(*server_addr);
-        host.enqueue(connection_request);
 
-        let server = Arc::new(host);
-        self.events
-            .push(Event::QueuedEvent(Arc::downgrade(&server)));
-    }
-
-    fn receiver(&mut self) {
-        loop {
-            match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
-                Ok((num_received, from_address)) => {
-                    debug_assert!(num_received > 0);
-                    self.events.push(Event::ReceivedEvent((
-                        self.buffer[0..num_received].to_vec(),
-                        from_address,
-                    )));
-                }
-                Err(fail) => {
-                    error!("Failed receiving with {fail}.");
-                    todo!();
-                    break;
-                }
-            }
-        }
-    }
-
-    fn sender(&mut self, queued: &Queued, destination: &SocketAddr) {
-        // TODO(alex) 2021-05-12: This requires going back to the drawing board...
-        let (encoded, footer) = Packet::encode(&queued.header, &queued.payload, None).unwrap();
-        loop {
-            match self
-                .network_resource
-                .udp_socket
-                .send_to(&encoded, *destination)
-            {
-                Ok(num_sent) => {}
-                Err(fail) => {
-                    error!("Failed sending with {fail}.");
-                    todo!();
-                    break;
-                }
-            }
-        }
-    }
-
-    fn readiness(&mut self) {
-        let resource = &mut self.network_resource;
-        resource
-            .poll
-            .poll(&mut resource.events, Some(Duration::from_millis(150)))
-            .unwrap();
-
-        for event in resource.events.iter() {
-            if event.token() == NetworkResource::TOKEN {
-                if event.is_readable() {
-                    self.events.push(Event::ReadableEvent);
-                }
-
-                if event.is_writable() {
-                    self.events.push(Event::WritableEvent);
-                }
-            }
-        }
+        self.events.push(Event::QueuedEvent {
+            queued: connection_request,
+            destination: host.info.address,
+        });
     }
 
     pub fn enqueue(&mut self, message: Vec<u8>) {}
@@ -156,6 +152,9 @@ impl NetManager<Client> {
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> () {
+        let mut new_events = Vec::with_capacity(8);
+        let mut writable = false;
+
         self.network_resource
             .poll
             .poll(
@@ -167,33 +166,32 @@ impl NetManager<Client> {
         for event in self.network_resource.events.iter() {
             if event.token() == NetworkResource::TOKEN {
                 if event.is_readable() {
-                    loop {
-                        match self.network_resource.udp_socket.recv_from(&mut self.buffer) {
-                            Ok((num_received, source)) => {
-                                if let Some(server) = self.client_or_server.server.as_mut() {
-                                    debug_assert_eq!(server.info.address, source);
-                                    server.on_received(&self.buffer[..num_received], &self.timer);
-                                }
-                            }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("`recv_from` exhausted readable operation with {fail}.");
-                            }
-                            Err(fail) => {
-                                error!("`recv_from` failed with {fail}.");
-                                todo!()
-                            }
-                        }
-                    }
+                    let mut receiver_events = receiver(
+                        &mut vec![0; MTU_LENGTH],
+                        &self.network_resource.udp_socket,
+                        &self.timer,
+                    );
+                    new_events.append(&mut receiver_events);
                 }
 
-                // TODO(alex) 2021-05-12: Looping to handle the events looks like a good idea here,
-                // but it won't work in practice, if we have no packet to send, then it won't ever
-                // reach the `WouldBlock` state required to clear the poll events.
                 if event.is_writable() {
-                    if let Some(host) = self.client_or_server.server.as_mut() {
-                        if let Some(packet) = host.pop() {}
-                    }
+                    writable = true;
                 }
+            }
+        }
+
+        for event in self.events.drain(..) {
+            match event {
+                Event::QueuedEvent {
+                    queued,
+                    destination,
+                } => {}
+                Event::SentEvent { sent, destination } => {}
+                Event::ReceivedEvent {
+                    received,
+                    kind,
+                    source,
+                } => {}
             }
         }
     }
