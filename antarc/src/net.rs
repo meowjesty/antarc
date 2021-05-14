@@ -42,7 +42,7 @@ pub struct NetManager<ClientOrServer> {
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) client_or_server: ClientOrServer,
-    pub(crate) network_resource: NetworkResource,
+    pub(crate) network: NetworkResource,
     pub(crate) events: EventList,
 }
 
@@ -103,7 +103,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             events,
             buffer,
             client_or_server,
-            network_resource,
+            network: network_resource,
         }
     }
 }

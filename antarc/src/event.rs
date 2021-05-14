@@ -2,22 +2,28 @@ use std::{net::SocketAddr, sync::Weak, time::Duration};
 
 use hecs::Entity;
 
-use crate::{host::{Address, Host}, packet::{ConnectionId, PacketKind, Payload, Queued, Received, Sent, StatusCode}};
+use crate::{
+    host::{Address, Host},
+    packet::{ConnectionId, Packet, PacketKind, Payload, Queued, Received, Sent, StatusCode},
+};
 
 #[derive(Debug)]
 pub(crate) enum Event {
     QueuedEvent {
-        queued: Queued,
+        queued: Packet,
         destination: SocketAddr,
     },
     SentEvent {
-        sent: Sent,
+        sent: Packet,
         destination: SocketAddr,
     },
     ReceivedEvent {
-        received: Received,
-        kind: PacketKind,
+        received: Packet,
         source: SocketAddr,
+    },
+
+    FailedEvent {
+        fail: String,
     },
 }
 

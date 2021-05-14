@@ -86,7 +86,7 @@ pub(crate) struct Address(pub(crate) SocketAddr);
 pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
 pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
 
-type PacketList<T> = Vec<T>;
+type PacketList = Vec<Packet>;
 
 // TODO(alex): This struct has no business existing, as we only want hosts to be in one of the
 // possible states, and most of the info here is not valid anyway. The tracker fields don't work,
@@ -99,11 +99,11 @@ pub(crate) struct HostInfo {
     /// NOTE(alex) 2021-03-02: `sequence` is incremented only after a packet is successfully sent
     /// (`Packet<Sent>`), this is done to prevent remote `Host`s from thinking that some packets
     /// were lost, even in the case of them never being sent.
-    pub(crate) queued_packets: PacketList<Queued>,
-    pub(crate) sent_packets: PacketList<Sent>,
-    pub(crate) acked_packets: PacketList<Acked>,
-    pub(crate) received_packets: PacketList<Received>,
-    pub(crate) retrieved_packets: PacketList<Retrieved>,
+    pub(crate) queued_packets: PacketList,
+    pub(crate) sent_packets: PacketList,
+    pub(crate) acked_packets: PacketList,
+    pub(crate) received_packets: PacketList,
+    pub(crate) retrieved_packets: PacketList,
     pub(crate) rtt_tracker: Duration,
 }
 
@@ -137,15 +137,15 @@ impl Host {
     }
 
     pub(crate) fn on_received(&mut self, bytes: &[u8], timer: &Instant) {
-        let (packet, kind) = Packet::decode(bytes, timer).unwrap();
+        let packet = Packet::decode(bytes, timer).unwrap();
 
         for sent in self
             .info
             .sent_packets
             .drain_filter(|sent| sent.header.sequence.get() == packet.header.ack)
         {
-            let acked = sent.to_acked(timer.elapsed());
-            self.info.acked_packets.push(acked);
+            // let acked = sent.to_acked(timer.elapsed());
+            // self.info.acked_packets.push(acked);
         }
 
         // TODO(alex) 2021-05-13: Do the same `drain_filter` for `past_acks`.
@@ -153,7 +153,7 @@ impl Host {
             todo!()
         }
 
-        match kind {
+        match packet.kind {
             PacketKind::ConnectionRequest if self.state == HostState::Disconnected => {
                 self.state = HostState::RequestingConnection;
             }
@@ -179,18 +179,6 @@ impl Host {
         }
 
         self.info.received_packets.push(packet);
-    }
-
-    pub(crate) fn on_sent(&mut self, packet: Sent) {
-        self.info.sent_packets.push(packet);
-    }
-
-    pub(crate) fn enqueue(&mut self, packet: Queued) {
-        self.info.queued_packets.push(packet);
-    }
-
-    pub(crate) fn pop(&mut self) -> Option<Queued> {
-        self.info.queued_packets.pop()
     }
 }
 

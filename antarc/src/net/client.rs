@@ -15,8 +15,9 @@ use crate::{
     net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionAccepted, ConnectionId, ConnectionRequest, DataTransfer, Footer,
-        Heartbeat, Internal, Packet, Payload, Queued, Received, Retrieved, Sent, Sequence,
-        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        Heartbeat, Internal, Packet, PacketKind, PacketState, Payload, Queued, Received, Retrieved,
+        Sent, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
+        HEARTBEAT,
     },
     MTU_LENGTH,
 };
@@ -62,10 +63,9 @@ fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<E
         match socket.recv_from(&mut buffer) {
             Ok((num_received, from_address)) => {
                 debug_assert!(num_received > 0);
-                let (received, kind) = Packet::decode(&buffer[..num_received], timer).unwrap();
+                let received = Packet::decode(&buffer[..num_received], timer).unwrap();
                 new_events.push(Event::ReceivedEvent {
                     received,
-                    kind,
                     source: from_address,
                 });
             }
@@ -84,21 +84,36 @@ fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<E
     new_events
 }
 
-fn sender(socket: &UdpSocket, queued: &Queued, destination: &SocketAddr) {
-    // TODO(alex) 2021-05-12: This requires going back to the drawing board...
-    let (encoded, footer) = Packet::encode(&queued.header, &queued.payload, None).unwrap();
-    loop {
-        match socket.send_to(&encoded, *destination) {
-            Ok(num_sent) => {}
-            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                warn!("Would block on send_to {:?}", fail);
-                break;
-            }
-            Err(fail) => {
-                error!("Failed sending with {fail}.");
-                todo!();
-                break;
-            }
+fn sender(
+    socket: &UdpSocket,
+    // TODO(alex) 2021-05-13: If we're taking the packet here, this means we could move it to the
+    // appropriate state and not rely on enum checking here. Circling back to the Packet<State>
+    // implementation.
+    mut packet: Packet,
+    destination: &SocketAddr,
+    timer: &Instant,
+) -> Result<Event, Event> {
+    let (encoded, footer) = Packet::encode(&packet.header, &packet.payload, None).unwrap();
+    match socket.send_to(&encoded, *destination) {
+        Ok(num_sent) => {
+            debug_assert!(num_sent > 0);
+            packet.sent(footer, timer.elapsed());
+            let sent_event = Event::SentEvent {
+                sent: packet,
+                destination: *destination,
+            };
+
+            Ok(sent_event)
+        }
+        Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+            warn!("Would block on send_to {:?}", fail);
+            Err(Event::FailedEvent {
+                fail: fail.to_string(),
+            })
+        }
+        Err(fail) => {
+            error!("Failed sending with {fail}.");
+            todo!();
         }
     }
 }
@@ -119,10 +134,12 @@ impl NetManager<Client> {
             ..Default::default()
         };
         let payload = Payload::default();
-        let connection_request = Queued {
+        let connection_request = Packet {
             header,
             payload,
-            time: self.timer.elapsed(),
+            footer: None,
+            kind: PacketKind::ConnectionRequest,
+            state: PacketState::Queued(self.timer.elapsed()),
         };
 
         // TODO(alex): How do I insert the queued packet here? Do I even want to insert it here?
@@ -155,20 +172,17 @@ impl NetManager<Client> {
         let mut new_events = Vec::with_capacity(8);
         let mut writable = false;
 
-        self.network_resource
+        self.network
             .poll
-            .poll(
-                &mut self.network_resource.events,
-                Some(Duration::from_millis(150)),
-            )
+            .poll(&mut self.network.events, Some(Duration::from_millis(150)))
             .unwrap();
 
-        for event in self.network_resource.events.iter() {
+        for event in self.network.events.iter() {
             if event.token() == NetworkResource::TOKEN {
                 if event.is_readable() {
                     let mut receiver_events = receiver(
                         &mut vec![0; MTU_LENGTH],
-                        &self.network_resource.udp_socket,
+                        &self.network.udp_socket,
                         &self.timer,
                     );
                     new_events.append(&mut receiver_events);
@@ -185,13 +199,14 @@ impl NetManager<Client> {
                 Event::QueuedEvent {
                     queued,
                     destination,
-                } => {}
+                } => {
+                    if writable {
+                        sender(&self.network.udp_socket, queued, &destination, &self.timer);
+                    }
+                }
                 Event::SentEvent { sent, destination } => {}
-                Event::ReceivedEvent {
-                    received,
-                    kind,
-                    source,
-                } => {}
+                Event::ReceivedEvent { received, source } => {}
+                Event::FailedEvent { fail } => {}
             }
         }
     }

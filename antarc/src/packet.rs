@@ -92,6 +92,23 @@ pub(crate) struct Queued {
     pub(crate) time: Duration,
 }
 
+impl Queued {
+    pub(crate) fn to_sent(self, footer: Footer, time: Duration) -> Sent {
+        let Self {
+            header,
+            payload,
+            time,
+        } = self;
+
+        Sent {
+            header,
+            payload,
+            footer,
+            time,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Received {
     pub(crate) header: Header,
@@ -210,21 +227,33 @@ impl Footer {
 /// `ack: 10, past_ack: (10, 6, 5, 4, 3,...)`, then the client would know that the server is acking
 /// the packet 10, but missed some (9, 8, 7).
 
-/// NOTE(alex) 2021-02-01: By using the `State` type parameter, it becomes possible to store
-/// whatever struct metadata we want here. Each packet state will hold a different `state` data.
-#[derive(Debug)]
-// pub(crate) struct Packet;
-pub(crate) struct Packet<State> {
-    /// TODO(alex) 2021-02-28: How do we actually do this? The crc32 will only be calculated at
-    /// encode time, is this `Footer` a phantasm type that will be sent at the end of the
-    /// packet (when encoded), but doesn't exist as an actual type here?
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) footer: Footer,
-    pub(crate) state: State,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PacketState {
+    Queued(Duration),
+    Sent(Duration),
+    Received(Duration),
 }
 
-impl Packet<Queued> {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Packet {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) kind: PacketKind,
+    pub(crate) footer: Option<Footer>,
+    pub(crate) state: PacketState,
+}
+
+impl Packet {
+    pub(crate) fn sent(&mut self, footer: Footer, time: Duration) {
+        match self.state {
+            PacketState::Queued(_) => {
+                self.footer = Some(footer);
+                self.state = PacketState::Sent(time);
+            }
+            _ => panic!("Packet in invalid state when calling `sent`."),
+        }
+    }
+
     pub(crate) fn encode(
         header: &Header,
         payload: &Payload,
@@ -268,10 +297,8 @@ impl Packet<Queued> {
 
         Ok((packet_bytes, footer))
     }
-}
 
-impl Packet<Received> {
-    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<(Received, PacketKind), String> {
+    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<Packet, String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -342,19 +369,12 @@ impl Packet<Received> {
             } else {
                 None
             };
-            let footer = Footer {
+            let footer = Some(Footer {
                 connection_id,
                 crc32: crc32.try_into().unwrap(),
-            };
+            });
 
-            let received = Received {
-                header,
-                payload,
-                footer,
-                time: timer.elapsed(),
-            };
-
-            let kind = match received.header.status_code {
+            let kind = match header.status_code {
                 CONNECTION_REQUEST => PacketKind::ConnectionRequest,
                 CONNECTION_DENIED => PacketKind::ConnectionDenied,
                 CONNECTION_ACCEPTED => PacketKind::ConnectionAccepted,
@@ -369,175 +389,22 @@ impl Packet<Received> {
                 }
             };
 
-            Ok((received, kind))
-        } else {
-            Err(format!(
-                "Received {:#?} crc32, but calculated {:#?}.",
-                crc32_received, crc32
-            ))
-        }
-    }
-}
+            let state = PacketState::Received(timer.elapsed());
 
-impl<State> Packet<State> {
-    pub(crate) fn connection_request(state: State) -> Self {
-        let header = Header {
-            sequence: unsafe { Sequence::new_unchecked(1) },
-            status_code: CONNECTION_REQUEST,
-            ..Default::default()
-        };
-
-        todo!()
-    }
-
-    pub(crate) fn _encode(
-        header: &Header,
-        payload: &Payload,
-        connection_id: Option<ConnectionId>,
-    ) -> Result<(Vec<u8>, Footer), String> {
-        let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
-        let ack_bytes = header.ack.to_be_bytes().to_vec();
-        let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
-        let status_code_bytes = header.status_code.to_be_bytes().to_vec();
-        let payload_length_bytes = header.payload_length.to_be_bytes().to_vec();
-
-        let mut hasher = Hasher::new();
-        let mut bytes = vec![
-            PROTOCOL_ID_BYTES.to_vec(),
-            sequence_bytes,
-            ack_bytes,
-            past_acks_bytes,
-            status_code_bytes,
-            payload_length_bytes,
-            payload.0.clone(),
-        ]
-        .concat();
-
-        if let Some(connection_id) = connection_id {
-            let mut connection_id_bytes = connection_id.get().to_be_bytes().to_vec();
-            bytes.append(&mut connection_id_bytes);
-        }
-
-        hasher.update(&bytes);
-        let crc32 = hasher.finalize();
-        debug_assert!(crc32 != 0);
-
-        bytes.append(&mut crc32.to_be_bytes().to_vec());
-
-        let footer = Footer {
-            connection_id,
-            crc32: unsafe { NonZeroU32::new_unchecked(crc32) },
-        };
-
-        let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
-
-        Ok((packet_bytes, footer))
-    }
-
-    // NOTE(alex) 2021-05-07: Doesn't work #8995.
-    // type Decoded = (Sequence, Header, Payload, Footer);
-
-    /// NOTE(alex) 2021-04-26: This `buffer` should contain only the packet, be careful not to pass
-    /// the whole receiver buffer into here.
-    pub(crate) fn _decode(buffer: &[u8], timer: &Instant) -> Result<Received, String> {
-        let mut hasher = Hasher::new();
-
-        let buffer_length = buffer.len();
-        debug!("length {:?}", buffer_length);
-
-        let crc32_position = buffer_length - size_of::<NonZeroU32>();
-        debug!("crc32 position {:?}", crc32_position);
-
-        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
-            buffer[crc32_position..].try_into().unwrap();
-        debug!("crc32 bytes {:?}", crc32_bytes);
-        let crc32_received = u32::from_be_bytes(*crc32_bytes);
-
-        // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
-        // the crc32 is calculated after encoding.
-        let buffer_without_crc32 = &buffer[..crc32_position];
-
-        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, buffer_without_crc32].concat();
-
-        hasher.update(&packet_with_protocol_id);
-        let crc32 = hasher.finalize();
-        if crc32 == crc32_received {
-            let buffer = packet_with_protocol_id;
-            let mut buffer_position = 0;
-            // TODO(alex) 2021-04-01: Find out a way to `from_be_bytes::<NonZeroU32>` to work.
-            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
-            if PROTOCOL_ID.get() != read_protocol_id {
-                return Err(format!(
-                    "Decoded invalid protocol id {:#?}.",
-                    read_protocol_id
-                ));
-            }
-
-            let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
-            debug_assert_ne!(read_sequence, 0);
-
-            let read_ack = read_buffer_inc!({buffer, buffer_position } : Ack);
-            let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
-            let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
-            let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
-            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
-
-            let sequence = Sequence(read_sequence.try_into().unwrap());
-            let header = Header {
-                sequence,
-                ack: read_ack,
-                past_acks: read_past_acks,
-                status_code: read_status_code,
-                payload_length: read_payload_length,
-            };
-
-            let payload_length = read_payload_length as usize;
-            let read_payload = buffer[buffer_position..buffer_position + payload_length].to_vec();
-            buffer_position += payload_length;
-            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
-            let payload = Payload(read_payload);
-
-            // TODO(alex) 2021-04-29: Change this naked number into something meaningful before it
-            // bites me in the debug assertion again.
-            let connection_id = if read_status_code > CONNECTION_REQUEST {
-                let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
-                debug_assert_ne!(read_connection_id, 0);
-                debug_assert_eq!(
-                    buffer_position,
-                    Header::ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
-                );
-                Some(read_connection_id.try_into().unwrap())
-            } else {
-                None
-            };
-            let footer = Footer {
-                connection_id,
-                crc32: crc32.try_into().unwrap(),
-            };
-
-            let received = Received {
+            let packet = Packet {
                 header,
                 payload,
                 footer,
-                time: timer.elapsed(),
+                kind,
+                state,
             };
 
-            Ok(received)
+            Ok(packet)
         } else {
             Err(format!(
                 "Received {:#?} crc32, but calculated {:#?}.",
                 crc32_received, crc32
             ))
         }
-    }
-
-    /// TODO(alex) 2021-02-05: Hash the buffer to have a fixed size.
-    pub fn pack(buffer: &[u8]) -> u128 {
-        unimplemented!()
-    }
-
-    /// TODO(alex) 2021-02-05: Unhash the value into a packet buffer.
-    pub fn unpack(buffer: &[u8]) -> &[u8] {
-        unimplemented!()
     }
 }
