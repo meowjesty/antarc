@@ -6,4 +6,5 @@ members = [
     "server",
     "client",
     "with-state",
+    "with-state-no-event",
 ]

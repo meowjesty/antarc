@@ -38,6 +38,14 @@ struct Packet<State> {
     state: State,
 }
 
+/// NOTE(alex) 2021-05-14: The idea of having `Peer` hold an `Arc<Packet>` and the events holding
+/// `Weak<Packet>` doesn't properly work, as changes require taking ownership (move packet into a
+/// new state). You'll only be able to take `&mut Packet<State>` from the pointer, but this is not
+/// enough to call a function like `to_another_state(self)`.
+///
+/// If we kept no history of the packets (meaning no `Peer::queued_list`, ...) and use only the
+/// events to keep things flowing, then this whole apparatus wouldn't be neccessary, but the history
+/// is a bit of a requirement.
 #[derive(Debug, PartialEq, Clone)]
 struct Peer {
     queued: Vec<Packet<Queued>>,
