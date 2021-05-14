@@ -89,6 +89,10 @@ fn sender(
     // TODO(alex) 2021-05-13: If we're taking the packet here, this means we could move it to the
     // appropriate state and not rely on enum checking here. Circling back to the Packet<State>
     // implementation.
+    //
+    // ADD(alex) 2021-05-13: This idea doesn't hold, if we use dependent types and move, every
+    // failable function will have to return the object back, which seems too cumbersome for
+    // little gain right now.
     mut packet: Packet,
     destination: &SocketAddr,
     timer: &Instant,
