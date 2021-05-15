@@ -1,3 +1,5 @@
+use std::any::{Any, TypeId};
+
 #[derive(Debug, PartialEq, Clone)]
 struct Header {
     sequence: u32,
@@ -54,6 +56,16 @@ struct Peer {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+enum EventKind {
+    ReadyToReceive,
+    ReadyToSend,
+    QueuedPacket,
+    FailedSendingPacket,
+    SentPacket,
+    ReceivedPacket,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 enum Event {
     ReadyToReceive,
     ReadyToSend,
@@ -61,6 +73,19 @@ enum Event {
     FailedSendingPacket { packet: Packet<Queued> },
     SentPacket { packet: Packet<Sent> },
     ReceivedPacket { packet: Packet<Received> },
+}
+
+impl Event {
+    fn kind(&self) -> EventKind {
+        match self {
+            Event::ReadyToReceive => EventKind::ReadyToReceive,
+            Event::ReadyToSend => EventKind::ReadyToSend,
+            Event::QueuedPacket { packet } => EventKind::QueuedPacket,
+            Event::FailedSendingPacket { packet } => EventKind::FailedSendingPacket,
+            Event::SentPacket { packet } => EventKind::SentPacket,
+            Event::ReceivedPacket { packet } => EventKind::ReceivedPacket,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -155,14 +180,27 @@ fn main() {
     };
 
     {
+        network.events.push(Event::QueuedPacket {
+            packet: helper_queued(1),
+        });
+        network.events.push(Event::QueuedPacket {
+            packet: helper_queued(2),
+        });
+
         let mut new_events = Vec::with_capacity(32);
-        for i in 0..10 {
+        for i in 0..20 {
             if i % 2 == 0 && network.socket.is_good() {
                 network.events.push(Event::ReadyToReceive);
             } else if network.socket.is_good() {
                 network.events.push(Event::ReadyToSend);
+            } else {
+                network.socket.count = 0;
             }
 
+            let has_queued = network
+                .events
+                .iter()
+                .any(|event| event.kind() == EventKind::QueuedPacket);
             for event in network.events.drain(..) {
                 match event {
                     Event::QueuedPacket { packet } => {
@@ -197,16 +235,16 @@ fn main() {
                     }
                     Event::ReadyToSend => {
                         println!("ReadyToSendEvent");
+                        if has_queued == false {
+                            println!("Have no packet queued, send hearbeat to change socket!");
+                            new_events.push(Event::QueuedPacket {
+                                packet: helper_queued(i * 10 + 10),
+                            });
+                        }
                     }
                 }
             }
 
-            network.events.push(Event::QueuedPacket {
-                packet: helper_queued(1),
-            });
-            network.events.push(Event::QueuedPacket {
-                packet: helper_queued(2),
-            });
             // TODO(alex) 2021-05-14: This approach requires 2 lists, one that is being drained, and
             // a secondary that will be moved into the drained list with new values.
             network.events.append(&mut new_events);
