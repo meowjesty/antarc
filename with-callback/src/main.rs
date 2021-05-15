@@ -1,3 +1,28 @@
+pub struct Notifier<E> {
+    subscribers: Vec<Box<dyn Fn(&E)>>,
+}
+
+impl<E> Notifier<E> {
+    pub fn new() -> Notifier<E> {
+        Notifier {
+            subscribers: Vec::new(),
+        }
+    }
+
+    pub fn register<F>(&mut self, callback: F)
+    where
+        F: 'static + Fn(&E),
+    {
+        self.subscribers.push(Box::new(callback));
+    }
+
+    pub fn notify(&self, event: E) {
+        for callback in &self.subscribers {
+            callback(&event);
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 struct Header {
     sequence: u32,
@@ -53,14 +78,27 @@ struct Peer {
     received: Vec<Packet<Received>>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-enum Event {
+#[derive(Debug, PartialEq)]
+enum Event<'x> {
     ReadyToReceive,
     ReadyToSend,
-    QueuedPacket { packet: Packet<Queued> },
-    FailedSendingPacket { packet: Packet<Queued> },
-    SentPacket { packet: Packet<Sent> },
-    ReceivedPacket { packet: Packet<Received> },
+    QueuedPacket {
+        packet: Packet<Queued>,
+        network: &'x mut Network,
+    },
+    ToSend {
+        packet: Packet<Queued>,
+        network: &'x mut Network,
+    },
+    FailedSendingPacket {
+        packet: Packet<Queued>,
+    },
+    SentPacket {
+        packet: Packet<Sent>,
+    },
+    ReceivedPacket {
+        packet: Packet<Received>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -73,7 +111,7 @@ impl Socket {
         self.count <= 2
     }
 
-    fn send(&mut self, packet: u32) -> Result<(), String> {
+    fn send(&mut self) -> Result<(), String> {
         if self.count > 2 {
             self.count = 0;
             Err("Socket can't write anymore!".to_string())
@@ -83,13 +121,13 @@ impl Socket {
         }
     }
 
-    fn recv(&mut self) -> Result<Packet<Received>, String> {
+    fn recv(&mut self) -> Result<(), String> {
         if self.count > 2 {
             self.count = 0;
             Err("Socket can't read anymore!".to_string())
         } else {
             self.count += 1;
-            Ok(helper_received(self.count))
+            Ok(())
         }
     }
 }
@@ -97,7 +135,6 @@ impl Socket {
 #[derive(Debug, PartialEq, Clone)]
 struct Network {
     peer: Peer,
-    events: Vec<Event>,
     socket: Socket,
 }
 
@@ -140,76 +177,55 @@ fn send_packet(packet: Packet<Queued>) -> Result<Packet<Sent>, StateError<Queued
     }
 }
 
+fn event_handler(event: &Event) {
+    match event {
+        Event::QueuedPacket { packet, network } => {
+            println!("QueuedPacket {:#?} {:#?}", event, packet);
+            if network.socket.is_good() {}
+        }
+        Event::ReceivedPacket { packet } => {
+            println!("ReceivedPacket {:#?} {:#?}", event, packet)
+        }
+        Event::SentPacket { packet } => {
+            println!("SentPacket {:#?} {:#?}", event, packet)
+        }
+        Event::ReadyToReceive => {
+            println!("ReadyToReceive {:#?}", event)
+        }
+        Event::ReadyToSend => {
+            println!("ReadyToSend {:#?}", event)
+        }
+        Event::ToSend { packet, network } => {}
+        Event::FailedSendingPacket { packet } => {}
+    }
+}
+
 fn main() {
+    let mut notifier: Notifier<Event> = Notifier::new();
+    // TODO(alex) 2021-05-14: How to handle things in these callbacks?
+    notifier.register(event_handler);
+
     let peer = Peer {
         queued: Vec::with_capacity(32),
         sent: Vec::with_capacity(32),
         received: Vec::with_capacity(32),
     };
-    let events = Vec::with_capacity(32);
     let socket = Socket { count: 0 };
-    let mut network = Network {
-        peer,
-        events,
-        socket,
-    };
+    let mut network = Network { peer, socket };
 
     {
-        let mut new_events = Vec::with_capacity(32);
-        for i in 0..10 {
-            if i % 2 == 0 && network.socket.is_good() {
-                network.events.push(Event::ReadyToReceive);
-            } else if network.socket.is_good() {
-                network.events.push(Event::ReadyToSend);
+        let mut counter = 0;
+        loop {
+            if counter % 2 == 0 && network.socket.is_good() {
+                notifier.notify(Event::ReadyToReceive);
+            } else {
+                notifier.notify(Event::ReadyToSend);
             }
 
-            for event in network.events.drain(..) {
-                match event {
-                    Event::QueuedPacket { packet } => {
-                        println!("QueuedPacketEvent {:#?}", packet);
-                        match network.socket.send(10) {
-                            Ok(_) => {
-                                let sent = packet.to_sent(Footer { crc32: 1 });
-                                println!("Packet was sent {:#?}", sent);
-                                new_events.push(Event::SentPacket { packet: sent });
-                            }
-                            Err(fail) => {
-                                eprintln!("Failed sending packet with {:#?}", fail);
-                                new_events.push(Event::FailedSendingPacket { packet })
-                            }
-                        }
-                    }
-                    Event::SentPacket { packet } => {
-                        println!("SentPacketEvent {:#?}", packet);
-                    }
-                    Event::ReceivedPacket { packet } => {
-                        println!("ReceivedPacketEvent {:#?}", packet);
-                    }
-                    Event::FailedSendingPacket { packet } => {
-                        eprint!("FailedSendingPacketEvent {:#?}", packet);
-                    }
-                    Event::ReadyToReceive => {
-                        println!("ReadyToReceiveEvent");
-                        if let Ok(received) = network.socket.recv() {
-                            println!("recv {:#?}", received);
-                            new_events.push(Event::ReceivedPacket { packet: received });
-                        }
-                    }
-                    Event::ReadyToSend => {
-                        println!("ReadyToSendEvent");
-                    }
-                }
+            counter += 1;
+            if counter > 100 {
+                break;
             }
-
-            network.events.push(Event::QueuedPacket {
-                packet: helper_queued(1),
-            });
-            network.events.push(Event::QueuedPacket {
-                packet: helper_queued(2),
-            });
-            // TODO(alex) 2021-05-14: This approach requires 2 lists, one that is being drained, and
-            // a secondary that will be moved into the drained list with new values.
-            network.events.append(&mut new_events);
         }
     }
 }
