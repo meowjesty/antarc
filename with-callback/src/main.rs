@@ -38,11 +38,33 @@ struct Footer {
 struct Queued {}
 
 impl Packet<Queued> {
-    fn to_sent(self, footer: Footer) -> Packet<Sent> {
-        let sent = Sent { footer };
+    fn to_encoded(self, crc32: u32) -> Packet<Encoded> {
+        let footer = Footer { crc32 };
+        let bytes = vec![5; 5];
+        let state = Encoded { footer, bytes };
+
         Packet {
             header: self.header,
-            state: sent,
+            state,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct Encoded {
+    footer: Footer,
+    bytes: Vec<u8>,
+}
+
+impl Packet<Encoded> {
+    fn to_sent(self) -> Packet<Sent> {
+        let state = Sent {
+            footer: self.state.footer,
+        };
+
+        Packet {
+            header: self.header,
+            state,
         }
     }
 }
@@ -63,6 +85,26 @@ struct Packet<State> {
     state: State,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+struct RequestingConnection;
+
+#[derive(Debug, PartialEq, Clone)]
+struct AwaitingConnectionResponse;
+
+#[derive(Debug, PartialEq, Clone)]
+struct Connected;
+
+#[derive(Debug, PartialEq, Clone)]
+struct Disconnected;
+
+#[derive(Debug, PartialEq, Clone)]
+enum ConnectionState {
+    RequestingConnection,
+    AwaitingConnectionResponse,
+    Disconnected,
+    Connected,
+}
+
 /// NOTE(alex) 2021-05-14: The idea of having `Peer` hold an `Arc<Packet>` and the events holding
 /// `Weak<Packet>` doesn't properly work, as changes require taking ownership (move packet into a
 /// new state). You'll only be able to take `&mut Packet<State>` from the pointer, but this is not
@@ -72,33 +114,59 @@ struct Packet<State> {
 /// events to keep things flowing, then this whole apparatus wouldn't be neccessary, but the history
 /// is a bit of a requirement.
 #[derive(Debug, PartialEq, Clone)]
-struct Peer {
-    queued: Vec<Packet<Queued>>,
-    sent: Vec<Packet<Sent>>,
+struct Connection {
     received: Vec<Packet<Received>>,
+    state: ConnectionState,
 }
 
-#[derive(Debug, PartialEq)]
-enum Event<'x> {
+#[derive(Debug, PartialEq, Clone)]
+enum EventKind {
     ReadyToReceive,
     ReadyToSend,
+    QueuedPacket,
+    FailedSendingPacket,
+    SentPacket,
+    ReceivedPacket,
+}
+
+enum Event<'x> {
+    ReadyToReceive {
+        socket: &'x Socket,
+        notifier: &'x mut Notifier<Self>,
+    },
+    ReadyToSend {
+        has_queued: bool,
+        socket: &'x Socket,
+        notifier: &'x mut Notifier<Self>,
+    },
     QueuedPacket {
         packet: Packet<Queued>,
-        network: &'x mut Network,
-    },
-    ToSend {
-        packet: Packet<Queued>,
-        network: &'x mut Network,
+        socket: &'x Socket,
+        notifier: &'x mut Notifier<Self>,
     },
     FailedSendingPacket {
-        packet: Packet<Queued>,
+        packet: Packet<Encoded>,
     },
     SentPacket {
         packet: Packet<Sent>,
     },
     ReceivedPacket {
         packet: Packet<Received>,
+        connection: &'x mut Connection,
     },
+}
+
+impl<'x> Event<'x> {
+    fn kind(&self) -> EventKind {
+        match self {
+            Event::ReadyToReceive { .. } => EventKind::ReadyToReceive,
+            Event::ReadyToSend { .. } => EventKind::ReadyToSend,
+            Event::QueuedPacket { .. } => EventKind::QueuedPacket,
+            Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
+            Event::SentPacket { .. } => EventKind::SentPacket,
+            Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -111,30 +179,31 @@ impl Socket {
         self.count <= 2
     }
 
-    fn send(&mut self) -> Result<(), String> {
+    fn send(&mut self, packet: &Packet<Encoded>) -> Result<(), String> {
         if self.count > 2 {
             self.count = 0;
             Err("Socket can't write anymore!".to_string())
         } else {
             self.count += 1;
+            println!("Sending packet {:#?}", packet);
             Ok(())
         }
     }
 
-    fn recv(&mut self) -> Result<(), String> {
+    fn recv(&mut self) -> Result<Packet<Received>, String> {
         if self.count > 2 {
             self.count = 0;
             Err("Socket can't read anymore!".to_string())
         } else {
             self.count += 1;
-            Ok(())
+            Ok(helper_received(self.count))
         }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 struct Network {
-    peer: Peer,
+    connection: Connection,
     socket: Socket,
 }
 
@@ -166,37 +235,63 @@ struct StateError<State> {
     previous_state: Packet<State>,
 }
 
-fn send_packet(packet: Packet<Queued>) -> Result<Packet<Sent>, StateError<Queued>> {
-    if packet.header.sequence >= 1 {
-        Ok(packet.to_sent(Footer { crc32: 10 }))
-    } else {
-        Err(StateError {
-            fail: "Failed to send!".to_string(),
-            previous_state: packet,
-        })
-    }
-}
-
 fn event_handler(event: &Event) {
     match event {
-        Event::QueuedPacket { packet, network } => {
-            println!("QueuedPacket {:#?} {:#?}", event, packet);
-            if network.socket.is_good() {}
-        }
-        Event::ReceivedPacket { packet } => {
-            println!("ReceivedPacket {:#?} {:#?}", event, packet)
+        Event::QueuedPacket {
+            packet,
+            socket,
+            notifier,
+        } => {
+            println!("QueuedPacketEvent {:#?}", packet);
+            let encoded = packet.to_encoded(32);
+            match socket.send(&encoded) {
+                Ok(_) => {
+                    let sent = encoded.to_sent();
+                    println!("Packet was sent {:#?}", sent);
+                    notifier.notify(Event::SentPacket { packet: sent });
+                }
+                Err(fail) => {
+                    eprintln!("Failed sending packet with {:#?}", fail);
+                    notifier.notify(Event::FailedSendingPacket { packet: encoded });
+                }
+            }
         }
         Event::SentPacket { packet } => {
-            println!("SentPacket {:#?} {:#?}", event, packet)
+            println!("SentPacketEvent {:#?}", packet);
         }
-        Event::ReadyToReceive => {
-            println!("ReadyToReceive {:#?}", event)
+        Event::ReceivedPacket { packet, connection } => {
+            println!("ReceivedPacketEvent {:#?}", packet);
+            connection.received.push(packet);
         }
-        Event::ReadyToSend => {
-            println!("ReadyToSend {:#?}", event)
+        Event::FailedSendingPacket { packet } => {
+            eprintln!("FailedSendingPacketEvent {:#?}", packet);
         }
-        Event::ToSend { packet, network } => {}
-        Event::FailedSendingPacket { packet } => {}
+        Event::ReadyToReceive { socket, notifier } => {
+            println!("ReadyToReceiveEvent");
+            if let Ok(received) = socket.recv() {
+                println!("recv {:#?}", received);
+                notifier.notify(Event::ReceivedPacket {
+                    packet: received,
+                    connection: (),
+                });
+            }
+        }
+        Event::ReadyToSend {
+            has_queued,
+            socket,
+            notifier,
+        } => {
+            println!("ReadyToSendEvent");
+            if has_queued == false {
+                println!("Have no packet queued, send hearbeat to change socket!");
+                let packet = helper_queued(15);
+                notifier.notify(Event::QueuedPacket {
+                    packet,
+                    socket,
+                    notifier,
+                });
+            }
+        }
     }
 }
 
@@ -205,26 +300,27 @@ fn main() {
     // TODO(alex) 2021-05-14: How to handle things in these callbacks?
     notifier.register(event_handler);
 
-    let peer = Peer {
-        queued: Vec::with_capacity(32),
-        sent: Vec::with_capacity(32),
+    let connection = Connection {
         received: Vec::with_capacity(32),
+        state: ConnectionState::Disconnected,
     };
     let socket = Socket { count: 0 };
-    let mut network = Network { peer, socket };
+    let mut network = Network { connection, socket };
 
     {
-        let mut counter = 0;
-        loop {
-            if counter % 2 == 0 && network.socket.is_good() {
-                notifier.notify(Event::ReadyToReceive);
-            } else {
-                notifier.notify(Event::ReadyToSend);
-            }
+        for i in 0..12 {
+            let has_queued = i % 3 == 0;
 
-            counter += 1;
-            if counter > 100 {
-                break;
+            if i % 2 == 0 && network.socket.is_good() {
+                notifier.notify(Event::ReadyToReceive);
+            } else if network.socket.is_good() {
+                notifier.notify(Event::ReadyToSend {
+                    has_queued,
+                    socket: network.socket,
+                    notifier,
+                });
+            } else {
+                network.socket.count = 0;
             }
         }
     }
