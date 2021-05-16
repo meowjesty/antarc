@@ -9,12 +9,26 @@ use mio::{
 
 use crate::{
     event::EventList,
-    packet::{Queued, Received, Sent},
+    packet::{Packet, Queued, Received, Sent},
     MTU_LENGTH,
 };
 
 pub mod client;
 pub mod server;
+
+#[derive(Debug, PartialEq, Clone)]
+enum ConnectionState {
+    RequestingConnection,
+    AwaitingConnectionResponse,
+    Disconnected,
+    Connected,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct Connection {
+    received: Vec<Packet<Received>>,
+    state: ConnectionState,
+}
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
 /// receive information about the other `Peer<Client>` that are connected to the same server. They

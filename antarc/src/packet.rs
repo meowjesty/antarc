@@ -49,15 +49,6 @@ pub type ConnectionId = NonZeroU16;
 pub type Ack = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum PacketKind {
-    ConnectionRequest,
-    ConnectionDenied,
-    ConnectionAccepted,
-    DataTransfer,
-    Heartbeat,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Sequence(NonZeroU32);
 
 impl Sequence {
@@ -84,118 +75,6 @@ impl Default for Sequence {
     }
 }
 
-// REGION(alex) 2021-03-23: Types of packet (event types).
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Queued {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) time: Duration,
-}
-
-impl Queued {
-    pub(crate) fn to_sent(self, footer: Footer, time: Duration) -> Sent {
-        let Self {
-            header,
-            payload,
-            time,
-        } = self;
-
-        Sent {
-            header,
-            payload,
-            footer,
-            time,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Received {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Sent {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-}
-
-impl Sent {
-    pub(crate) fn to_acked(self, time: Duration) -> Acked {
-        let Self {
-            header,
-            payload,
-            footer,
-            time,
-        } = self;
-
-        Acked {
-            header,
-            payload,
-            footer,
-            time,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Acked {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-}
-
-/// NOTE(alex) 2021-01-28: These are packets that were received, and the user application has
-/// loaded them, so they're moved into this state.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Retrieved {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-}
-
-/// NOTE(alex) 2021-02-06: These packets are intercepted by the protocol and handled internally,
-/// they cannot be retrieved by the user. Deals with connection requests (connection handling),
-/// hearbeat, fragmentation.
-/// TODO(alex) 2021-02-15: This name sucks and doesn't really convey what it does.
-#[derive(Debug)]
-pub(crate) struct Internal {
-    pub(crate) time: Duration,
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionRequest;
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionDenied;
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct ConnectionAccepted;
-
-/// Identifies the connection, this enables network switching from either side without having
-/// to slowly re-estabilish the connection.
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct DataTransfer;
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) struct Heartbeat;
-
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
-pub(crate) enum PacketType {
-    ConnectionRequest(ConnectionRequest),
-    ConnectionDenied(ConnectionDenied),
-    ConnectionAccepted(ConnectionAccepted),
-    DataTransfer(DataTransfer),
-    Heartbeat(Heartbeat),
-}
-
 #[derive(Debug, Clone, PartialEq, Default, PartialOrd)]
 pub(crate) struct Payload(pub(crate) Vec<u8>);
 
@@ -211,10 +90,6 @@ pub(crate) struct Footer {
     pub(crate) crc32: NonZeroU32,
 }
 
-impl Footer {
-    // pub(crate) const ENCODED_SIZE: usize = size_of::<(ConnectionId, NonZeroU32)>();
-}
-
 /// TODO(alex) 2021-02-09: There must be a way to mark a packet as `Reliable` and/or `Priority`.
 /// The `Reliable` packet will keep retrying until it is acked, how the algorithm will actually work
 /// I'm still unsure, should it keep bumping itself into being the first to send, until it's acked?
@@ -228,37 +103,48 @@ impl Footer {
 /// the packet 10, but missed some (9, 8, 7).
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PacketState {
-    Queued(Duration),
-    Sent(Duration),
-    Received(Duration),
+pub(crate) struct Queued {
+    pub(crate) time: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Packet {
-    pub(crate) header: Header,
-    pub(crate) payload: Payload,
-    pub(crate) kind: PacketKind,
-    pub(crate) footer: Option<Footer>,
-    pub(crate) state: PacketState,
+pub(crate) struct Encoded {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) footer: Footer,
+    pub(crate) time: Duration,
 }
 
-impl Packet {
-    pub(crate) fn sent(&mut self, footer: Footer, time: Duration) {
-        match self.state {
-            PacketState::Queued(_) => {
-                self.footer = Some(footer);
-                self.state = PacketState::Sent(time);
-            }
-            _ => panic!("Packet in invalid state when calling `sent`."),
-        }
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Sent {
+    pub(crate) footer: Footer,
+    pub(crate) time: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Received {
+    pub(crate) footer: Footer,
+    pub(crate) time: Duration,
+}
+
+// TODO(alex) 2021-05-15: Finish refactoring this.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Packet<State> {
+    pub(crate) header: Header,
+    pub(crate) payload: Payload,
+    pub(crate) state: State,
+}
+
+impl Packet<Queued> {
+    pub(crate) fn to_encoded(self, footer: Footer, time: &Instant) -> Packet<Encoded> {
+        todo!()
     }
 
     pub(crate) fn encode(
-        header: &Header,
-        payload: &Payload,
+        &self,
         connection_id: Option<ConnectionId>,
     ) -> Result<(Vec<u8>, Footer), String> {
+        let (header, payload) = (&self.header, &self.payload);
+
         let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = header.ack.to_be_bytes().to_vec();
         let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
@@ -297,8 +183,16 @@ impl Packet {
 
         Ok((packet_bytes, footer))
     }
+}
 
-    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<Packet, String> {
+impl Packet<Encoded> {
+    pub(crate) fn to_send(self, time: &Instant) -> Packet<Sent> {
+        todo!()
+    }
+}
+
+impl Packet<Received> {
+    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<Packet<Received>, String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -369,17 +263,17 @@ impl Packet {
             } else {
                 None
             };
-            let footer = Some(Footer {
+            let footer = Footer {
                 connection_id,
                 crc32: crc32.try_into().unwrap(),
-            });
+            };
 
-            let kind = match header.status_code {
-                CONNECTION_REQUEST => PacketKind::ConnectionRequest,
-                CONNECTION_DENIED => PacketKind::ConnectionDenied,
-                CONNECTION_ACCEPTED => PacketKind::ConnectionAccepted,
-                DATA_TRANSFER => PacketKind::DataTransfer,
-                HEARTBEAT => PacketKind::Heartbeat,
+            match header.status_code {
+                CONNECTION_REQUEST => (),
+                CONNECTION_DENIED => (),
+                CONNECTION_ACCEPTED => (),
+                DATA_TRANSFER => (),
+                HEARTBEAT => (),
                 invalid => {
                     error!(
                         "Client::on_received_new_packet invalid packet type {:#?}.",
@@ -389,13 +283,14 @@ impl Packet {
                 }
             };
 
-            let state = PacketState::Received(timer.elapsed());
+            let state = Received {
+                footer,
+                time: timer.elapsed(),
+            };
 
             let packet = Packet {
                 header,
                 payload,
-                footer,
-                kind,
                 state,
             };
 

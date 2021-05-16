@@ -1,3 +1,4 @@
+/*
 pub struct Notifier<E> {
     subscribers: Vec<Box<dyn Fn(&E)>>,
 }
@@ -325,3 +326,6 @@ fn main() {
         }
     }
 }
+*/
+
+fn main() {}

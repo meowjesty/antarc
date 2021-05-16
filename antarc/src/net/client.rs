@@ -9,15 +9,14 @@ use hecs::Entity;
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
+use super::Connection;
 use crate::{
     event::Event,
-    host::{Disconnected, Host},
+    host::Disconnected,
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header, ConnectionAccepted, ConnectionId, ConnectionRequest, DataTransfer, Footer,
-        Heartbeat, Internal, Packet, PacketKind, PacketState, Payload, Queued, Received, Retrieved,
-        Sent, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
-        HEARTBEAT,
+        header::Header, ConnectionId, Encoded, Footer, Packet, Payload, Queued, Sequence,
+        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     MTU_LENGTH,
 };
@@ -37,24 +36,7 @@ use crate::{
 /// server? This idea is not clear yet.
 #[derive(Debug)]
 pub struct Client {
-    server: Option<Host>,
-}
-
-/// TODO(alex) 2021-04-24: `LatestReceived` makes sense to be part of the `Host` entity, this
-/// way we can do `world.insert` and not have to remove and then insert (packet case).
-#[derive(Debug)]
-pub(crate) struct LastReceived {
-    packet_id: Entity,
-}
-
-#[derive(Debug)]
-pub(crate) struct LastSent {
-    packet_id: Entity,
-}
-
-#[derive(Debug)]
-pub(crate) struct LastAcked {
-    packet_id: Entity,
+    connection: Option<Connection>,
 }
 
 fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<Event> {
@@ -64,10 +46,7 @@ fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<E
             Ok((num_received, from_address)) => {
                 debug_assert!(num_received > 0);
                 let received = Packet::decode(&buffer[..num_received], timer).unwrap();
-                new_events.push(Event::ReceivedEvent {
-                    received,
-                    source: from_address,
-                });
+                new_events.push(Event::ReceivedPacket { packet: received });
             }
             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                 warn!("Would block on recv_from {:?}", fail);
@@ -93,27 +72,18 @@ fn sender(
     // ADD(alex) 2021-05-13: This idea doesn't hold, if we use dependent types and move, every
     // failable function will have to return the object back, which seems too cumbersome for
     // little gain right now.
-    mut packet: Packet,
+    encoded: &Packet<Encoded>,
     destination: &SocketAddr,
     timer: &Instant,
-) -> Result<Event, Event> {
-    let (encoded, footer) = Packet::encode(&packet.header, &packet.payload, None).unwrap();
-    match socket.send_to(&encoded, *destination) {
+) -> Result<(), String> {
+    match socket.send_to(&encoded.state.bytes, *destination) {
         Ok(num_sent) => {
             debug_assert!(num_sent > 0);
-            packet.sent(footer, timer.elapsed());
-            let sent_event = Event::SentEvent {
-                sent: packet,
-                destination: *destination,
-            };
-
-            Ok(sent_event)
+            Ok(())
         }
         Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
             warn!("Would block on send_to {:?}", fail);
-            Err(Event::FailedEvent {
-                fail: fail.to_string(),
-            })
+            Err(fail.to_string())
         }
         Err(fail) => {
             error!("Failed sending with {fail}.");
@@ -124,7 +94,7 @@ fn sender(
 
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
-        let client = Client { server: None };
+        let client = Client { connection: None };
         let net_manager = NetManager::new(address, client);
         net_manager
     }
@@ -137,22 +107,18 @@ impl NetManager<Client> {
             status_code: CONNECTION_REQUEST,
             ..Default::default()
         };
+        let state = Queued {
+            time: self.timer.elapsed(),
+        };
         let payload = Payload::default();
         let connection_request = Packet {
             header,
             payload,
-            footer: None,
-            kind: PacketKind::ConnectionRequest,
-            state: PacketState::Queued(self.timer.elapsed()),
+            state,
         };
 
-        // TODO(alex): How do I insert the queued packet here? Do I even want to insert it here?
-        // Or just raise the queued packet event, and handle it somewhere else???
-        let mut host = Host::disconnected(*server_addr);
-
-        self.events.push(Event::QueuedEvent {
-            queued: connection_request,
-            destination: host.info.address,
+        self.events.push(Event::QueuedPacket {
+            packet: connection_request,
         });
     }
 
@@ -200,29 +166,28 @@ impl NetManager<Client> {
 
         for event in self.events.drain(..) {
             match event {
-                Event::QueuedEvent {
-                    queued,
-                    destination,
-                } => {
+                Event::QueuedPacket { packet } => {
                     if writable {
-                        sender(&self.network.udp_socket, queued, &destination, &self.timer);
+                        let (bytes, footer) = packet.encode(None).unwrap();
+                        let encoded = packet.to_encoded(footer, &self.timer);
+                         match sender(&self.network.udp_socket, &encoded, todo!(), &self.timer) {
+                             Ok(_) => {}
+                             Err(fail) => {
+                                 error!("Failed sending packet {:#?}.", encoded);
+                             }
+                         }
                     }
                 }
-                Event::SentEvent { sent, destination } => {}
-                Event::ReceivedEvent { received, source } => {}
-                Event::FailedEvent { fail } => {}
+                Event::ReadyToReceive => {}
+                Event::ReadyToSend => {}
+                Event::FailedSendingPacket { packet } => {}
+                Event::SentPacket { packet } => {}
+                Event::ReceivedPacket { packet } => {}
+                Event::SendConnectionRequest { address } => {}
+                Event::ReceivedConnectionRequest { address } => {}
             }
         }
     }
-
-    /// System responsible for attributing a `Source` host to a packet entity, if the host matches
-    /// the packet's `Address`, otherwise it raises the `OnReceivedConnectionRequest` event (if
-    /// the `Header` represents a `ConnectionRequest`).
-    ///
-    /// Also handles the changes to a host's `LatestReceived` packet.
-    ///
-    /// - Raises the `OnReceivedConnectionRequest` event.
-    pub(crate) fn on_received_new_packet(&mut self) {}
 
     /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,
     /// instead of manually calling `receive`.

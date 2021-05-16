@@ -46,9 +46,6 @@ pub(crate) struct Header {
     /// connection request of some sort (fragment, not-fragmented, first attempt, not first
     /// attempt, this is a reconnection, ...), same for other codes.
 
-    /// WARNING(alex): This is **NOT** sent, it's used only during `encoding/decoding` to check the
-    /// `Packet` validity.
-    // pub(crate) protocol_id: ProtocolId,
     pub(crate) sequence: Sequence,
 
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.

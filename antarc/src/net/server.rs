@@ -10,7 +10,7 @@ use log::{debug, error};
 use crate::{
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header, ConnectionAccepted, ConnectionId, Footer, Payload, Queued, Sent, Sequence,
+        header::Header, ConnectionId, Footer, Payload, Queued, Sent, Sequence,
         CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
 };
