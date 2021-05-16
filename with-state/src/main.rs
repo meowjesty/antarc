@@ -1,5 +1,3 @@
-use std::any::{Any, TypeId};
-
 #[derive(Debug, PartialEq, Clone)]
 struct Header {
     sequence: u32,
@@ -15,11 +13,33 @@ struct Footer {
 struct Queued {}
 
 impl Packet<Queued> {
-    fn to_sent(self, footer: Footer) -> Packet<Sent> {
-        let sent = Sent { footer };
+    fn to_encoded(self, crc32: u32) -> Packet<Encoded> {
+        let footer = Footer { crc32 };
+        let bytes = vec![5; 5];
+        let state = Encoded { footer, bytes };
+
         Packet {
             header: self.header,
-            state: sent,
+            state,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct Encoded {
+    footer: Footer,
+    bytes: Vec<u8>,
+}
+
+impl Packet<Encoded> {
+    fn to_sent(self) -> Packet<Sent> {
+        let state = Sent {
+            footer: self.state.footer,
+        };
+
+        Packet {
+            header: self.header,
+            state,
         }
     }
 }
@@ -40,6 +60,26 @@ struct Packet<State> {
     state: State,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+struct RequestingConnection;
+
+#[derive(Debug, PartialEq, Clone)]
+struct AwaitingConnectionResponse;
+
+#[derive(Debug, PartialEq, Clone)]
+struct Connected;
+
+#[derive(Debug, PartialEq, Clone)]
+struct Disconnected;
+
+#[derive(Debug, PartialEq, Clone)]
+enum ConnectionState {
+    RequestingConnection,
+    AwaitingConnectionResponse,
+    Disconnected,
+    Connected,
+}
+
 /// NOTE(alex) 2021-05-14: The idea of having `Peer` hold an `Arc<Packet>` and the events holding
 /// `Weak<Packet>` doesn't properly work, as changes require taking ownership (move packet into a
 /// new state). You'll only be able to take `&mut Packet<State>` from the pointer, but this is not
@@ -49,10 +89,9 @@ struct Packet<State> {
 /// events to keep things flowing, then this whole apparatus wouldn't be neccessary, but the history
 /// is a bit of a requirement.
 #[derive(Debug, PartialEq, Clone)]
-struct Peer {
-    queued: Vec<Packet<Queued>>,
-    sent: Vec<Packet<Sent>>,
+struct Connection {
     received: Vec<Packet<Received>>,
+    state: ConnectionState,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -70,7 +109,7 @@ enum Event {
     ReadyToReceive,
     ReadyToSend,
     QueuedPacket { packet: Packet<Queued> },
-    FailedSendingPacket { packet: Packet<Queued> },
+    FailedSendingPacket { packet: Packet<Encoded> },
     SentPacket { packet: Packet<Sent> },
     ReceivedPacket { packet: Packet<Received> },
 }
@@ -98,12 +137,13 @@ impl Socket {
         self.count <= 2
     }
 
-    fn send(&mut self, packet: u32) -> Result<(), String> {
+    fn send(&mut self, packet: &Packet<Encoded>) -> Result<(), String> {
         if self.count > 2 {
             self.count = 0;
             Err("Socket can't write anymore!".to_string())
         } else {
             self.count += 1;
+            println!("Sending packet {:#?}", packet);
             Ok(())
         }
     }
@@ -121,7 +161,7 @@ impl Socket {
 
 #[derive(Debug, PartialEq, Clone)]
 struct Network {
-    peer: Peer,
+    connection: Connection,
     events: Vec<Event>,
     socket: Socket,
 }
@@ -154,27 +194,15 @@ struct StateError<State> {
     previous_state: Packet<State>,
 }
 
-fn send_packet(packet: Packet<Queued>) -> Result<Packet<Sent>, StateError<Queued>> {
-    if packet.header.sequence >= 1 {
-        Ok(packet.to_sent(Footer { crc32: 10 }))
-    } else {
-        Err(StateError {
-            fail: "Failed to send!".to_string(),
-            previous_state: packet,
-        })
-    }
-}
-
 fn main() {
-    let peer = Peer {
-        queued: Vec::with_capacity(32),
-        sent: Vec::with_capacity(32),
+    let connection = Connection {
         received: Vec::with_capacity(32),
+        state: ConnectionState::Disconnected,
     };
     let events = Vec::with_capacity(32);
     let socket = Socket { count: 0 };
     let mut network = Network {
-        peer,
+        connection,
         events,
         socket,
     };
@@ -188,7 +216,7 @@ fn main() {
         });
 
         let mut new_events = Vec::with_capacity(32);
-        for i in 0..20 {
+        for i in 0..12 {
             if i % 2 == 0 && network.socket.is_good() {
                 network.events.push(Event::ReadyToReceive);
             } else if network.socket.is_good() {
@@ -205,15 +233,16 @@ fn main() {
                 match event {
                     Event::QueuedPacket { packet } => {
                         println!("QueuedPacketEvent {:#?}", packet);
-                        match network.socket.send(10) {
+                        let encoded = packet.to_encoded(32);
+                        match network.socket.send(&encoded) {
                             Ok(_) => {
-                                let sent = packet.to_sent(Footer { crc32: 1 });
+                                let sent = encoded.to_sent();
                                 println!("Packet was sent {:#?}", sent);
                                 new_events.push(Event::SentPacket { packet: sent });
                             }
                             Err(fail) => {
                                 eprintln!("Failed sending packet with {:#?}", fail);
-                                new_events.push(Event::FailedSendingPacket { packet })
+                                new_events.push(Event::FailedSendingPacket { packet: encoded })
                             }
                         }
                     }
@@ -222,9 +251,10 @@ fn main() {
                     }
                     Event::ReceivedPacket { packet } => {
                         println!("ReceivedPacketEvent {:#?}", packet);
+                        network.connection.received.push(packet);
                     }
                     Event::FailedSendingPacket { packet } => {
-                        eprint!("FailedSendingPacketEvent {:#?}", packet);
+                        eprintln!("FailedSendingPacketEvent {:#?}", packet);
                     }
                     Event::ReadyToReceive => {
                         println!("ReadyToReceiveEvent");
