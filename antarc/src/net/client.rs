@@ -10,7 +10,7 @@ use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
 use super::Connection;
-use crate::{MTU_LENGTH, event::{Event, EventKind}, host::{Disconnected, Host, HostInfo}, net::{NetManager, NetworkResource}, packet::{
+use crate::{MTU_LENGTH, event::{Event, EventKind}, host::{Disconnected, Host, HostState}, net::{NetManager, NetworkResource}, packet::{
         header::Header, ConnectionId, Encoded, Footer, Packet, Payload, Queued, Received, Sequence,
         CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     }};
@@ -100,8 +100,8 @@ impl NetManager<Client> {
                 error!("Host is in incorrect state to start requesting connection.");
             }
         } else {
-            let info = HostInfo::new(server_addr.clone());
-            let server = Host::Disconnected { info };
+            let state = HostState::Disconnected;
+            let server = Host::new(server_addr.clone(), state);
             self.client_or_server.server = Some(server);
                 self.events.push(Event::SendConnectionRequest {
                     address: server_addr.clone(),

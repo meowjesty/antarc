@@ -68,17 +68,18 @@ pub(crate) struct Connected {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct HostInfo {
+pub(crate) struct Host {
     pub(crate) address: SocketAddr,
     pub(crate) received: Vec<Packet<Received>>,
     pub(crate) sent: Vec<Packet<Sent>>,
     pub(crate) acked: Vec<Packet<Acked>>,
     pub(crate) queued: Vec<Packet<Queued>>,
     pub(crate) encoded: Vec<Packet<Encoded>>,
+    pub(crate) state: HostState,
 }
 
-impl HostInfo {
-    pub(crate) fn new(address: SocketAddr) -> Self {
+impl Host {
+    pub(crate) fn new(address: SocketAddr, state: HostState) -> Self {
         Self {
             address,
             received: Vec::with_capacity(32),
@@ -86,6 +87,14 @@ impl HostInfo {
             acked: Vec::with_capacity(32),
             queued: Vec::with_capacity(32),
             encoded: Vec::with_capacity(32),
+            state,
+        }
+    }
+
+    pub(crate) fn disconnected(&self) -> bool {
+        match self.state {
+            HostState::Disconnected => true,
+            _ => false,
         }
     }
 }
@@ -94,22 +103,12 @@ impl HostInfo {
 // takes an enum `HostState` with these additional fields, this will simplify passing down hosts
 // between events and so on.
 #[derive(Debug, Clone)]
-pub(crate) enum Host {
-    Disconnected { info: HostInfo },
-    RequestingConnection { info: HostInfo, attempts: u32 },
-    AwaitingConnectionResponse { info: HostInfo, time: Duration },
-    Connected { info: HostInfo },
+pub(crate) enum HostState {
+    Disconnected,
+    RequestingConnection { attempts: u32 },
+    AwaitingConnectionResponse { time: Duration },
+    Connected,
 }
-
-impl Host {
-    pub(crate) fn disconnected(&self) -> bool {
-        match  self {
-            Host::Disconnected { .. } => true,
-            _ => false
-        }
-    }
-}
-
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub(crate) struct Address(pub(crate) SocketAddr);
