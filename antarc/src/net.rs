@@ -56,7 +56,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
-    pub(crate) client_or_server: ClientOrServer,
+    pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
     pub(crate) events: EventList,
 }
@@ -117,7 +117,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             timer,
             events,
             buffer,
-            client_or_server,
+            kind: client_or_server,
             network: network_resource,
         }
     }
@@ -129,7 +129,7 @@ impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
             .field("timer", &self.timer)
             .field("buffer", &self.buffer.len())
             .field("events", &self.events.len())
-            .field("client_or_server", &self.client_or_server)
+            .field("client_or_server", &self.kind)
             .finish()
     }
 }

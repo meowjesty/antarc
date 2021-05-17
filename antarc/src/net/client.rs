@@ -10,10 +10,17 @@ use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
 use super::Connection;
-use crate::{MTU_LENGTH, event::{Event, EventKind}, host::{Disconnected, Host, HostState}, net::{NetManager, NetworkResource}, packet::{
-        header::Header, ConnectionId, Encoded, Footer, Packet, Payload, Queued, Received, Sequence,
-        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
-    }};
+use crate::{
+    event::{Event, EventKind},
+    host::{Disconnected, Host, HostState},
+    net::{NetManager, NetworkResource},
+    packet::{
+        header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
+        Received, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
+        DATA_TRANSFER, HEARTBEAT,
+    },
+    MTU_LENGTH,
+};
 
 /// TODO(alex) 2021-05-01: Consider adding a `DebugName` component for every entity, such as when
 /// doing `world.spawn((format!("Packet {:?}", header), components...))`.
@@ -30,18 +37,22 @@ use crate::{MTU_LENGTH, event::{Event, EventKind}, host::{Disconnected, Host, Ho
 /// server? This idea is not clear yet.
 #[derive(Debug, Default)]
 pub struct Client {
-    pub(crate) queued: Vec<Packet<Queued>>,
-    pub(crate) received: Vec<Packet<Received>>,
-    pub(crate) server: Option<Host>,
+    pub(crate) server: Host,
 }
 
-fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<Event> {
+fn receiver(
+    mut buffer: &mut [u8],
+    socket: &UdpSocket,
+    timer: &Instant,
+    new_events: &mut Vec<Event>,
+) {
     let mut new_events = Vec::with_capacity(8);
     loop {
         match socket.recv_from(&mut buffer) {
             Ok((num_received, from_address)) => {
                 debug_assert!(num_received > 0);
-                let received = Packet::decode(&buffer[..num_received], timer).unwrap();
+                let received =
+                    Packet::decode(&buffer[..num_received], from_address, timer).unwrap();
                 new_events.push(Event::ReceivedPacket { received });
             }
             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
@@ -55,8 +66,6 @@ fn receiver(mut buffer: &mut [u8], socket: &UdpSocket, timer: &Instant) -> Vec<E
             }
         }
     }
-
-    new_events
 }
 
 fn sender(
@@ -91,22 +100,12 @@ impl NetManager<Client> {
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> () {
-        if let Some(server) = &self.client_or_server.server {
-            if server.disconnected() {
-                self.events.push(Event::SendConnectionRequest {
-                    address: server_addr.clone(),
-                });
-            } else {
-                error!("Host is in incorrect state to start requesting connection.");
-            }
-        } else {
-            let state = HostState::Disconnected;
-            let server = Host::new(server_addr.clone(), state);
-            self.client_or_server.server = Some(server);
-                self.events.push(Event::SendConnectionRequest {
-                    address: server_addr.clone(),
-                });
-        }
+        let state = HostState::Disconnected;
+        let server = Host::new(server_addr.clone(), state);
+        self.kind.server = server;
+        self.events.push(Event::SendConnectionRequest {
+            address: server_addr.clone(),
+        });
     }
 
     pub fn enqueue(&mut self, message: Vec<u8>) {}
@@ -127,7 +126,6 @@ impl NetManager<Client> {
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
     pub fn tick(&mut self) -> () {
         let mut new_events = Vec::with_capacity(8);
-        let mut writable = false;
 
         self.network
             .poll
@@ -149,47 +147,124 @@ impl NetManager<Client> {
         for event in self.events.drain(..) {
             match event {
                 Event::QueuedPacket { queued: packet } => {
-                    self.client_or_server.queued.push(packet);
+                    self.kind.server.queued.push(packet);
                 }
-                Event::ReadyToReceive => {}
+                Event::ReadyToReceive => {
+                    receiver(
+                        &mut self.buffer,
+                        &self.network.udp_socket,
+                        &self.timer,
+                        &mut new_events,
+                    );
+                }
                 Event::ReadyToSend => {
                     debug!("Client ready to send.");
 
                     loop {
-                        if let Some(queued) = self.client_or_server.queued.pop() {
-                            let header = Header::default();
-                            let (bytes, footer) = match queued.encode(&header, None) {
-                                Ok(success) => success,
-                                Err(fail) => {
-                                    error!("Failed encoding packet {:#?}.", fail);
-                                    new_events.push(Event::FailedEncodingPacket { queued });
-                                    continue;
-                                }
-                            };
-                            let encoded = queued.to_encoded(header, footer, &self.timer);
-                            match sender(
-                                &self.network.udp_socket,
-                                &encoded,
-                                &encoded.address,
-                                &self.timer,
-                            ) {
-                                Ok(_) => {
-                                    debug!("Client sent packet successfully {:#?}.", encoded);
-                                    let sent = encoded.to_sent(&self.timer);
-                                    new_events.push(Event::SentPacket { sent });
-                                }
-                                Err(fail) => {
-                                    error!("Client failed sending packet {:#?}.", fail);
-                                    new_events.push(Event::FailedSendingPacket { encoded });
-                                    // TODO(alex) 2021-05-17: Must treat 2 different errors here,
-                                    // the WouldBlock and socket issues, each will have its own
-                                    // handling mechanism.
-                                    break;
-                                }
+                        let sequence = self
+                            .kind
+                            .server
+                            .sent
+                            .last()
+                            .map(|sent| sent.state.header.sequence)
+                            .unwrap_or_default();
+
+                        let ack = self
+                            .kind
+                            .server
+                            .received
+                            .last()
+                            .map(|received| received.state.header.sequence.get())
+                            .unwrap_or_default();
+
+                        let connection_id = self.kind.server.state.connection_id();
+
+                        let encoded = match self.kind.server.queued.pop() {
+                            Some(queued) => {
+                                let status_code = From::from(queued.kind);
+
+                                let payload_length = queued.payload.len() as u16;
+
+                                let header = Header {
+                                    sequence,
+                                    ack,
+                                    past_acks: 0,
+                                    status_code,
+                                    payload_length,
+                                };
+
+                                let (bytes, footer) = match queued.encode(&header, connection_id) {
+                                    Ok(success) => success,
+                                    Err(fail) => {
+                                        error!("Failed encoding packet {:#?}.", fail);
+                                        new_events.push(Event::FailedEncodingPacket { queued });
+                                        continue;
+                                    }
+                                };
+                                let encoded = queued.to_encoded(header, footer, &self.timer);
+                                encoded
                             }
-                        } else {
-                            // TODO(alex) 2021-05-17: Send heartbeat.
-                            todo!()
+                            None => {
+                                let status_code = HEARTBEAT;
+                                let payload = Payload::default();
+                                let payload_length = payload.len() as u16;
+
+                                let header = Header {
+                                    sequence,
+                                    ack,
+                                    past_acks: 0,
+                                    status_code,
+                                    payload_length,
+                                };
+
+                                let state = Queued {
+                                    time: self.timer.elapsed(),
+                                };
+                                let kind = PacketKind::Heartbeat;
+
+                                let address = self.kind.server.address;
+
+                                let packet = Packet {
+                                    payload,
+                                    state,
+                                    kind,
+                                    address,
+                                };
+
+                                let (bytes, footer) = match packet.encode(&header, connection_id) {
+                                    Ok(success) => success,
+                                    Err(fail) => {
+                                        error!("Failed encoding packet {:#?}.", fail);
+                                        new_events
+                                            .push(Event::FailedEncodingPacket { queued: packet });
+                                        continue;
+                                    }
+                                };
+                                let encoded = packet.to_encoded(header, footer, &self.timer);
+                                encoded
+                            }
+                        };
+
+                        match sender(
+                            &self.network.udp_socket,
+                            &encoded,
+                            &encoded.address,
+                            &self.timer,
+                        ) {
+                            Ok(_) => {
+                                debug!("Client sent packet successfully {:#?}.", encoded);
+                                let sent = encoded.to_sent(&self.timer);
+                                new_events.push(Event::SentPacket { sent });
+                            }
+                            Err(fail) => {
+                                error!("Client failed sending packet {:#?}.", fail);
+                                new_events.push(Event::FailedSendingPacket { encoded });
+                                // TODO(alex) 2021-05-17: Must treat 2 different errors
+                                // here,
+                                // the WouldBlock and socket issues, each will have its own
+                                // handling mechanism.
+                                break;
+                            }
                         }
                     }
                 }
@@ -198,11 +273,11 @@ impl NetManager<Client> {
                 Event::SentPacket { sent: packet } => {}
                 Event::ReceivedPacket { received: packet } => {}
                 Event::SendConnectionRequest { address } => {
-                    let header = Header {
-                        sequence: Sequence::one(),
-                        status_code: CONNECTION_REQUEST,
-                        ..Default::default()
-                    };
+                    // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have
+                    // been called yet, but not doing this requires `if let Some` pattern in each
+                    // event. I have to think of a better way to handle this ordeal.
+                    self.kind.server.state = HostState::RequestingConnection { attempts: 0 };
+
                     let state = Queued {
                         time: self.timer.elapsed(),
                     };
@@ -211,6 +286,7 @@ impl NetManager<Client> {
                         payload,
                         state,
                         address,
+                        kind: PacketKind::ConnectionRequest,
                     };
 
                     new_events.push(Event::QueuedPacket { queued: packet });
@@ -218,6 +294,8 @@ impl NetManager<Client> {
                 Event::ReceivedConnectionRequest { address } => {}
             }
         }
+
+        self.events.append(&mut new_events);
     }
 
     /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,

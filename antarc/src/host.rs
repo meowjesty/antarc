@@ -99,6 +99,12 @@ impl Host {
     }
 }
 
+impl Default for Host {
+    fn default() -> Self {
+        Self::new("127.0.0.1:7777".parse().unwrap(), HostState::Disconnected)
+    }
+}
+
 // TODO(alex) 2021-05-17: Should I reverse this with `HostInfo`? We could have a struct `Host` that
 // takes an enum `HostState` with these additional fields, this will simplify passing down hosts
 // between events and so on.
@@ -107,7 +113,16 @@ pub(crate) enum HostState {
     Disconnected,
     RequestingConnection { attempts: u32 },
     AwaitingConnectionResponse { time: Duration },
-    Connected,
+    Connected { connection_id: ConnectionId },
+}
+
+impl HostState {
+    pub(crate) fn connection_id(&self) -> Option<ConnectionId> {
+        match self {
+            HostState::Connected { connection_id } => Some(*connection_id),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]

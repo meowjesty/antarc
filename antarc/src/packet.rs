@@ -1,6 +1,6 @@
 use core::mem::size_of;
 use std::{
-    convert::TryInto,
+    convert::{TryFrom, TryInto},
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
     time::{Duration, Instant},
@@ -33,6 +33,7 @@ pub(crate) const CONNECTION_ACCEPTED: StatusCode = 400;
 pub(crate) const CONNECTION_DENIED: StatusCode = 500;
 pub(crate) const HEARTBEAT: StatusCode = 600;
 pub(crate) const DATA_TRANSFER: StatusCode = 700;
+pub(crate) const ACK: StatusCode = 800;
 
 /// TODO(alex) 2021-02-09: Improve terminology:
 /// http://www.tcpipguide.com/free/t_MessagesPacketsFramesDatagramsandCells-2.htm
@@ -136,11 +137,56 @@ pub(crate) struct Received {
     pub(crate) time: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq, Copy)]
+pub(crate) enum PacketKind {
+    ConnectionRequest,
+    ConnectionAccepted,
+    ConnectionDenied,
+    Ack(Ack),
+    DataTransfer,
+    Heartbeat,
+}
+
+impl PacketKind {
+    fn from_header(header: &Header) -> Self {
+        match header.status_code {
+            CONNECTION_REQUEST => PacketKind::ConnectionRequest,
+            CONNECTION_DENIED => PacketKind::ConnectionDenied,
+            CONNECTION_ACCEPTED => PacketKind::ConnectionAccepted,
+            DATA_TRANSFER => PacketKind::DataTransfer,
+            HEARTBEAT => PacketKind::Heartbeat,
+            ACK => PacketKind::Ack(header.ack),
+            invalid => {
+                error!(
+                    "Client::on_received_new_packet invalid packet type {:#?}.",
+                    invalid
+                );
+                unreachable!();
+            }
+        }
+    }
+
+}
+
+impl From<PacketKind> for StatusCode {
+    fn from(kind: PacketKind) -> Self {
+        match kind {
+            PacketKind::ConnectionRequest => CONNECTION_REQUEST,
+            PacketKind::ConnectionAccepted => CONNECTION_ACCEPTED,
+            PacketKind::ConnectionDenied => CONNECTION_DENIED,
+            PacketKind::Ack(_) => ACK,
+            PacketKind::DataTransfer => DATA_TRANSFER,
+            PacketKind::Heartbeat => HEARTBEAT,
+        }
+    }
+}
+
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Packet<State> {
     pub(crate) payload: Payload,
     pub(crate) state: State,
+    pub(crate) kind: PacketKind,
     pub(crate) address: SocketAddr,
 }
 
@@ -208,7 +254,11 @@ impl Packet<Encoded> {
 }
 
 impl Packet<Received> {
-    pub(crate) fn decode(buffer: &[u8], timer: &Instant) -> Result<Packet<Received>, String> {
+    pub(crate) fn decode(
+        buffer: &[u8],
+        address: SocketAddr,
+        timer: &Instant,
+    ) -> Result<Packet<Received>, String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -284,20 +334,7 @@ impl Packet<Received> {
                 crc32: crc32.try_into().unwrap(),
             };
 
-            match header.status_code {
-                CONNECTION_REQUEST => (),
-                CONNECTION_DENIED => (),
-                CONNECTION_ACCEPTED => (),
-                DATA_TRANSFER => (),
-                HEARTBEAT => (),
-                invalid => {
-                    error!(
-                        "Client::on_received_new_packet invalid packet type {:#?}.",
-                        invalid
-                    );
-                    unreachable!();
-                }
-            };
+            let kind = PacketKind::from_header(&header);
 
             let state = Received {
                 header,
@@ -308,7 +345,8 @@ impl Packet<Received> {
             let packet = Packet {
                 payload,
                 state,
-                address: todo!(),
+                address,
+                kind,
             };
 
             Ok(packet)
