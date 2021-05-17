@@ -146,10 +146,13 @@ impl NetManager<Client> {
 
         for event in self.events.drain(..) {
             match event {
-                Event::QueuedPacket { queued: packet } => {
-                    self.kind.server.queued.push(packet);
+                Event::QueuedPacket { queued } => {
+                    debug!("Handling QueuedPacket for {:#?}", queued);
+                    // TODO(alex) 2021-05-17: What to do here before this?
+                    self.kind.server.queued.push(queued);
                 }
                 Event::ReadyToReceive => {
+                    debug!("Handling ReadyToReceive");
                     receiver(
                         &mut self.buffer,
                         &self.network.udp_socket,
@@ -158,7 +161,7 @@ impl NetManager<Client> {
                     );
                 }
                 Event::ReadyToSend => {
-                    debug!("Client ready to send.");
+                    debug!("Handling ReadyToSend");
 
                     loop {
                         let sequence = self
@@ -268,11 +271,24 @@ impl NetManager<Client> {
                         }
                     }
                 }
-                Event::FailedEncodingPacket { queued: packet } => {}
-                Event::FailedSendingPacket { encoded: packet } => {}
-                Event::SentPacket { sent: packet } => {}
-                Event::ReceivedPacket { received: packet } => {}
+                Event::FailedEncodingPacket { queued } => {
+                    error!("Handling event FailedEncodingPacket for {:#?}", queued);
+                }
+                Event::FailedSendingPacket { encoded } => {
+                    error!("Handling event FailedSendingPacket for {:#?}", encoded);
+                }
+                Event::SentPacket { sent } => {
+                    debug!("Handling SentPacket for {:#?}", sent);
+                    // TODO(alex) 2021-05-17: What to do here before this?
+                    self.kind.server.sent.push(sent);
+                }
+                Event::ReceivedPacket { received } => {
+                    debug!("Handling ReceivedPacket for {:#?}", received);
+                    // TODO(alex) 2021-05-17: What to do here before this?
+                    self.kind.server.received.push(received);
+                }
                 Event::SendConnectionRequest { address } => {
+                    debug!("Handling SendConnectionRequest for {:#?}", address);
                     // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have
                     // been called yet, but not doing this requires `if let Some` pattern in each
                     // event. I have to think of a better way to handle this ordeal.

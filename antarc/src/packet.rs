@@ -165,7 +165,6 @@ impl PacketKind {
             }
         }
     }
-
 }
 
 impl From<PacketKind> for StatusCode {
@@ -191,6 +190,8 @@ pub(crate) struct Packet<State> {
 }
 
 impl Packet<Queued> {
+    // TODO(alex) 2021-05-17: Can't do much more without implementing this function, it should take
+    // priority with the `Server::tick`.
     pub(crate) fn to_encoded(
         self,
         header: Header,
@@ -200,6 +201,9 @@ impl Packet<Queued> {
         todo!()
     }
 
+    // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
+    // I don't remember if this encode was in a proper working state when the `restart` branch was
+    // created.
     pub(crate) fn encode(
         &self,
         header: &Header,
@@ -254,6 +258,9 @@ impl Packet<Encoded> {
 }
 
 impl Packet<Received> {
+    // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
+    // I don't remember if this encode was in a proper working state when the `restart` branch was
+    // created.
     pub(crate) fn decode(
         buffer: &[u8],
         address: SocketAddr,

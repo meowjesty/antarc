@@ -34,6 +34,8 @@ impl NetManager<Server> {
         todo!()
     }
 
+    // TODO(alex) 2021-05-17: It's probably a good idea to start working on this before going
+    // further, to validate that the ideas I had so far are working. Make this the focus.
     pub fn tick(&mut self) -> () {
         todo!()
     }
