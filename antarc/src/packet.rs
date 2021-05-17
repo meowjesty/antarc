@@ -109,6 +109,7 @@ pub(crate) struct Queued {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Encoded {
+    pub(crate) header: Header,
     pub(crate) bytes: Vec<u8>,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
@@ -116,12 +117,21 @@ pub(crate) struct Encoded {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Sent {
+    pub(crate) header: Header,
+    pub(crate) footer: Footer,
+    pub(crate) time: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Acked {
+    pub(crate) header: Header,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Received {
+    pub(crate) header: Header,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
 }
@@ -129,21 +139,27 @@ pub(crate) struct Received {
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Packet<State> {
-    pub(crate) header: Header,
     pub(crate) payload: Payload,
     pub(crate) state: State,
+    pub(crate) address: SocketAddr,
 }
 
 impl Packet<Queued> {
-    pub(crate) fn to_encoded(self, footer: Footer, time: &Instant) -> Packet<Encoded> {
+    pub(crate) fn to_encoded(
+        self,
+        header: Header,
+        footer: Footer,
+        time: &Instant,
+    ) -> Packet<Encoded> {
         todo!()
     }
 
     pub(crate) fn encode(
         &self,
+        header: &Header,
         connection_id: Option<ConnectionId>,
     ) -> Result<(Vec<u8>, Footer), String> {
-        let (header, payload) = (&self.header, &self.payload);
+        let payload = &self.payload;
 
         let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = header.ack.to_be_bytes().to_vec();
@@ -186,7 +202,7 @@ impl Packet<Queued> {
 }
 
 impl Packet<Encoded> {
-    pub(crate) fn to_send(self, time: &Instant) -> Packet<Sent> {
+    pub(crate) fn to_sent(self, time: &Instant) -> Packet<Sent> {
         todo!()
     }
 }
@@ -284,14 +300,15 @@ impl Packet<Received> {
             };
 
             let state = Received {
+                header,
                 footer,
                 time: timer.elapsed(),
             };
 
             let packet = Packet {
-                header,
                 payload,
                 state,
+                address: todo!(),
             };
 
             Ok(packet)

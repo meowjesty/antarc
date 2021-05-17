@@ -12,6 +12,7 @@ pub(crate) enum EventKind {
     ReadyToReceive,
     ReadyToSend,
     QueuedPacket,
+    FailedEncodingPacket,
     FailedSendingPacket,
     SentPacket,
     ReceivedPacket,
@@ -25,10 +26,11 @@ pub(crate) enum Event {
     ReadyToSend,
     SendConnectionRequest { address: SocketAddr },
     ReceivedConnectionRequest { address: SocketAddr },
-    QueuedPacket { packet: Packet<Queued> },
-    FailedSendingPacket { packet: Packet<Encoded> },
-    SentPacket { packet: Packet<Sent> },
-    ReceivedPacket { packet: Packet<Received> },
+    QueuedPacket { queued: Packet<Queued> },
+    FailedEncodingPacket { queued: Packet<Queued> },
+    FailedSendingPacket { encoded: Packet<Encoded> },
+    SentPacket { sent: Packet<Sent> },
+    ReceivedPacket { received: Packet<Received> },
 }
 
 impl Event {
@@ -37,6 +39,7 @@ impl Event {
             Event::ReadyToReceive => EventKind::ReadyToReceive,
             Event::ReadyToSend => EventKind::ReadyToSend,
             Event::QueuedPacket { .. } => EventKind::QueuedPacket,
+            Event::FailedEncodingPacket { .. } => EventKind::FailedEncodingPacket,
             Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
             Event::SentPacket { .. } => EventKind::SentPacket,
             Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,

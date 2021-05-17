@@ -17,7 +17,7 @@ pub mod client;
 pub mod server;
 
 #[derive(Debug, PartialEq, Clone)]
-enum ConnectionState {
+pub(crate) enum ConnectionState {
     RequestingConnection,
     AwaitingConnectionResponse,
     Disconnected,
@@ -25,9 +25,10 @@ enum ConnectionState {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct Connection {
-    received: Vec<Packet<Received>>,
-    state: ConnectionState,
+pub(crate) struct Connection {
+    pub(crate) queued: Vec<Packet<Queued>>,
+    pub(crate) received: Vec<Packet<Received>>,
+    pub(crate) state: ConnectionState,
 }
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll

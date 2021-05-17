@@ -7,7 +7,7 @@ use std::{
 use hecs::Entity;
 use log::error;
 
-use crate::packet::{ConnectionId, Packet, Queued, Received, Sent};
+use crate::packet::{Acked, ConnectionId, Encoded, Packet, Queued, Received, Sent};
 
 pub(crate) mod requesting_connection;
 pub(crate) mod sending_connection_request;
@@ -32,9 +32,6 @@ pub(crate) mod sending_connection_request;
 /// littered with `todo!()`, as I need to get a better understanding on what states belong where.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct Disconnected;
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct StateEnteredTime(pub(crate) Duration);
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct RequestingConnection {
@@ -70,15 +67,49 @@ pub(crate) struct Connected {
     pub(crate) rtt: Duration,
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) struct LatestReceived {
-    pub(crate) packet_id: Entity,
+#[derive(Debug, Clone)]
+pub(crate) struct HostInfo {
+    pub(crate) address: SocketAddr,
+    pub(crate) received: Vec<Packet<Received>>,
+    pub(crate) sent: Vec<Packet<Sent>>,
+    pub(crate) acked: Vec<Packet<Acked>>,
+    pub(crate) queued: Vec<Packet<Queued>>,
+    pub(crate) encoded: Vec<Packet<Encoded>>,
 }
 
-#[derive(Debug, PartialEq, PartialOrd)]
-pub(crate) struct LatestSent {
-    pub(crate) packet_id: Entity,
+impl HostInfo {
+    pub(crate) fn new(address: SocketAddr) -> Self {
+        Self {
+            address,
+            received: Vec::with_capacity(32),
+            sent: Vec::with_capacity(32),
+            acked: Vec::with_capacity(32),
+            queued: Vec::with_capacity(32),
+            encoded: Vec::with_capacity(32),
+        }
+    }
 }
+
+// TODO(alex) 2021-05-17: Should I reverse this with `HostInfo`? We could have a struct `Host` that
+// takes an enum `HostState` with these additional fields, this will simplify passing down hosts
+// between events and so on.
+#[derive(Debug, Clone)]
+pub(crate) enum Host {
+    Disconnected { info: HostInfo },
+    RequestingConnection { info: HostInfo, attempts: u32 },
+    AwaitingConnectionResponse { info: HostInfo, time: Duration },
+    Connected { info: HostInfo },
+}
+
+impl Host {
+    pub(crate) fn disconnected(&self) -> bool {
+        match  self {
+            Host::Disconnected { .. } => true,
+            _ => false
+        }
+    }
+}
+
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub(crate) struct Address(pub(crate) SocketAddr);
