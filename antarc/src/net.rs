@@ -8,7 +8,7 @@ use mio::{
 };
 
 use crate::{
-    event::EventList,
+    events::EventList,
     packet::{Packet, Queued, Received, Sent},
     MTU_LENGTH,
 };
@@ -58,6 +58,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) buffer: Vec<u8>,
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
+    pub(crate) queued: Vec<Packet<Queued>>,
     pub(crate) events: EventList,
 }
 
@@ -111,12 +112,14 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let buffer = vec![0x0; MTU_LENGTH];
         let events = Vec::with_capacity(1024);
 
+        let queued = Vec::with_capacity(128);
         let network_resource = NetworkResource::new(address);
 
         Self {
             timer,
             events,
             buffer,
+            queued,
             kind: client_or_server,
             network: network_resource,
         }

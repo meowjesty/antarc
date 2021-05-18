@@ -7,7 +7,7 @@ use std::{
 use hecs::Entity;
 use log::error;
 
-use crate::packet::{Acked, ConnectionId, Encoded, Packet, Queued, Received, Sent};
+use crate::packet::{Ack, Acked, ConnectionId, Encoded, Packet, Queued, Received, Sent, Sequence};
 
 pub(crate) mod requesting_connection;
 pub(crate) mod sending_connection_request;
@@ -69,12 +69,11 @@ pub(crate) struct Connected {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Host<State> {
+    pub(crate) sequence_tracker: Sequence,
+    pub(crate) ack_tracker: Ack,
+    pub(crate) last_acked: Ack,
     pub(crate) address: SocketAddr,
     pub(crate) received: Vec<Packet<Received>>,
-    pub(crate) sent: Vec<Packet<Sent>>,
-    pub(crate) acked: Vec<Packet<Acked>>,
-    pub(crate) queued: Vec<Packet<Queued>>,
-    pub(crate) encoded: Vec<Packet<Encoded>>,
     pub(crate) state: State,
 }
 
@@ -82,12 +81,11 @@ impl Host<Disconnected> {
     pub(crate) fn new_disconnected(address: SocketAddr) -> Self {
         let state = Disconnected;
         Self {
+            sequence_tracker: Sequence::default(),
+            ack_tracker: 0,
+            last_acked: 0,
             address,
             received: Vec::with_capacity(32),
-            sent: Vec::with_capacity(32),
-            acked: Vec::with_capacity(32),
-            queued: Vec::with_capacity(32),
-            encoded: Vec::with_capacity(32),
             state,
         }
     }
@@ -95,18 +93,17 @@ impl Host<Disconnected> {
 
 impl Host<Generic> {
     pub(crate) fn new_generic(address: SocketAddr) -> Self {
-        let generic = Generic {
+        let state = Generic {
             state: HostState::Disconnected,
         };
 
         Self {
+            sequence_tracker: Sequence::default(),
+            ack_tracker: 0,
+            last_acked: 0,
             address,
             received: Vec::with_capacity(32),
-            sent: Vec::with_capacity(32),
-            acked: Vec::with_capacity(32),
-            queued: Vec::with_capacity(32),
-            encoded: Vec::with_capacity(32),
-            state: generic,
+            state,
         }
     }
 

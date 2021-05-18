@@ -19,7 +19,7 @@ use std::{
 use packet::header::Header;
 
 // pub mod client;
-pub(crate) mod event;
+pub(crate) mod events;
 pub mod host;
 pub mod net;
 pub mod packet;

@@ -8,18 +8,18 @@ use hecs::World;
 use log::{debug, error};
 
 use crate::{
-    event::Event,
+    events::Event,
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
     net::{client::receiver, NetManager, NetworkResource},
     packet::{
-        header::Header, ConnectionId, Footer, Packet, Payload, Queued, Sent, Sequence,
-        CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued, Sent,
+        Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
+        HEARTBEAT,
     },
 };
 
 #[derive(Debug)]
 pub struct Server {
-    queued_packets: Vec<Packet<Queued>>,
     connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
     requesting_connection: Vec<Host<RequestingConnection>>,
@@ -30,7 +30,6 @@ pub struct Server {
 impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
         let server = Server {
-            queued_packets: Vec::with_capacity(128),
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
             disconnected: Vec::with_capacity(8),
             requesting_connection: Vec::with_capacity(8),
@@ -71,12 +70,7 @@ impl NetManager<Server> {
                 Event::ReadyToReceive => {
                     debug!("Handling ReadyToReceive");
 
-                    receiver(
-                        &mut self.buffer,
-                        &self.network.udp_socket,
-                        &self.timer,
-                        &mut new_events,
-                    );
+                    // receiver(&mut self.buffer, &self.network.udp_socket, &self.timer);
                 }
                 Event::ReadyToSend => {
                     debug!("Handling ReadyToSend");
@@ -91,6 +85,66 @@ impl NetManager<Server> {
                     //
                     // A similar thing would have to be done on the `Received` and `Retrieved` to
                     // get the correct ack value, not even talking about `past_acks`.
+                    //
+                    // ADD(alex) 2021-05-18: The server won't send the same packet to every client,
+                    // for example, when client B requests a connection, then the server will send
+                    // a connection accepted to B, but will send a data transfer to client A, which
+                    // is already connected.
+                    loop {
+                        let encoded = match self.queued.pop() {
+                            Some(queued) => {
+                                debug!("There is a packet to queued {:#?}", queued);
+
+                                match queued.kind {
+                                    PacketKind::ConnectionRequest => {
+                                        error!("Server cannot send connection request!");
+                                        unreachable!();
+                                    }
+                                    PacketKind::ConnectionAccepted => {
+                                        debug!("Server has a ConnectionAccepted queued.");
+
+                                        match self
+                                            .kind
+                                            .requesting_connection
+                                            .drain_filter(|client| client.address == queued.address)
+                                            .next()
+                                        {
+                                            Some(client) => {
+                                                debug!(
+                                                    "Client requesting connection {:#?}.",
+                                                    client
+                                                );
+                                            }
+                                            None => {
+                                                error!(
+                                                    "No client with {:#?} requesting connection!",
+                                                    queued.address
+                                                );
+                                                unreachable!();
+                                            }
+                                        }
+                                    }
+                                    PacketKind::ConnectionDenied => {
+                                        debug!("Server has a ConnectionDenied queued.");
+                                    }
+                                    PacketKind::Ack(ack) => {
+                                        debug!("Server has an Ack queued {:#?}.", ack);
+                                    }
+                                    PacketKind::DataTransfer => {
+                                        debug!("Server has a DataTransfer queued.");
+                                    }
+                                    PacketKind::Heartbeat => {
+                                        debug!("Server has a Heartbeat queued.");
+                                    }
+                                }
+                                queued
+                            }
+                            None => {
+                                debug!("No packet queued found");
+                                todo!()
+                            }
+                        };
+                    }
                 }
                 Event::SendConnectionRequest { address } => {
                     error!("Server cannot handle SendConnectionRequest!");
@@ -98,10 +152,6 @@ impl NetManager<Server> {
                 }
                 Event::ReceivedConnectionRequest { address } => {
                     debug!("Handling ReceivedConnectionRequest from {:#?}", address);
-                }
-                Event::QueuedPacket { queued } => {
-                    debug!("Handling QueuedPacket for {:#?}", queued);
-                    self.kind.queued_packets.push(queued);
                 }
                 Event::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
@@ -114,6 +164,9 @@ impl NetManager<Server> {
                 }
                 Event::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
+                }
+                Event::SendHeartbeat { address } => {
+                    debug!("Handling SendHeartbeat to {:#?}", address);
                 }
             }
         }

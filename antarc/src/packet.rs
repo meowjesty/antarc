@@ -183,6 +183,7 @@ impl From<PacketKind> for StatusCode {
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Packet<State> {
+    pub(crate) id: u64,
     pub(crate) payload: Payload,
     pub(crate) state: State,
     pub(crate) kind: PacketKind,
@@ -262,6 +263,7 @@ impl Packet<Received> {
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
     pub(crate) fn decode(
+        id: u64,
         buffer: &[u8],
         address: SocketAddr,
         timer: &Instant,
@@ -350,6 +352,7 @@ impl Packet<Received> {
             };
 
             let packet = Packet {
+                id,
                 payload,
                 state,
                 address,

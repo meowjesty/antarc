@@ -11,11 +11,11 @@ use crate::{
 pub(crate) enum EventKind {
     ReadyToReceive,
     ReadyToSend,
-    QueuedPacket,
     FailedEncodingPacket,
     FailedSendingPacket,
     SentPacket,
     ReceivedPacket,
+    SendHeartbeat,
     SendConnectionRequest,
     ReceivedConnectionRequest,
 }
@@ -25,8 +25,8 @@ pub(crate) enum Event {
     ReadyToReceive,
     ReadyToSend,
     SendConnectionRequest { address: SocketAddr },
+    SendHeartbeat { address: SocketAddr },
     ReceivedConnectionRequest { address: SocketAddr },
-    QueuedPacket { queued: Packet<Queued> },
     FailedEncodingPacket { queued: Packet<Queued> },
     FailedSendingPacket { encoded: Packet<Encoded> },
     SentPacket { sent: Packet<Sent> },
@@ -38,13 +38,13 @@ impl Event {
         match self {
             Event::ReadyToReceive => EventKind::ReadyToReceive,
             Event::ReadyToSend => EventKind::ReadyToSend,
-            Event::QueuedPacket { .. } => EventKind::QueuedPacket,
             Event::FailedEncodingPacket { .. } => EventKind::FailedEncodingPacket,
             Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
             Event::SentPacket { .. } => EventKind::SentPacket,
             Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,
             Event::SendConnectionRequest { .. } => EventKind::SendConnectionRequest,
             Event::ReceivedConnectionRequest { .. } => EventKind::ReceivedConnectionRequest,
+            Event::SendHeartbeat { .. } => EventKind::SendHeartbeat,
         }
     }
 }
