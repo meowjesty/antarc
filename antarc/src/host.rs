@@ -68,18 +68,19 @@ pub(crate) struct Connected {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Host {
+pub(crate) struct Host<State> {
     pub(crate) address: SocketAddr,
     pub(crate) received: Vec<Packet<Received>>,
     pub(crate) sent: Vec<Packet<Sent>>,
     pub(crate) acked: Vec<Packet<Acked>>,
     pub(crate) queued: Vec<Packet<Queued>>,
     pub(crate) encoded: Vec<Packet<Encoded>>,
-    pub(crate) state: HostState,
+    pub(crate) state: State,
 }
 
-impl Host {
-    pub(crate) fn new(address: SocketAddr, state: HostState) -> Self {
+impl Host<Disconnected> {
+    pub(crate) fn new_disconnected(address: SocketAddr) -> Self {
+        let state = Disconnected;
         Self {
             address,
             received: Vec::with_capacity(32),
@@ -90,19 +91,42 @@ impl Host {
             state,
         }
     }
+}
+
+impl Host<Generic> {
+    pub(crate) fn new_generic(address: SocketAddr) -> Self {
+        let generic = Generic {
+            state: HostState::Disconnected,
+        };
+
+        Self {
+            address,
+            received: Vec::with_capacity(32),
+            sent: Vec::with_capacity(32),
+            acked: Vec::with_capacity(32),
+            queued: Vec::with_capacity(32),
+            encoded: Vec::with_capacity(32),
+            state: generic,
+        }
+    }
+
+    pub(crate) fn new_local() -> Self {
+        Self::new_generic("127.0.0.1:7777".parse().unwrap())
+    }
 
     pub(crate) fn disconnected(&self) -> bool {
-        match self.state {
+        match self.state.state {
             HostState::Disconnected => true,
             _ => false,
         }
     }
 }
 
-impl Default for Host {
-    fn default() -> Self {
-        Self::new("127.0.0.1:7777".parse().unwrap(), HostState::Disconnected)
-    }
+#[derive(Debug, Clone)]
+pub(crate) struct Generic {
+    // TODO(alex) 2021-05-17: This name is horrible, the naming conventions used here are kinda
+    // confusing in general, `host.rs` file warrants a big renaming.
+    pub(crate) state: HostState,
 }
 
 // TODO(alex) 2021-05-17: Should I reverse this with `HostInfo`? We could have a struct `Host` that
@@ -111,15 +135,15 @@ impl Default for Host {
 #[derive(Debug, Clone)]
 pub(crate) enum HostState {
     Disconnected,
-    RequestingConnection { attempts: u32 },
-    AwaitingConnectionResponse { time: Duration },
-    Connected { connection_id: ConnectionId },
+    RequestingConnection { info: RequestingConnection },
+    AwaitingConnectionResponse { info: AwaitingConnectionResponse },
+    Connected { info: Connected },
 }
 
 impl HostState {
     pub(crate) fn connection_id(&self) -> Option<ConnectionId> {
         match self {
-            HostState::Connected { connection_id } => Some(*connection_id),
+            HostState::Connected { info } => Some(info.connection_id),
             _ => None,
         }
     }

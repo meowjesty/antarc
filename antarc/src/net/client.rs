@@ -12,7 +12,7 @@ use mio::net::UdpSocket;
 use super::Connection;
 use crate::{
     event::{Event, EventKind},
-    host::{Disconnected, Host, HostState},
+    host::{Disconnected, Generic, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
@@ -35,12 +35,12 @@ use crate::{
 /// connection (`Host<State>`) for multiple other clients. To to this we would need something
 /// that looks more like the `Server`, and some way to keep one node of the network as the main
 /// server? This idea is not clear yet.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Client {
-    pub(crate) server: Host,
+    pub(crate) server: Host<Generic>,
 }
 
-fn receiver(
+pub(crate) fn receiver(
     mut buffer: &mut [u8],
     socket: &UdpSocket,
     timer: &Instant,
@@ -68,7 +68,7 @@ fn receiver(
     }
 }
 
-fn sender(
+pub(crate) fn sender(
     socket: &UdpSocket,
     encoded: &Packet<Encoded>,
     destination: &SocketAddr,
@@ -92,7 +92,9 @@ fn sender(
 
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
-        let client = Client::default();
+        let client = Client {
+            server: Host::new_local(),
+        };
         let net_manager = NetManager::new(address, client);
         net_manager
     }
@@ -100,8 +102,7 @@ impl NetManager<Client> {
     /// TODO(alex) 2021-02-26: Authentication is something that we can't do here, it's up to the
     /// user, but there must be an API for forcefully dropping a connection, plus banning a host.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> () {
-        let state = HostState::Disconnected;
-        let server = Host::new(server_addr.clone(), state);
+        let server = Host::new_generic(server_addr.clone());
         self.kind.server = server;
         self.events.push(Event::SendConnectionRequest {
             address: server_addr.clone(),
@@ -180,7 +181,7 @@ impl NetManager<Client> {
                             .map(|received| received.state.header.sequence.get())
                             .unwrap_or_default();
 
-                        let connection_id = self.kind.server.state.connection_id();
+                        let connection_id = self.kind.server.state.state.connection_id();
 
                         let encoded = match self.kind.server.queued.pop() {
                             Some(queued) => {
@@ -292,7 +293,9 @@ impl NetManager<Client> {
                     // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have
                     // been called yet, but not doing this requires `if let Some` pattern in each
                     // event. I have to think of a better way to handle this ordeal.
-                    self.kind.server.state = HostState::RequestingConnection { attempts: 0 };
+                    self.kind.server.state.state = HostState::RequestingConnection {
+                        info: RequestingConnection { attempts: 0 },
+                    };
 
                     let state = Queued {
                         time: self.timer.elapsed(),
@@ -307,7 +310,10 @@ impl NetManager<Client> {
 
                     new_events.push(Event::QueuedPacket { queued: packet });
                 }
-                Event::ReceivedConnectionRequest { address } => {}
+                Event::ReceivedConnectionRequest { address } => {
+                    error!("Client cannot handle ReceivedConnectionRequest!");
+                    unreachable!();
+                }
             }
         }
 
