@@ -19,9 +19,11 @@ use crate::{
     },
 };
 
+type PacketId = u64;
+
 #[derive(Debug)]
 pub struct Server {
-    id_tracker: u64,
+    id_tracker: PacketId,
     received_tracker: usize,
     connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
@@ -45,7 +47,7 @@ impl NetManager<Server> {
         net_manager
     }
 
-    pub fn enqueue(&mut self, message: Vec<u8>) -> u64 {
+    pub fn enqueue(&mut self, message: Vec<u8>) -> PacketId {
         let id = self.kind.id_tracker;
 
         let state = Queued {
@@ -64,7 +66,7 @@ impl NetManager<Server> {
         id
     }
 
-    pub fn cancel_packet(&mut self, packet_id: u64) -> bool {
+    pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         self.queued
             .drain_filter(|(_, queued)| queued.id == packet_id)
             .next()
@@ -143,11 +145,30 @@ impl NetManager<Server> {
                             match send_to {
                                 SendTo::All => {
                                     debug!("Sending packet to all.");
+
+                                    // TODO(alex) 2021-05-18: I need a way to mark that this packet
+                                    // was sent to this host, to avoid sending duplicates.
+                                    //
+                                    // ADD(alex) 2021-05-18: This could possibly be done by looking
+                                    // up at the packet's sequence and the host's
+                                    // `sequence_tracker`.
+                                    let payload_length = queued.payload.len();
+                                    for connected in self.kind.connected.iter_mut() {
+                                        let sequence = connected.sequence_tracker;
+                                        let ack = connected.ack_tracker;
+                                        let connection_id = connected.state.connection_id;
+                                    }
                                 }
                                 SendTo::Single(address) => {
                                     debug!("Sending packet to single address {:#?}.", address);
                                 }
                             }
+                        } else {
+                            // TODO(alex) 2021-05-18: No packets queued, send heartbeat!
+                            //
+                            // TODO(alex) 2021-05-18: Only send this heartbeat if we received some
+                            // packet from the server, and we have not sent an ack for it yet.
+                            // new_events.push(Event::SendHeartbeat { address });
                         }
                     }
                 }

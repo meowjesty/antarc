@@ -296,6 +296,8 @@ impl NetManager<Client> {
                     self.kind.id_tracker += 1;
                 }
                 Event::SendHeartbeat { address } => {
+                    // TODO(alex) 2021-05-18: Both here and on the server we should check the rtt to
+                    // see if a hearbeat is actually neccessary, thus avoiding a network congestion.
                     let id = self.kind.id_tracker;
                     let sequence = self.kind.server.sequence_tracker;
                     let ack = self.kind.server.ack_tracker;
