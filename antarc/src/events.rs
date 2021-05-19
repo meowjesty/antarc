@@ -1,7 +1,5 @@
 use std::{net::SocketAddr, sync::Weak, time::Duration};
 
-use hecs::Entity;
-
 use crate::{
     host::Address,
     packet::{ConnectionId, Encoded, Packet, Payload, Queued, Received, Sent, StatusCode},

@@ -1,7 +1,6 @@
 use core::fmt;
 use std::{net::SocketAddr, time::Instant};
 
-use hecs::{Entity, World};
 use mio::{
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
     Events, Interest, Poll, Token,

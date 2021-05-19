@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hecs::Entity;
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
@@ -122,7 +121,6 @@ impl NetManager<Client> {
             payload: Payload(message),
             state,
             kind: PacketKind::DataTransfer,
-            address: self.kind.server.address,
         };
 
         self.queued.push(packet);
@@ -193,6 +191,7 @@ impl NetManager<Client> {
                                 break;
                             }
                             Err(fail) => {
+                                warn!("Failed recv_from with {:?}", fail);
                                 break;
                             }
                         }
@@ -231,12 +230,9 @@ impl NetManager<Client> {
                                 }
                             };
                             let encoded = queued.to_encoded(header, footer, &self.timer);
-                            match sender(
-                                &self.network.udp_socket,
-                                &encoded,
-                                &encoded.address,
-                                &self.timer,
-                            ) {
+
+                            match sender(&self.network.udp_socket, &encoded, &address, &self.timer)
+                            {
                                 Ok(_) => {
                                     debug!("Client sent packet successfully {:#?}.", encoded);
                                     let sent = encoded.to_sent(&self.timer);
@@ -253,6 +249,8 @@ impl NetManager<Client> {
                                 }
                             }
                         } else {
+                            // TODO(alex) 2021-05-18: Only send this heartbeat if we received some
+                            // packet from the server, and we have not sent an ack for it yet.
                             new_events.push(Event::SendHeartbeat { address });
                         }
                     }
@@ -291,7 +289,6 @@ impl NetManager<Client> {
                         id,
                         payload,
                         state,
-                        address,
                         kind: PacketKind::ConnectionRequest,
                     };
                     self.queued.push(packet);
@@ -325,7 +322,6 @@ impl NetManager<Client> {
                         payload,
                         state,
                         kind,
-                        address,
                     };
 
                     self.queued.push(packet);
@@ -343,60 +339,9 @@ impl NetManager<Client> {
         Ok(self.kind.server.received.len())
     }
 
-    /// TODO(alex) 2021-03-07: Think of how network libraries usually have a `listen` function,
-    /// instead of manually calling `receive`.
     /// NOTE(alex): This is less of a system, and more just a function that the user will call, part
     /// of the public API (exposed via `NetManager` client / server).
     pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
         todo!()
-    }
-
-    pub(crate) fn on_received_connection_accepted(&mut self) {
-        todo!()
-    }
-
-    pub(crate) fn on_received_connection_denied(&mut self) {
-        todo!()
-    }
-
-    pub(crate) fn on_sent_packet(&mut self) {
-        todo!()
-    }
-
-    pub(crate) fn on_sent_connection_request(&mut self) {
-        todo!()
-    }
-
-    pub(crate) fn poll_requesting_connection(&mut self) {
-        todo!()
-    }
-
-    pub(crate) fn poll_awaiting_connection_ack(&mut self) {
-        // TODO(alex) 2021-05-02: Check if the connection timed out, and resend the connection
-        // request, if the number of attempts is still valid.
-    }
-
-    /// TODO(alex) 2021-02-28: Returns the `Packet<ToSend>::Header::sequence` value so that the user
-    /// may use it to remove the packet (if wanted). It'll be an API for users that might want to
-    /// clear older packets that were never sent, and to allow users to check for packets that were
-    /// actually sent.
-    ///
-    /// ADD(alex) 2021-03-03: This function is `async` when I think about it. The whole idea of
-    /// queueing the packets to send, instead of sending them directly comes from the need to check
-    /// if the `socket` is writable, so we enqueue the packets instead of just calling
-    /// `socket.send` here, creating an async version of `socket.send` basically. `Client::tick`
-    /// is very similar to what I think `poll` would look like.
-    ///
-    /// Using `Future` would simplify the API, as it would remove the need for the `Client::tick`
-    /// function, so `Client::connect -> Future<ConnectedClient>` would do the connection handling
-    /// that `Client::tick` is doing, while `Client::send` and `Client::receive` would do the rest
-    /// (data transfer handling). `Client::receive` acts like the "update" function, as it will be
-    /// called all the time (with some user tickrate), being equivalent to a "listen" function.
-    pub fn send(&mut self, data: Vec<u8>) -> () {
-        todo!()
-    }
-
-    pub fn send_priority(&self, data: Vec<u8>) -> () {
-        todo!();
     }
 }

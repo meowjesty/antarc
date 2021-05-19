@@ -4,13 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hecs::Entity;
 use log::error;
 
 use crate::packet::{Ack, Acked, ConnectionId, Encoded, Packet, Queued, Received, Sent, Sequence};
-
-pub(crate) mod requesting_connection;
-pub(crate) mod sending_connection_request;
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
 /// when trying to figure out how to keep alive a session (connection), how the communication

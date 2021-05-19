@@ -2,7 +2,6 @@
 
 members = [
     "antarc",
-    "experimental",
     "server",
     "client",
     "with-state",

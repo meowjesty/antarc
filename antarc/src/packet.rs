@@ -135,6 +135,7 @@ pub(crate) struct Received {
     pub(crate) header: Header,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
+    pub(crate) source: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -187,7 +188,6 @@ pub(crate) struct Packet<State> {
     pub(crate) payload: Payload,
     pub(crate) state: State,
     pub(crate) kind: PacketKind,
-    pub(crate) address: SocketAddr,
 }
 
 impl Packet<Queued> {
@@ -349,13 +349,13 @@ impl Packet<Received> {
                 header,
                 footer,
                 time: timer.elapsed(),
+                source: address,
             };
 
             let packet = Packet {
                 id,
                 payload,
                 state,
-                address,
                 kind,
             };
 

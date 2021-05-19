@@ -1,11 +1,11 @@
 use std::{
+    io,
     net::{SocketAddr, UdpSocket},
     num::NonZeroU16,
     time::{Duration, Instant},
 };
 
-use hecs::World;
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use crate::{
     events::Event,
@@ -20,6 +20,8 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Server {
+    id_tracker: u64,
+    received_tracker: usize,
     connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
     requesting_connection: Vec<Host<RequestingConnection>>,
@@ -30,24 +32,47 @@ pub struct Server {
 impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
         let server = Server {
+            id_tracker: 0,
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
             disconnected: Vec::with_capacity(8),
             requesting_connection: Vec::with_capacity(8),
             awaiting_connection_ack: Vec::with_capacity(8),
             connected: Vec::with_capacity(8),
+            received_tracker: 0,
         };
         let net_manager = NetManager::new(address, server);
         net_manager
     }
 
-    /// TODO(alex) 2021-03-08: We need an API like `get('/{:id}')` route, but for `Host`s.
-    pub fn listen(&mut self) -> () {
-        todo!()
+    pub fn enqueue(&mut self, message: Vec<u8>) -> u64 {
+        let id = self.kind.id_tracker;
+
+        let state = Queued {
+            time: self.timer.elapsed(),
+        };
+        let packet = Packet {
+            id,
+            payload: Payload(message),
+            state,
+            kind: PacketKind::DataTransfer,
+        };
+
+        self.queued.push(packet);
+        self.kind.id_tracker += 1;
+
+        id
+    }
+
+    pub fn cancel_packet(&mut self, packet_id: u64) -> bool {
+        self.queued
+            .drain_filter(|queued| queued.id == packet_id)
+            .next()
+            .is_some()
     }
 
     // TODO(alex) 2021-05-17: It's probably a good idea to start working on this before going
     // further, to validate that the ideas I had so far are working. Make this the focus.
-    pub fn tick(&mut self) -> () {
+    pub fn tick(&mut self) -> Result<usize, String> {
         let mut new_events = Vec::with_capacity(8);
 
         self.network
@@ -70,7 +95,29 @@ impl NetManager<Server> {
                 Event::ReadyToReceive => {
                     debug!("Handling ReadyToReceive");
 
-                    // receiver(&mut self.buffer, &self.network.udp_socket, &self.timer);
+                    loop {
+                        match receiver(
+                            self.kind.id_tracker,
+                            &mut self.buffer,
+                            &self.network.udp_socket,
+                            &self.timer,
+                        ) {
+                            Ok(received) => {
+                                debug!("Received new packet {:#?}.", received);
+                                new_events.push(Event::ReceivedPacket { received });
+                                self.kind.id_tracker += 1;
+                                self.kind.received_tracker += 1;
+                            }
+                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                                warn!("Would block on recv_from {:?}", fail);
+                                break;
+                            }
+                            Err(fail) => {
+                                warn!("Failed recv_from with {:?}", fail);
+                                break;
+                            }
+                        }
+                    }
                 }
                 Event::ReadyToSend => {
                     debug!("Handling ReadyToSend");
@@ -90,61 +137,7 @@ impl NetManager<Server> {
                     // for example, when client B requests a connection, then the server will send
                     // a connection accepted to B, but will send a data transfer to client A, which
                     // is already connected.
-                    loop {
-                        let encoded = match self.queued.pop() {
-                            Some(queued) => {
-                                debug!("There is a packet to queued {:#?}", queued);
-
-                                match queued.kind {
-                                    PacketKind::ConnectionRequest => {
-                                        error!("Server cannot send connection request!");
-                                        unreachable!();
-                                    }
-                                    PacketKind::ConnectionAccepted => {
-                                        debug!("Server has a ConnectionAccepted queued.");
-
-                                        match self
-                                            .kind
-                                            .requesting_connection
-                                            .drain_filter(|client| client.address == queued.address)
-                                            .next()
-                                        {
-                                            Some(client) => {
-                                                debug!(
-                                                    "Client requesting connection {:#?}.",
-                                                    client
-                                                );
-                                            }
-                                            None => {
-                                                error!(
-                                                    "No client with {:#?} requesting connection!",
-                                                    queued.address
-                                                );
-                                                unreachable!();
-                                            }
-                                        }
-                                    }
-                                    PacketKind::ConnectionDenied => {
-                                        debug!("Server has a ConnectionDenied queued.");
-                                    }
-                                    PacketKind::Ack(ack) => {
-                                        debug!("Server has an Ack queued {:#?}.", ack);
-                                    }
-                                    PacketKind::DataTransfer => {
-                                        debug!("Server has a DataTransfer queued.");
-                                    }
-                                    PacketKind::Heartbeat => {
-                                        debug!("Server has a Heartbeat queued.");
-                                    }
-                                }
-                                queued
-                            }
-                            None => {
-                                debug!("No packet queued found");
-                                todo!()
-                            }
-                        };
-                    }
+                    loop {}
                 }
                 Event::SendConnectionRequest { address } => {
                     error!("Server cannot handle SendConnectionRequest!");
@@ -172,51 +165,11 @@ impl NetManager<Server> {
         }
 
         self.events.append(&mut new_events);
+        Ok(self.kind.received_tracker)
     }
 
-    /// System responsible for attributing a `Source` host to a packet entity, if the host matches
-    /// the packet's `Address`, otherwise it raises the `OnReceivedConnectionRequest` event (if
-    /// the `Header` represents a `ConnectionRequest`).
-    ///
-    /// Also handles the changes to a host's `LatestReceived` packet.
-    ///
-    /// - Raises the `OnReceivedConnectionRequest` event.
-    pub(crate) fn on_received_new_packet(&mut self) {
+    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
+        self.kind.received_tracker = 0;
         todo!()
     }
-
-    // NOTE(alex): This handler is specific for the server, as the client doesn't receive connection
-    // requests, at least not yet.
-    pub(crate) fn on_received_connection_request(&mut self) {
-        todo!()
-    }
-
-    pub(crate) fn on_sent_packet(&mut self) {
-        todo!()
-    }
-
-    // TODO(alex) 2021-04-27: Handle the `RequestingConnection` host state, we get the connection
-    // request, create a host (if one does not exist with the same address already), but nothing is
-    // being done to actually send back a connection accepted (or denied). I should start handling
-    // only the accepted case, leave the option to deny a connection to later. I'm thinking about
-    // this connection handler mechanism as being a simple syn/ack, and leaving proper connection
-    // management to the user, so a connection denied would only be sent if a host belongs to a ban
-    // list that the user has created. This means that the first time the connection will always be
-    // replied with accepted.
-
-    pub(crate) fn on_sent_connection_accepted(&mut self) {
-        todo!()
-    }
-
-    pub fn retrieve(&self) -> Vec<(u32, Vec<u8>)> {
-        todo!();
-    }
-
-    // pub fn enqueue(&self, data: Vec<u8>) {
-    //     todo!()
-    // }
-
-    // pub fn ban_host(&self, host_id: u32) {
-    //     todo!();
-    // }
 }
