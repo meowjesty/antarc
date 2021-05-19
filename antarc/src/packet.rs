@@ -10,7 +10,7 @@ use crc32fast::Hasher;
 use log::{debug, error};
 
 use self::header::Header;
-use crate::{read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES};
+use crate::{PROTOCOL_ID, PROTOCOL_ID_BYTES, ProtocolId, net::server::PacketId, read_buffer_inc};
 
 pub(crate) mod header;
 
@@ -184,7 +184,7 @@ impl From<PacketKind> for StatusCode {
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Packet<State> {
-    pub(crate) id: u64,
+    pub(crate) id: PacketId,
     pub(crate) payload: Payload,
     pub(crate) state: State,
     pub(crate) kind: PacketKind,

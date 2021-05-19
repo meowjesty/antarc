@@ -6,7 +6,10 @@ use std::{
 
 use log::error;
 
-use crate::packet::{Ack, Acked, ConnectionId, Encoded, Packet, Queued, Received, Sent, Sequence};
+use crate::{
+    net::server::PacketId,
+    packet::{Ack, Acked, ConnectionId, Encoded, Packet, Queued, Received, Sent, Sequence},
+};
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
 /// when trying to figure out how to keep alive a session (connection), how the communication
@@ -61,6 +64,7 @@ pub(crate) struct Connected {
     /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
     pub(crate) rtt: Duration,
+    pub(crate) last_sent: PacketId,
 }
 
 #[derive(Debug, Clone)]

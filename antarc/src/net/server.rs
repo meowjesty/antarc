@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-type PacketId = u64;
+pub type PacketId = u64;
 
 #[derive(Debug)]
 pub struct Server {
@@ -146,14 +146,15 @@ impl NetManager<Server> {
                                 SendTo::All => {
                                     debug!("Sending packet to all.");
 
-                                    // TODO(alex) 2021-05-18: I need a way to mark that this packet
-                                    // was sent to this host, to avoid sending duplicates.
-                                    //
-                                    // ADD(alex) 2021-05-18: This could possibly be done by looking
-                                    // up at the packet's sequence and the host's
-                                    // `sequence_tracker`.
                                     let payload_length = queued.payload.len();
-                                    for connected in self.kind.connected.iter_mut() {
+                                    for connected in self
+                                        .kind
+                                        .connected
+                                        .iter_mut()
+                                        // NOTE(alex) 2021-05-19: Avoid sending this packet to the
+                                        // same host multiple times.
+                                        .filter(|host| host.state.last_sent < queued.id)
+                                    {
                                         let sequence = connected.sequence_tracker;
                                         let ack = connected.ack_tracker;
                                         let connection_id = connected.state.connection_id;
