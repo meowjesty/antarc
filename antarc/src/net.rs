@@ -8,7 +8,7 @@ use mio::{
 
 use crate::{
     events::EventList,
-    packet::{Packet, Queued, Received, Sent},
+    packet::{ConnectionId, Packet, Queued, Received, Sent},
     MTU_LENGTH,
 };
 
@@ -51,13 +51,19 @@ pub(crate) struct Connection {
 /// ADD(alex) 2021-02-16: Just keep it as part of the Peer, so every connection we check the
 /// biggest number, maybe even put a layer above and have a `connection_num` in the network handler.
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SendTo {
+    All,
+    Single(SocketAddr),
+}
+
 pub struct NetManager<ClientOrServer> {
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
-    pub(crate) queued: Vec<Packet<Queued>>,
+    pub(crate) queued: Vec<(SendTo, Packet<Queued>)>,
     pub(crate) events: EventList,
 }
 

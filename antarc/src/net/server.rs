@@ -7,6 +7,7 @@ use std::{
 
 use log::{debug, error, warn};
 
+use super::SendTo;
 use crate::{
     events::Event,
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
@@ -57,7 +58,7 @@ impl NetManager<Server> {
             kind: PacketKind::DataTransfer,
         };
 
-        self.queued.push(packet);
+        self.queued.push((SendTo::All, packet));
         self.kind.id_tracker += 1;
 
         id
@@ -65,7 +66,7 @@ impl NetManager<Server> {
 
     pub fn cancel_packet(&mut self, packet_id: u64) -> bool {
         self.queued
-            .drain_filter(|queued| queued.id == packet_id)
+            .drain_filter(|(_, queued)| queued.id == packet_id)
             .next()
             .is_some()
     }
@@ -137,7 +138,18 @@ impl NetManager<Server> {
                     // for example, when client B requests a connection, then the server will send
                     // a connection accepted to B, but will send a data transfer to client A, which
                     // is already connected.
-                    loop {}
+                    loop {
+                        if let Some((send_to, queued)) = self.queued.drain(..1).next() {
+                            match send_to {
+                                SendTo::All => {
+                                    debug!("Sending packet to all.");
+                                }
+                                SendTo::Single(address) => {
+                                    debug!("Sending packet to single address {:#?}.", address);
+                                }
+                            }
+                        }
+                    }
                 }
                 Event::SendConnectionRequest { address } => {
                     error!("Server cannot handle SendConnectionRequest!");

@@ -8,7 +8,7 @@ use std::{
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
-use super::Connection;
+use super::{Connection, SendTo};
 use crate::{
     events::{Event, EventKind},
     host::{Disconnected, Generic, Host, HostState, RequestingConnection},
@@ -113,6 +113,7 @@ impl NetManager<Client> {
 
     pub fn enqueue(&mut self, message: Vec<u8>) -> u64 {
         let id = self.kind.id_tracker;
+        let address = self.kind.server.address;
         let state = Queued {
             time: self.timer.elapsed(),
         };
@@ -123,7 +124,7 @@ impl NetManager<Client> {
             kind: PacketKind::DataTransfer,
         };
 
-        self.queued.push(packet);
+        self.queued.push((SendTo::Single(address), packet));
         self.kind.id_tracker += 1;
 
         id
@@ -131,7 +132,7 @@ impl NetManager<Client> {
 
     pub fn cancel_packet(&mut self, packet_id: u64) -> bool {
         self.queued
-            .drain_filter(|queued| queued.id == packet_id)
+            .drain_filter(|(_, queued)| queued.id == packet_id)
             .next()
             .is_some()
     }
@@ -208,7 +209,7 @@ impl NetManager<Client> {
                         let connection_id = self.kind.server.state.state.connection_id();
                         let address = self.kind.server.address;
 
-                        if let Some(queued) = self.queued.pop() {
+                        if let Some((SendTo::Single(address), queued)) = self.queued.pop() {
                             let status_code = From::from(queued.kind);
 
                             let payload_length = queued.payload.len() as u16;
@@ -272,7 +273,7 @@ impl NetManager<Client> {
                     self.kind.server.received.push(received);
                 }
                 Event::SendConnectionRequest { address } => {
-                    debug!("Handling SendConnectionRequest for {:#?}", address);
+                    debug!("Handling SendConnectionRequest to {:#?}", address);
                     // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have
                     // been called yet, but not doing this requires `if let Some` pattern in each
                     // event. I have to think of a better way to handle this ordeal.
@@ -291,7 +292,7 @@ impl NetManager<Client> {
                         state,
                         kind: PacketKind::ConnectionRequest,
                     };
-                    self.queued.push(packet);
+                    self.queued.push((SendTo::Single(address), packet));
                     self.kind.id_tracker += 1;
                 }
                 Event::SendHeartbeat { address } => {
@@ -324,7 +325,7 @@ impl NetManager<Client> {
                         kind,
                     };
 
-                    self.queued.push(packet);
+                    self.queued.push((SendTo::Single(address), packet));
                     self.kind.id_tracker += 1;
                 }
                 Event::ReceivedConnectionRequest { address } => {
