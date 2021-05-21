@@ -10,7 +10,7 @@ use crc32fast::Hasher;
 use log::{debug, error};
 
 use self::header::Header;
-use crate::{PROTOCOL_ID, PROTOCOL_ID_BYTES, ProtocolId, net::server::PacketId, read_buffer_inc};
+use crate::{net::server::PacketId, read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES};
 
 pub(crate) mod header;
 
@@ -130,9 +130,22 @@ pub(crate) struct Acked {
     pub(crate) time: Duration,
 }
 
+// TODO(alex) 2021-05-21: Take out payload from everything related to packet, this will become a
+// dynamic-ish thing that moves with the events and/or packets as neccessary. The idea is:
+// - user calls enqueue, gives the bytes to us;
+// - give back an id to user related to the queued state + these bytes (now payload);
+// - when trying to send, we encode these bytes in the middle of a new vector, which contain packet
+// meta information (sequence, ack, ...);
+// - on success, the packet changes state, the payload is taken out and discarded;
+// - on error, the packet stays as queued, and the payload moves along with the error event;
+// - when trying to receive, we store the payload in a tuple with the packet, this way, when the
+// user calls retrieve, we just move the payload to them, and the packet changes state;
+// This will get rid of ownership issues regarding the payload, avoiding Arc/Weak altogether.
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Received {
     pub(crate) header: Header,
+    pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
     pub(crate) source: SocketAddr,
@@ -185,7 +198,6 @@ impl From<PacketKind> for StatusCode {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Packet<State> {
     pub(crate) id: PacketId,
-    pub(crate) payload: Payload,
     pub(crate) state: State,
     pub(crate) kind: PacketKind,
 }
@@ -206,12 +218,10 @@ impl Packet<Queued> {
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
     pub(crate) fn encode(
-        &self,
+        payload: &Payload,
         header: &Header,
         connection_id: Option<ConnectionId>,
     ) -> Result<(Vec<u8>, Footer), String> {
-        let payload = &self.payload;
-
         let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = header.ack.to_be_bytes().to_vec();
         let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
@@ -250,10 +260,8 @@ impl Packet<Queued> {
 
         Ok((packet_bytes, footer))
     }
-}
 
-impl Packet<Encoded> {
-    pub(crate) fn to_sent(self, time: &Instant) -> Packet<Sent> {
+    pub(crate) fn to_sent(self, header: Header, footer: Footer, time: &Instant) -> Packet<Sent> {
         todo!()
     }
 }
@@ -347,17 +355,13 @@ impl Packet<Received> {
 
             let state = Received {
                 header,
+                payload,
                 footer,
                 time: timer.elapsed(),
                 source: address,
             };
 
-            let packet = Packet {
-                id,
-                payload,
-                state,
-                kind,
-            };
+            let packet = Packet { id, state, kind };
 
             Ok(packet)
         } else {

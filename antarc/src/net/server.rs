@@ -55,12 +55,11 @@ impl NetManager<Server> {
         };
         let packet = Packet {
             id,
-            payload: Payload(message),
             state,
             kind: PacketKind::DataTransfer,
         };
 
-        self.queued.push((SendTo::All, packet));
+        self.queued.push((SendTo::All, packet, Payload(message)));
         self.kind.id_tracker += 1;
 
         id
@@ -68,7 +67,7 @@ impl NetManager<Server> {
 
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         self.queued
-            .drain_filter(|(_, queued)| queued.id == packet_id)
+            .drain_filter(|(_, queued, _)| queued.id == packet_id)
             .next()
             .is_some()
     }
@@ -141,12 +140,12 @@ impl NetManager<Server> {
                     // a connection accepted to B, but will send a data transfer to client A, which
                     // is already connected.
                     loop {
-                        if let Some((send_to, queued)) = self.queued.drain(..1).next() {
+                        if let Some((send_to, queued, payload)) = self.queued.first() {
                             match send_to {
                                 SendTo::All => {
                                     debug!("Sending packet to all.");
 
-                                    let payload_length = queued.payload.len();
+                                    let payload_length = payload.len() as u16;
                                     for connected in self
                                         .kind
                                         .connected
@@ -158,6 +157,20 @@ impl NetManager<Server> {
                                         let sequence = connected.sequence_tracker;
                                         let ack = connected.ack_tracker;
                                         let connection_id = connected.state.connection_id;
+                                        // TODO(alex) 2021-05-21: `Packet::encode` is ok, as it
+                                        // won't consume the packet, but `queued.to_encoded()` can't
+                                        // be used, as it takes the packet out of the queue, and
+                                        // changes it to contain a `Header` that might be invalid
+                                        // for another client.
+                                        let header = Header {
+                                            sequence,
+                                            ack,
+                                            past_acks: 0,
+                                            status_code: DATA_TRANSFER,
+                                            payload_length,
+                                        };
+                                        let encoded =
+                                            Packet::encode(&payload, &header, Some(connection_id));
                                     }
                                 }
                                 SendTo::Single(address) => {
@@ -168,7 +181,7 @@ impl NetManager<Server> {
                             // TODO(alex) 2021-05-18: No packets queued, send heartbeat!
                             //
                             // TODO(alex) 2021-05-18: Only send this heartbeat if we received some
-                            // packet from the server, and we have not sent an ack for it yet.
+                            // packet from the client, and we have not sent an ack for it yet.
                             // new_events.push(Event::SendHeartbeat { address });
                         }
                     }
@@ -183,8 +196,8 @@ impl NetManager<Server> {
                 Event::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
                 }
-                Event::FailedSendingPacket { encoded } => {
-                    error!("Handling event FailedSendingPacket for {:#?}", encoded);
+                Event::FailedSendingPacket { queued } => {
+                    error!("Handling event FailedSendingPacket for {:#?}", queued);
                 }
                 Event::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);

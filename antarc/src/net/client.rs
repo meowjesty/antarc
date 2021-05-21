@@ -8,7 +8,7 @@ use std::{
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
-use super::{Connection, SendTo};
+use super::SendTo;
 use crate::{
     events::{Event, EventKind},
     host::{Disconnected, Generic, Host, HostState, RequestingConnection},
@@ -62,11 +62,11 @@ pub(crate) fn receiver(
 
 pub(crate) fn sender(
     socket: &UdpSocket,
-    encoded: &Packet<Encoded>,
+    bytes: &[u8],
     destination: &SocketAddr,
     timer: &Instant,
 ) -> Result<(), Error> {
-    match socket.send_to(&encoded.state.bytes, *destination) {
+    match socket.send_to(&bytes, *destination) {
         Ok(num_sent) => {
             debug_assert!(num_sent > 0);
             Ok(())
@@ -119,12 +119,12 @@ impl NetManager<Client> {
         };
         let packet = Packet {
             id,
-            payload: Payload(message),
             state,
             kind: PacketKind::DataTransfer,
         };
 
-        self.queued.push((SendTo::Single(address), packet));
+        self.queued
+            .push((SendTo::Single(address), packet, Payload(message)));
         self.kind.id_tracker += 1;
 
         id
@@ -132,7 +132,7 @@ impl NetManager<Client> {
 
     pub fn cancel_packet(&mut self, packet_id: u64) -> bool {
         self.queued
-            .drain_filter(|(_, queued)| queued.id == packet_id)
+            .drain_filter(|(_, queued, _)| queued.id == packet_id)
             .next()
             .is_some()
     }
@@ -209,10 +209,11 @@ impl NetManager<Client> {
                         let connection_id = self.kind.server.state.state.connection_id();
                         let address = self.kind.server.address;
 
-                        if let Some((SendTo::Single(address), queued)) = self.queued.pop() {
+                        if let Some((SendTo::Single(address), queued, payload)) = self.queued.pop()
+                        {
                             let status_code = From::from(queued.kind);
 
-                            let payload_length = queued.payload.len() as u16;
+                            let payload_length = payload.len() as u16;
 
                             let header = Header {
                                 sequence,
@@ -222,26 +223,25 @@ impl NetManager<Client> {
                                 payload_length,
                             };
 
-                            let (bytes, footer) = match queued.encode(&header, connection_id) {
-                                Ok(success) => success,
-                                Err(fail) => {
-                                    error!("Failed encoding packet {:#?}.", fail);
-                                    new_events.push(Event::FailedEncodingPacket { queued });
-                                    continue;
-                                }
-                            };
-                            let encoded = queued.to_encoded(header, footer, &self.timer);
+                            let (bytes, footer) =
+                                match Packet::encode(&payload, &header, connection_id) {
+                                    Ok(success) => success,
+                                    Err(fail) => {
+                                        error!("Failed encoding packet {:#?}.", fail);
+                                        new_events.push(Event::FailedEncodingPacket { queued });
+                                        continue;
+                                    }
+                                };
 
-                            match sender(&self.network.udp_socket, &encoded, &address, &self.timer)
-                            {
+                            match sender(&self.network.udp_socket, &bytes, &address, &self.timer) {
                                 Ok(_) => {
-                                    debug!("Client sent packet successfully {:#?}.", encoded);
-                                    let sent = encoded.to_sent(&self.timer);
+                                    debug!("Client sent packet successfully {:#?}.", queued);
+                                    let sent = queued.to_sent(header, footer, &self.timer);
                                     new_events.push(Event::SentPacket { sent });
                                 }
                                 Err(fail) => {
                                     error!("Client failed sending packet {:#?}.", fail);
-                                    new_events.push(Event::FailedSendingPacket { encoded });
+                                    new_events.push(Event::FailedSendingPacket { queued });
                                     // TODO(alex) 2021-05-17: Must treat 2 different errors
                                     // here,
                                     // the WouldBlock and socket issues, each will have its own
@@ -259,8 +259,8 @@ impl NetManager<Client> {
                 Event::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
                 }
-                Event::FailedSendingPacket { encoded } => {
-                    error!("Handling event FailedSendingPacket for {:#?}", encoded);
+                Event::FailedSendingPacket { queued } => {
+                    error!("Handling event FailedSendingPacket for {:#?}", queued);
                 }
                 Event::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
@@ -288,11 +288,11 @@ impl NetManager<Client> {
                     let payload = Payload::default();
                     let packet = Packet {
                         id,
-                        payload,
                         state,
                         kind: PacketKind::ConnectionRequest,
                     };
-                    self.queued.push((SendTo::Single(address), packet));
+                    self.queued
+                        .push((SendTo::Single(address), packet, Payload::default()));
                     self.kind.id_tracker += 1;
                 }
                 Event::SendHeartbeat { address } => {
@@ -320,14 +320,10 @@ impl NetManager<Client> {
 
                     let address = self.kind.server.address;
 
-                    let packet = Packet {
-                        id,
-                        payload,
-                        state,
-                        kind,
-                    };
+                    let packet = Packet { id, state, kind };
 
-                    self.queued.push((SendTo::Single(address), packet));
+                    self.queued
+                        .push((SendTo::Single(address), packet, Payload::default()));
                     self.kind.id_tracker += 1;
                 }
                 Event::ReceivedConnectionRequest { address } => {

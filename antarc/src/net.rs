@@ -8,7 +8,7 @@ use mio::{
 
 use crate::{
     events::EventList,
-    packet::{ConnectionId, Packet, Queued, Received, Sent},
+    packet::{ConnectionId, Packet, Payload, Queued, Received, Sent},
     MTU_LENGTH,
 };
 
@@ -21,13 +21,6 @@ pub(crate) enum ConnectionState {
     AwaitingConnectionResponse,
     Disconnected,
     Connected,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub(crate) struct Connection {
-    pub(crate) queued: Vec<Packet<Queued>>,
-    pub(crate) received: Vec<Packet<Received>>,
-    pub(crate) state: ConnectionState,
 }
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
@@ -63,7 +56,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) buffer: Vec<u8>,
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
-    pub(crate) queued: Vec<(SendTo, Packet<Queued>)>,
+    pub(crate) queued: Vec<(SendTo, Packet<Queued>, Payload)>,
     pub(crate) events: EventList,
 }
 

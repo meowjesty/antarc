@@ -26,7 +26,7 @@ pub(crate) enum Event {
     SendHeartbeat { address: SocketAddr },
     ReceivedConnectionRequest { address: SocketAddr },
     FailedEncodingPacket { queued: Packet<Queued> },
-    FailedSendingPacket { encoded: Packet<Encoded> },
+    FailedSendingPacket { queued: Packet<Queued> },
     SentPacket { sent: Packet<Sent> },
     ReceivedPacket { received: Packet<Received> },
 }
