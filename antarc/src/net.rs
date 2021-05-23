@@ -56,7 +56,8 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) buffer: Vec<u8>,
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
-    pub(crate) queued: Vec<(SendTo, Packet<Queued>, Payload)>,
+    pub(crate) user_queue: Vec<(SendTo, Packet<Queued>, Payload)>,
+    pub(crate) antarc_queue: Vec<(SendTo, Packet<Queued>, Payload)>,
     pub(crate) events: EventList,
 }
 
@@ -105,21 +106,23 @@ impl NetworkResource {
 }
 
 impl<ClientOrServer> NetManager<ClientOrServer> {
-    pub(crate) fn new(address: &SocketAddr, client_or_server: ClientOrServer) -> Self {
+    pub(crate) fn new(address: &SocketAddr, kind: ClientOrServer) -> Self {
         let timer = Instant::now();
         let buffer = vec![0x0; MTU_LENGTH];
         let events = Vec::with_capacity(1024);
 
-        let queued = Vec::with_capacity(128);
-        let network_resource = NetworkResource::new(address);
+        let user_queue = Vec::with_capacity(128);
+        let antarc_queue = Vec::with_capacity(128);
+        let network = NetworkResource::new(address);
 
         Self {
             timer,
             events,
             buffer,
-            queued,
-            kind: client_or_server,
-            network: network_resource,
+            user_queue,
+            antarc_queue,
+            kind,
+            network,
         }
     }
 }

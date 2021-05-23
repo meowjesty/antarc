@@ -109,6 +109,32 @@ impl NetManager<Client> {
     pub fn connect(&mut self, server_addr: &SocketAddr) {
         let server = Host::new_generic(server_addr.clone());
         self.kind.server = server;
+
+        // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have
+        // been called yet, but not doing this requires `if let Some` pattern in each
+        // event. I have to think of a better way to handle this ordeal.
+        self.kind.server.state.state = HostState::RequestingConnection {
+            info: RequestingConnection { attempts: 0 },
+        };
+
+        let id = self.kind.id_tracker;
+        let state = Queued {
+            time: self.timer.elapsed(),
+        };
+        let payload = Payload::default();
+        let packet = Packet {
+            id,
+            state,
+            kind: PacketKind::ConnectionRequest,
+        };
+        // TODO(alex) 2021-05-23: Is this idea of a separate queue actually good? We need to handle
+        // the packets here first, and this will take out a huge burden of having to check the kind
+        // of packet in `tick` for server/client, but what happens if there are a bunch of
+        // connection related packets at the same time?
+        self.antarc_queue
+            .push((SendTo::Single(*server_addr), packet, Payload::default()));
+        self.kind.id_tracker += 1;
+
         self.events.push(Event::SendConnectionRequest {
             address: server_addr.clone(),
         });
@@ -126,7 +152,7 @@ impl NetManager<Client> {
             kind: PacketKind::DataTransfer,
         };
 
-        self.queued
+        self.user_queue
             .push((SendTo::Single(address), packet, Payload(message)));
         self.kind.id_tracker += 1;
 
@@ -134,7 +160,7 @@ impl NetManager<Client> {
     }
 
     pub fn cancel_packet(&mut self, packet_id: u64) -> bool {
-        self.queued
+        self.user_queue
             .drain_filter(|(_, queued, _)| queued.id == packet_id)
             .next()
             .is_some()
@@ -212,7 +238,7 @@ impl NetManager<Client> {
                         let connection_id = self.kind.server.state.state.connection_id();
                         let address = self.kind.server.address;
 
-                        if let Some((send_to, queued, payload)) = self.queued.pop() {
+                        if let Some((send_to, queued, payload)) = self.user_queue.pop() {
                             if let SendTo::Single(address) = send_to {
                                 let status_code = From::from(queued.kind);
 
@@ -287,7 +313,7 @@ impl NetManager<Client> {
                 Event::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
                     let removed = self
-                        .queued
+                        .user_queue
                         .drain_filter(|(_, packet, _)| packet.id == sent.id)
                         .next();
                     debug!("Removed {:#?} from queue.", removed);
@@ -298,27 +324,7 @@ impl NetManager<Client> {
                     self.kind.server.received.push(received);
                 }
                 Event::SendConnectionRequest { address } => {
-                    debug!("Handling SendConnectionRequest to {:#?}", address);
-                    // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have
-                    // been called yet, but not doing this requires `if let Some` pattern in each
-                    // event. I have to think of a better way to handle this ordeal.
-                    self.kind.server.state.state = HostState::RequestingConnection {
-                        info: RequestingConnection { attempts: 0 },
-                    };
-
-                    let id = self.kind.id_tracker;
-                    let state = Queued {
-                        time: self.timer.elapsed(),
-                    };
-                    let payload = Payload::default();
-                    let packet = Packet {
-                        id,
-                        state,
-                        kind: PacketKind::ConnectionRequest,
-                    };
-                    self.queued
-                        .push((SendTo::Single(address), packet, Payload::default()));
-                    self.kind.id_tracker += 1;
+                    unreachable!();
                 }
                 Event::SendHeartbeat { address } => {
                     // TODO(alex) 2021-05-18: Both here and on the server we should check the rtt
@@ -348,7 +354,7 @@ impl NetManager<Client> {
 
                     let packet = Packet { id, state, kind };
 
-                    self.queued
+                    self.user_queue
                         .push((SendTo::Single(address), packet, Payload::default()));
                     self.kind.id_tracker += 1;
                 }

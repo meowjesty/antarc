@@ -62,14 +62,14 @@ impl NetManager<Server> {
             kind: PacketKind::DataTransfer,
         };
 
-        self.queued.push((SendTo::All, packet, Payload(message)));
+        self.user_queue.push((SendTo::All, packet, Payload(message)));
         self.kind.id_tracker += 1;
 
         id
     }
 
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
-        self.queued
+        self.user_queue
             .drain_filter(|(_, queued, _)| queued.id == packet_id)
             .next()
             .is_some()
@@ -143,7 +143,7 @@ impl NetManager<Server> {
                     // a connection accepted to B, but will send a data transfer to client A, which
                     // is already connected.
                     'sender: loop {
-                        if let Some((send_to, queued, payload)) = self.queued.first() {
+                        if let Some((send_to, queued, payload)) = self.user_queue.first() {
                             debug_assert_ne!(queued.kind, PacketKind::ConnectionRequest);
                             match (send_to, queued.kind) {
                                 (SendTo::All, PacketKind::DataTransfer) => {
@@ -363,7 +363,7 @@ impl NetManager<Server> {
                         .all(|host| host.state.last_sent == sent.id)
                     {
                         let removed = self
-                            .queued
+                            .user_queue
                             .drain_filter(|(_, packet, _)| packet.id == sent.id)
                             .next();
                         debug!("Removed {:#?} from queue.", removed);
