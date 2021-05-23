@@ -57,7 +57,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
     pub(crate) user_queue: Vec<(SendTo, Packet<Queued>, Payload)>,
-    pub(crate) antarc_queue: Vec<(SendTo, Packet<Queued>, Payload)>,
+    pub(crate) antarc_queue: Vec<(SocketAddr, Packet<Queued>)>,
     pub(crate) events: EventList,
 }
 

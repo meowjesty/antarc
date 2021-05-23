@@ -131,8 +131,7 @@ impl NetManager<Client> {
         // the packets here first, and this will take out a huge burden of having to check the kind
         // of packet in `tick` for server/client, but what happens if there are a bunch of
         // connection related packets at the same time?
-        self.antarc_queue
-            .push((SendTo::Single(*server_addr), packet, Payload::default()));
+        self.antarc_queue.push((*server_addr, packet));
         self.kind.id_tracker += 1;
 
         self.events.push(Event::SendConnectionRequest {
