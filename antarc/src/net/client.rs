@@ -15,7 +15,7 @@ use crate::{
     net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
-        Received, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
+        Received, Sent, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
         DATA_TRANSFER, HEARTBEAT,
     },
     MTU_LENGTH,
@@ -236,8 +236,18 @@ impl NetManager<Client> {
                             match sender(&self.network.udp_socket, &bytes, &address, &self.timer) {
                                 Ok(_) => {
                                     debug!("Client sent packet successfully {:#?}.", queued);
-                                    let sent = queued.to_sent(header, footer, &self.timer);
-                                    new_events.push(Event::SentPacket { sent });
+                                    let sent = Sent {
+                                        header,
+                                        footer,
+                                        destination: address,
+                                        time: self.timer.elapsed(),
+                                    };
+                                    let packet = Packet {
+                                        id: queued.id,
+                                        state: sent,
+                                        kind: queued.kind,
+                                    };
+                                    new_events.push(Event::SentPacket { sent: packet });
                                 }
                                 Err(fail) => {
                                     error!("Client failed sending packet {:#?}.", fail);
@@ -264,8 +274,11 @@ impl NetManager<Client> {
                 }
                 Event::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
-                    // TODO(alex) 2021-05-17: What to do here before this?
-                    todo!();
+                    let removed = self
+                        .queued
+                        .drain_filter(|(_, packet, _)| packet.id == sent.id)
+                        .next();
+                    debug!("Removed {:#?} from queue.", removed);
                 }
                 Event::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
@@ -296,8 +309,9 @@ impl NetManager<Client> {
                     self.kind.id_tracker += 1;
                 }
                 Event::SendHeartbeat { address } => {
-                    // TODO(alex) 2021-05-18: Both here and on the server we should check the rtt to
-                    // see if a hearbeat is actually neccessary, thus avoiding a network congestion.
+                    // TODO(alex) 2021-05-18: Both here and on the server we should check the rtt
+                    // to see if a hearbeat is actually neccessary, thus
+                    // avoiding a network congestion.
                     let id = self.kind.id_tracker;
                     let sequence = self.kind.server.sequence_tracker;
                     let ack = self.kind.server.ack_tracker;
@@ -338,9 +352,10 @@ impl NetManager<Client> {
         Ok(self.kind.server.received.len())
     }
 
-    /// NOTE(alex): This is less of a system, and more just a function that the user will call, part
-    /// of the public API (exposed via `NetManager` client / server).
+    /// NOTE(alex): This is less of a system, and more just a function that the user will call,
+    /// part of the public API (exposed via `NetManager` client / server).
     pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
-        todo!()
+        debug!("Retrieving packets for {:#?}", self);
+        Vec::with_capacity(4)
     }
 }

@@ -11,7 +11,10 @@ use super::SendTo;
 use crate::{
     events::Event,
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
-    net::{client::receiver, NetManager, NetworkResource},
+    net::{
+        client::{receiver, sender},
+        NetManager, NetworkResource,
+    },
     packet::{
         header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued, Sent,
         Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
@@ -139,29 +142,27 @@ impl NetManager<Server> {
                     // for example, when client B requests a connection, then the server will send
                     // a connection accepted to B, but will send a data transfer to client A, which
                     // is already connected.
-                    loop {
+                    'sender: loop {
                         if let Some((send_to, queued, payload)) = self.queued.first() {
                             match send_to {
                                 SendTo::All => {
                                     debug!("Sending packet to all.");
 
                                     let payload_length = payload.len() as u16;
-                                    for connected in self
+
+                                    let not_updated = self
                                         .kind
                                         .connected
                                         .iter_mut()
                                         // NOTE(alex) 2021-05-19: Avoid sending this packet to the
                                         // same host multiple times.
-                                        .filter(|host| host.state.last_sent < queued.id)
-                                    {
+                                        .filter(|host| host.state.last_sent < queued.id);
+
+                                    for connected in not_updated {
                                         let sequence = connected.sequence_tracker;
                                         let ack = connected.ack_tracker;
                                         let connection_id = connected.state.connection_id;
-                                        // TODO(alex) 2021-05-21: `Packet::encode` is ok, as it
-                                        // won't consume the packet, but `queued.to_encoded()` can't
-                                        // be used, as it takes the packet out of the queue, and
-                                        // changes it to contain a `Header` that might be invalid
-                                        // for another client.
+                                        let destination = connected.address;
                                         let header = Header {
                                             sequence,
                                             ack,
@@ -169,8 +170,59 @@ impl NetManager<Server> {
                                             status_code: DATA_TRANSFER,
                                             payload_length,
                                         };
-                                        let encoded =
-                                            Packet::encode(&payload, &header, Some(connection_id));
+                                        let (bytes, footer) = match Packet::encode(
+                                            &payload,
+                                            &header,
+                                            Some(connection_id),
+                                        ) {
+                                            Ok(encoded) => encoded,
+                                            Err(fail) => {
+                                                error!("Failed encoding packet {:#?}.", fail);
+                                                new_events.push(Event::FailedEncodingPacket {
+                                                    queued: queued.clone(),
+                                                });
+                                                break 'sender;
+                                            }
+                                        };
+
+                                        match sender(
+                                            &self.network.udp_socket,
+                                            &bytes,
+                                            &destination,
+                                            &self.timer,
+                                        ) {
+                                            Ok(_) => {
+                                                debug!(
+                                                    "Server sent packet {:#?} to {:#?}.",
+                                                    queued, destination
+                                                );
+
+                                                let sent = Sent {
+                                                    header,
+                                                    footer,
+                                                    destination,
+                                                    time: self.timer.elapsed(),
+                                                };
+                                                let packet = Packet {
+                                                    id: queued.id,
+                                                    state: sent,
+                                                    kind: queued.kind,
+                                                };
+                                                let sent_event = Event::SentPacket { sent: packet };
+                                                new_events.push(sent_event);
+                                            }
+                                            Err(fail) => {
+                                                error!(
+                                                    "Server failed sending packet {:#?} to {:#?}.",
+                                                    fail, destination
+                                                );
+                                                let failed_event = Event::FailedSendingPacket {
+                                                    queued: queued.clone(),
+                                                };
+                                                new_events.push(failed_event);
+                                                break 'sender;
+                                            }
+                                        }
                                     }
                                 }
                                 SendTo::Single(address) => {
@@ -179,10 +231,6 @@ impl NetManager<Server> {
                             }
                         } else {
                             // TODO(alex) 2021-05-18: No packets queued, send heartbeat!
-                            //
-                            // TODO(alex) 2021-05-18: Only send this heartbeat if we received some
-                            // packet from the client, and we have not sent an ack for it yet.
-                            // new_events.push(Event::SendHeartbeat { address });
                         }
                     }
                 }
@@ -201,6 +249,18 @@ impl NetManager<Server> {
                 }
                 Event::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
+                    if self
+                        .kind
+                        .connected
+                        .iter()
+                        .all(|host| host.state.last_sent == sent.id)
+                    {
+                        let removed = self
+                            .queued
+                            .drain_filter(|(_, packet, _)| packet.id == sent.id)
+                            .next();
+                        debug!("Removed {:#?} from queue.", removed);
+                    }
                 }
                 Event::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
@@ -216,7 +276,8 @@ impl NetManager<Server> {
     }
 
     pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
+        debug!("Retrieve for server.");
         self.kind.received_tracker = 0;
-        todo!()
+        Vec::with_capacity(4)
     }
 }

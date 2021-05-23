@@ -121,6 +121,7 @@ pub(crate) struct Sent {
     pub(crate) header: Header,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
+    pub(crate) destination: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,17 +204,6 @@ pub(crate) struct Packet<State> {
 }
 
 impl Packet<Queued> {
-    // TODO(alex) 2021-05-17: Can't do much more without implementing this function, it should take
-    // priority with the `Server::tick`.
-    pub(crate) fn to_encoded(
-        self,
-        header: Header,
-        footer: Footer,
-        time: &Instant,
-    ) -> Packet<Encoded> {
-        todo!()
-    }
-
     // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
