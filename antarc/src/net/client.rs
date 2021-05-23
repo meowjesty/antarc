@@ -103,6 +103,9 @@ impl NetManager<Client> {
     /// 2. It stays as-is, and we rely on `tick` to handle the connection, but then the user won't
     /// know much about the connection, we'll be relying on the `retrieve` to return the
     /// `ConnectionId` + the packet payload (which will be done anyway).
+    ///
+    /// ADD(alex) 2021-05-23: Do the whole connection inside this function, it'll simplify the
+    /// `tick` function immensely.
     pub fn connect(&mut self, server_addr: &SocketAddr) {
         let server = Host::new_generic(server_addr.clone());
         self.kind.server = server;
@@ -209,55 +212,64 @@ impl NetManager<Client> {
                         let connection_id = self.kind.server.state.state.connection_id();
                         let address = self.kind.server.address;
 
-                        if let Some((SendTo::Single(address), queued, payload)) = self.queued.pop()
-                        {
-                            let status_code = From::from(queued.kind);
+                        if let Some((send_to, queued, payload)) = self.queued.pop() {
+                            if let SendTo::Single(address) = send_to {
+                                let status_code = From::from(queued.kind);
 
-                            let payload_length = payload.len() as u16;
+                                let payload_length = payload.len() as u16;
 
-                            let header = Header {
-                                sequence,
-                                ack,
-                                past_acks: 0,
-                                status_code,
-                                payload_length,
-                            };
-
-                            let (bytes, footer) =
-                                match Packet::encode(&payload, &header, connection_id) {
-                                    Ok(success) => success,
-                                    Err(fail) => {
-                                        error!("Failed encoding packet {:#?}.", fail);
-                                        new_events.push(Event::FailedEncodingPacket { queued });
-                                        continue;
-                                    }
+                                let header = Header {
+                                    sequence,
+                                    ack,
+                                    past_acks: 0,
+                                    status_code,
+                                    payload_length,
                                 };
 
-                            match sender(&self.network.udp_socket, &bytes, &address, &self.timer) {
-                                Ok(_) => {
-                                    debug!("Client sent packet successfully {:#?}.", queued);
-                                    let sent = Sent {
-                                        header,
-                                        footer,
-                                        destination: address,
-                                        time: self.timer.elapsed(),
+                                let (bytes, footer) =
+                                    match Packet::encode(&payload, &header, connection_id) {
+                                        Ok(success) => success,
+                                        Err(fail) => {
+                                            error!("Failed encoding packet {:#?}.", fail);
+                                            new_events.push(Event::FailedEncodingPacket { queued });
+                                            continue;
+                                        }
                                     };
-                                    let packet = Packet {
-                                        id: queued.id,
-                                        state: sent,
-                                        kind: queued.kind,
-                                    };
-                                    new_events.push(Event::SentPacket { sent: packet });
+
+                                match sender(
+                                    &self.network.udp_socket,
+                                    &bytes,
+                                    &address,
+                                    &self.timer,
+                                ) {
+                                    Ok(_) => {
+                                        debug!("Client sent packet successfully {:#?}.", queued);
+                                        let sent = Sent {
+                                            header,
+                                            footer,
+                                            destination: address,
+                                            time: self.timer.elapsed(),
+                                        };
+                                        let packet = Packet {
+                                            id: queued.id,
+                                            state: sent,
+                                            kind: queued.kind,
+                                        };
+                                        new_events.push(Event::SentPacket { sent: packet });
+                                    }
+                                    Err(fail) => {
+                                        error!("Client failed sending packet {:#?}.", fail);
+                                        new_events.push(Event::FailedSendingPacket { queued });
+                                        // TODO(alex) 2021-05-17: Must treat 2 different errors
+                                        // here,
+                                        // the WouldBlock and socket issues, each will have its own
+                                        // handling mechanism.
+                                        break;
+                                    }
                                 }
-                                Err(fail) => {
-                                    error!("Client failed sending packet {:#?}.", fail);
-                                    new_events.push(Event::FailedSendingPacket { queued });
-                                    // TODO(alex) 2021-05-17: Must treat 2 different errors
-                                    // here,
-                                    // the WouldBlock and socket issues, each will have its own
-                                    // handling mechanism.
-                                    break;
-                                }
+                            } else {
+                                error!("Invalid send to {:#?} for client.", send_to);
+                                unreachable!();
                             }
                         } else {
                             // TODO(alex) 2021-05-18: Only send this heartbeat if we received some
