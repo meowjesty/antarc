@@ -8,7 +8,7 @@ use mio::{
 
 use self::server::PacketId;
 use crate::{
-    events::EventList,
+    events::{CommonEvent, EventList},
     packet::{ConnectionId, Packet, Payload, Queued, Received, Sent},
     MTU_LENGTH,
 };
@@ -61,6 +61,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) payload_queue: HashMap<PacketId, Payload>,
     pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) events: EventList,
+    pub(crate) retrievable_count: usize,
 }
 
 #[derive(Debug)]
@@ -121,6 +122,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let antarc_queue = Vec::with_capacity(128);
         let payload_queue = HashMap::with_capacity(128);
         let network = NetworkResource::new(address);
+        let retrievable_count = 0;
 
         Self {
             timer,
@@ -131,13 +133,17 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             payload_queue,
             kind,
             network,
+            retrievable_count,
         }
     }
 
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         let cancelled_packet = self
-            .user_queue
-            .drain_filter(|queued| queued.id == packet_id)
+            .events
+            .drain_filter(|event| match event {
+                CommonEvent::QueuedDataTransfer { packet } => packet.id == packet_id,
+                _ => false,
+            })
             .next()
             .is_some();
 

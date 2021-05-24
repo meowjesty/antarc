@@ -7,8 +7,8 @@ use crate::{
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum EventKind {
-    ReadyToReceive,
-    ReadyToSend,
+    QueuedDataTransfer,
+    QueuedConnectionAccepted,
     FailedEncodingPacket,
     FailedSendingPacket,
     SentPacket,
@@ -20,10 +20,12 @@ pub(crate) enum EventKind {
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum CommonEvent {
-    ReadyToReceive,
-    ReadyToSend,
-    SendConnectionRequest { address: SocketAddr },
-    SendHeartbeat { address: SocketAddr },
+    // QueuedDataTransfer { packet: Packet<Queued, DataTransfer> },
+    // QueuedConnectionRequest { packet: Packet<Queued, ConnectionRequest> },
+    QueuedDataTransfer { packet: Packet<Queued> },
+    QueuedConnectionAccepted { packet: Packet<Queued> },
+    QueuedConnectionRequest { packet: Packet<Queued> },
+    QueuedHeartbeat { address: SocketAddr },
     ReceivedConnectionRequest { address: SocketAddr },
     FailedEncodingPacket { queued: Packet<Queued> },
     FailedSendingPacket { queued: Packet<Queued> },
@@ -45,15 +47,15 @@ pub(crate) enum ClientEvent {
 impl CommonEvent {
     pub(crate) fn kind(&self) -> EventKind {
         match self {
-            CommonEvent::ReadyToReceive => EventKind::ReadyToReceive,
-            CommonEvent::ReadyToSend => EventKind::ReadyToSend,
+            CommonEvent::QueuedDataTransfer { .. } => EventKind::QueuedDataTransfer,
+            CommonEvent::QueuedConnectionAccepted { .. } => EventKind::QueuedConnectionAccepted,
             CommonEvent::FailedEncodingPacket { .. } => EventKind::FailedEncodingPacket,
             CommonEvent::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
             CommonEvent::SentPacket { .. } => EventKind::SentPacket,
             CommonEvent::ReceivedPacket { .. } => EventKind::ReceivedPacket,
-            CommonEvent::SendConnectionRequest { .. } => EventKind::SendConnectionRequest,
+            CommonEvent::QueuedConnectionRequest { .. } => EventKind::SendConnectionRequest,
             CommonEvent::ReceivedConnectionRequest { .. } => EventKind::ReceivedConnectionRequest,
-            CommonEvent::SendHeartbeat { .. } => EventKind::SendHeartbeat,
+            CommonEvent::QueuedHeartbeat { .. } => EventKind::SendHeartbeat,
         }
     }
 }

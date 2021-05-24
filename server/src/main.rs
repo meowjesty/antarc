@@ -1,9 +1,10 @@
-use std::time::Duration;
+use std::{env, time::Duration};
 
 use antarc::net::NetManager;
 use log::{debug, error};
 
 fn main() {
+    env::set_var("RUST_LOG", "debug");
     env_logger::init();
     server_main();
 }
@@ -58,6 +59,6 @@ fn server_main() {
         }
 
         d_counter += 1;
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(1500));
     }
 }

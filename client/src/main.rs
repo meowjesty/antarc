@@ -4,6 +4,7 @@ use antarc::net::NetManager;
 use log::{debug, error};
 
 fn main() {
+    std::env::set_var("RUST_LOG", "debug");
     env_logger::init();
     client_main();
 }
@@ -33,7 +34,6 @@ fn client_main() {
                 debug!("Cancel test packet {:#?}", packet_id);
                 let cancelled = client.cancel_packet(packet_id);
                 debug!("Test packet cancellation result is {:#?}", cancelled);
-
             }
         }
 
@@ -59,6 +59,6 @@ fn client_main() {
         }
 
         d_counter += 1;
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(1500));
     }
 }

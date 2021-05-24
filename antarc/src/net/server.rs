@@ -29,7 +29,6 @@ const CHECK_ANTARC_QUEUE: Duration = Duration::from_millis(250);
 #[derive(Debug)]
 pub struct Server {
     id_tracker: PacketId,
-    received_tracker: usize,
     last_antarc_queue_check: Duration,
     connection_id_tracker: ConnectionId,
     disconnected: Vec<Host<Disconnected>>,
@@ -48,7 +47,6 @@ impl NetManager<Server> {
             requesting_connection: Vec::with_capacity(8),
             awaiting_connection_ack: Vec::with_capacity(8),
             connected: Vec::with_capacity(8),
-            received_tracker: 0,
         };
         let net_manager = NetManager::new(address, server);
         net_manager
@@ -70,7 +68,8 @@ impl NetManager<Server> {
                 kind: PacketKind::DataTransfer,
             };
 
-            self.user_queue.push(packet);
+            // self.user_queue.push(packet);
+            self.events.push(CommonEvent::QueuedDataTransfer { packet });
         }
 
         self.payload_queue.insert(id, Payload(message));
@@ -83,6 +82,7 @@ impl NetManager<Server> {
     // further, to validate that the ideas I had so far are working. Make this the focus.
     pub fn tick(&mut self) -> Result<usize, String> {
         let mut new_events = Vec::with_capacity(8);
+        let mut handled_events = Vec::with_capacity(8);
 
         self.network
             .poll
@@ -99,270 +99,284 @@ impl NetManager<Server> {
             }
         }
 
-        for event in self.events.drain(..) {
+        while self.network.readable {
+            match self.network.udp_socket.recv_from(&mut self.buffer) {
+                Ok((num_received, source)) => {
+                    debug!("Received new packet {:#?} {:#?}.", num_received, source);
+                    debug_assert!(num_received > 0);
+                    let received = Packet::decode(
+                        self.kind.id_tracker,
+                        &self.buffer[..num_received],
+                        source,
+                        &self.timer,
+                    )
+                    .unwrap();
+
+                    self.events.push(CommonEvent::ReceivedPacket { received });
+                    self.kind.id_tracker += 1;
+                    self.retrievable_count += 1;
+                }
+                Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                    warn!("Would block on recv_from {:?}", fail);
+                    self.network.readable = false;
+                }
+                Err(fail) => {
+                    warn!("Failed recv_from with {:?}", fail);
+                    self.network.readable = false;
+                }
+            }
+        }
+
+        for (event_id, event) in self.events.iter().enumerate() {
             match event {
-                CommonEvent::ReadyToReceive => {
-                    debug!("Handling ReadyToReceive");
+                CommonEvent::QueuedDataTransfer { packet } if self.network.writable => {
+                    debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
-                    loop {
-                        match receiver(
-                            self.kind.id_tracker,
-                            &mut self.buffer,
-                            &self.network.udp_socket,
-                            &self.timer,
-                        ) {
-                            Ok(received) => {
-                                debug!("Received new packet {:#?}.", received);
-                                new_events.push(CommonEvent::ReceivedPacket { received });
-                                self.kind.id_tracker += 1;
-                                self.kind.received_tracker += 1;
-                            }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on recv_from {:?}", fail);
-                                break;
-                            }
+                    let payload = self.payload_queue.get(&packet.id).unwrap();
+                    let payload_length = payload.len() as u16;
+
+                    let connected = self
+                        .kind
+                        .connected
+                        .iter_mut()
+                        .find(|host| host.address == packet.state.destination)
+                        .unwrap();
+
+                    let sequence = connected.sequence_tracker;
+                    let ack = connected.ack_tracker;
+                    let connection_id = connected.state.connection_id;
+                    let destination = connected.address;
+                    let header = Header {
+                        sequence,
+                        ack,
+                        past_acks: 0,
+                        status_code: DATA_TRANSFER,
+                        payload_length,
+                    };
+                    let (bytes, footer) =
+                        match Packet::encode(&payload, &header, Some(connection_id)) {
+                            Ok(encoded) => encoded,
                             Err(fail) => {
-                                warn!("Failed recv_from with {:?}", fail);
+                                error!("Failed encoding packet {:#?}.", fail);
+                                new_events.push(CommonEvent::FailedEncodingPacket {
+                                    queued: packet.clone(),
+                                });
+                                handled_events.push(event_id);
                                 break;
                             }
-                        }
-                    }
-                }
-                // TODO(alex) [high] 2021-05-23: We don't depend on these events anymore, now we
-                // should just check if `self.network.writable` and try to send the packet, this
-                // allows us to cover sending by events, instead of send by queued vec.
-                CommonEvent::ReadyToSend => {
-                    debug!("Handling ReadyToSend");
+                        };
 
-                    if self.user_queue.is_empty()
-                        || self.timer.elapsed()
-                            > CHECK_ANTARC_QUEUE + self.kind.last_antarc_queue_check
-                    {
-                        for queued in self.antarc_queue.iter() {
-                            match queued.kind {
-                                PacketKind::ConnectionRequest => {
-                                    error!("Server cannot sent connection request.");
-                                    unreachable!();
-                                }
-                                PacketKind::ConnectionAccepted => {
-                                    debug!("Sending connection accepted");
-                                    if let Some(host) = self
-                                        .kind
-                                        .requesting_connection
-                                        .iter()
-                                        .find(|host| host.address == queued.state.destination)
-                                    {
-                                        debug!("to host {:#?}", host);
+                    match self.network.udp_socket.send_to(&bytes, destination) {
+                        Ok(num_sent) => {
+                            debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
+                            debug_assert!(num_sent > 0);
 
-                                        let header = Header::connection_accepted();
-                                        let payload = Payload::default();
-                                        debug_assert_eq!(header.payload_length, 0);
-
-                                        let connection_id = self.kind.connection_id_tracker;
-                                        let destination = host.address;
-
-                                        let (bytes, footer) = match Packet::encode(
-                                            &payload,
-                                            &header,
-                                            Some(connection_id),
-                                        ) {
-                                            Ok(encoded) => encoded,
-                                            Err(fail) => {
-                                                error!("Failed encoding packet {:#?}.", fail);
-                                                new_events.push(
-                                                    CommonEvent::FailedEncodingPacket {
-                                                        queued: queued.clone(),
-                                                    },
-                                                );
-                                                break;
-                                            }
-                                        };
-                                        match self.network.udp_socket.send_to(&bytes, destination) {
-                                            Ok(num_sent) => {
-                                                debug!(
-                                                    "Server sent packet {:#?} to {:#?}.",
-                                                    queued, destination
-                                                );
-                                                debug_assert!(num_sent > 0);
-
-                                                let packet = queued.sent(
-                                                    header,
-                                                    footer,
-                                                    destination,
-                                                    self.timer.elapsed(),
-                                                );
-
-                                                let sent_event =
-                                                    CommonEvent::SentPacket { sent: packet };
-                                                new_events.push(sent_event);
-                                            }
-                                            Err(fail)
-                                                if fail.kind() == io::ErrorKind::WouldBlock =>
-                                            {
-                                                warn!("Would block on send_to {:?}", fail);
-                                                self.network.writable = false;
-                                                break;
-                                            }
-                                            Err(fail) => {
-                                                error!(
-                                                    "Server failed sending packet {:#?} to {:#?}.",
-                                                    fail, destination
-                                                );
-                                                let failed_event =
-                                                    CommonEvent::FailedSendingPacket {
-                                                        queued: queued.clone(),
-                                                    };
-                                                new_events.push(failed_event);
-                                                break;
-                                            }
-                                        }
-                                    } else {
-                                        error!(
-                                            "Trying to send connection accepted to invalid host."
-                                        );
-                                        unreachable!();
-                                    }
-                                }
-                                PacketKind::ConnectionDenied => {}
-                                PacketKind::Ack(_) => {}
-                                PacketKind::DataTransfer => {}
-                                PacketKind::Heartbeat => {}
-                            }
-                        }
-
-                        self.kind.last_antarc_queue_check = self.timer.elapsed();
-                    } else {
-                        for queued in self.user_queue.iter() {
-                            debug_assert_ne!(queued.kind, PacketKind::ConnectionRequest);
-                            debug!("Sending data transfer from the user queue.");
-
-                            let payload = self.payload_queue.get(&queued.id).unwrap();
-                            let payload_length = payload.len() as u16;
-
-                            let connected = self
-                                .kind
-                                .connected
-                                .iter()
-                                .find(|host| host.address == queued.state.destination)
-                                .unwrap();
-
-                            let sequence = connected.sequence_tracker;
-                            let ack = connected.ack_tracker;
-                            let connection_id = connected.state.connection_id;
-                            let destination = connected.address;
-                            let header = Header {
-                                sequence,
-                                ack,
-                                past_acks: 0,
-                                status_code: DATA_TRANSFER,
-                                payload_length,
+                            let sent = Sent {
+                                header,
+                                footer,
+                                destination,
+                                time: self.timer.elapsed(),
                             };
-                            let (bytes, footer) =
-                                match Packet::encode(&payload, &header, Some(connection_id)) {
-                                    Ok(encoded) => encoded,
-                                    Err(fail) => {
-                                        error!("Failed encoding packet {:#?}.", fail);
-                                        new_events.push(CommonEvent::FailedEncodingPacket {
-                                            queued: queued.clone(),
-                                        });
-                                        break;
-                                    }
-                                };
+                            let packet = Packet {
+                                id: packet.id,
+                                state: sent,
+                                kind: packet.kind,
+                            };
 
-                            match self.network.udp_socket.send_to(&bytes, destination) {
-                                Ok(num_sent) => {
-                                    debug!(
-                                        "Server sent packet {:#?} to {:#?}.",
-                                        queued, destination
-                                    );
-                                    debug_assert!(num_sent > 0);
+                            let sent_event = CommonEvent::SentPacket { sent: packet };
+                            connected.sequence_tracker =
+                                Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
+                            new_events.push(sent_event);
+                            handled_events.push(event_id);
+                        }
+                        Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                            warn!("Would block on send_to {:?}", fail);
 
-                                    let sent = Sent {
-                                        header,
-                                        footer,
-                                        destination,
-                                        time: self.timer.elapsed(),
-                                    };
-                                    let packet = Packet {
-                                        id: queued.id,
-                                        state: sent,
-                                        kind: queued.kind,
-                                    };
-                                    let sent_event = CommonEvent::SentPacket { sent: packet };
-                                    new_events.push(sent_event);
-                                }
-                                Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                    warn!("Would block on send_to {:?}", fail);
+                            // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
+                            // specific Host, so the ownership of this allocation has a
+                            // clear owner. When we fail
+                            // to send, the encoding is performed again,
+                            // even though we could cache it here as a `Packet<Encoded>` and
+                            // insert it into the Host.
+                            self.network.writable = false;
 
-                                    // TODO(alex) 2021-05-23: Right here, the `bytes` belongs to a
-                                    // specific Host, so the ownership of this allocation has a
-                                    // clear owner. When we fail
-                                    // to send, the encoding is performed again,
-                                    // even though we could cache it here as a `Packet<Encoded>` and
-                                    // insert it into the Host.
-                                    self.network.writable = false;
-
-                                    break;
-                                }
-                                Err(fail) => {
-                                    error!(
-                                        "Server failed sending packet {:#?} to {:#?}.",
-                                        fail, destination
-                                    );
-                                    let failed_event = CommonEvent::FailedSendingPacket {
-                                        queued: queued.clone(),
-                                    };
-                                    new_events.push(failed_event);
-                                    break;
-                                }
-                            }
+                            break;
+                        }
+                        Err(fail) => {
+                            error!(
+                                "Server failed sending packet {:#?} to {:#?}.",
+                                fail, destination
+                            );
+                            let failed_event = CommonEvent::FailedSendingPacket {
+                                queued: packet.clone(),
+                            };
+                            new_events.push(failed_event);
+                            handled_events.push(event_id);
+                            break;
                         }
                     }
                 }
-                CommonEvent::SendConnectionRequest { address } => {
+                CommonEvent::QueuedConnectionAccepted { packet } if self.network.writable => {
+                    debug!("Handling QueuedConnectionAccepted {:#?}.", packet);
+
+                    let payload = Payload::default();
+                    let payload_length = payload.len() as u16;
+
+                    let requesting_connection = self
+                        .kind
+                        .requesting_connection
+                        .iter()
+                        .find(|host| host.address == packet.state.destination)
+                        .unwrap();
+
+                    let sequence = Sequence::default();
+                    let ack = 1;
+                    let connection_id = self.kind.connection_id_tracker;
+                    let destination = requesting_connection.address;
+                    let header = Header {
+                        sequence,
+                        ack,
+                        past_acks: 0,
+                        status_code: CONNECTION_ACCEPTED,
+                        payload_length,
+                    };
+                    let (bytes, footer) =
+                        match Packet::encode(&payload, &header, Some(connection_id)) {
+                            Ok(encoded) => encoded,
+                            Err(fail) => {
+                                error!("Failed encoding packet {:#?}.", fail);
+                                new_events.push(CommonEvent::FailedEncodingPacket {
+                                    queued: packet.clone(),
+                                });
+                                handled_events.push(event_id);
+                                break;
+                            }
+                        };
+
+                    match self.network.udp_socket.send_to(&bytes, destination) {
+                        Ok(num_sent) => {
+                            debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
+                            debug_assert!(num_sent > 0);
+
+                            let sent = Sent {
+                                header,
+                                footer,
+                                destination,
+                                time: self.timer.elapsed(),
+                            };
+                            let packet = Packet {
+                                id: packet.id,
+                                state: sent,
+                                kind: packet.kind,
+                            };
+                            let sent_event = CommonEvent::SentPacket { sent: packet };
+                            self.kind.connection_id_tracker =
+                                NonZeroU16::new(self.kind.connection_id_tracker.get() + 1).unwrap();
+                            new_events.push(sent_event);
+                            handled_events.push(event_id);
+                        }
+                        Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                            warn!("Would block on send_to {:?}", fail);
+
+                            // TODO(alex) 2021-05-23: Right here, the `bytes` belongs to a
+                            // specific Host, so the ownership of this allocation has a
+                            // clear owner. When we fail
+                            // to send, the encoding is performed again,
+                            // even though we could cache it here as a `Packet<Encoded>` and
+                            // insert it into the Host.
+                            self.network.writable = false;
+
+                            break;
+                        }
+                        Err(fail) => {
+                            error!(
+                                "Server failed sending packet {:#?} to {:#?}.",
+                                fail, destination
+                            );
+                            let failed_event = CommonEvent::FailedSendingPacket {
+                                queued: packet.clone(),
+                            };
+                            new_events.push(failed_event);
+                            handled_events.push(event_id);
+                            break;
+                        }
+                    }
+                }
+                CommonEvent::QueuedConnectionRequest { .. } => {
                     error!("Server cannot handle SendConnectionRequest!");
                     unreachable!();
                 }
                 CommonEvent::ReceivedConnectionRequest { address } => {
                     debug!("Handling ReceivedConnectionRequest from {:#?}", address);
+                    handled_events.push(event_id);
                 }
                 CommonEvent::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
+                    handled_events.push(event_id);
                 }
                 CommonEvent::FailedSendingPacket { queued } => {
                     error!("Handling event FailedSendingPacket for {:#?}", queued);
+                    handled_events.push(event_id);
                 }
                 CommonEvent::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
-                    if self
-                        .kind
-                        .connected
-                        .iter()
-                        .all(|host| host.state.last_sent >= sent.id)
-                    {
-                        let removed_payload = self.payload_queue.remove(&sent.id);
-                        debug!("Removed {:#?} from queue.", removed_payload);
+
+                    match sent.kind {
+                        PacketKind::ConnectionRequest => {
+                            error!("Server cannot have sent a connection request {:#?}.", sent);
+                            unreachable!();
+                        }
+                        PacketKind::ConnectionAccepted => {
+                            debug!("Server sent ConnectionAccepted, no payload to remove.");
+                        }
+                        PacketKind::ConnectionDenied => {
+                            debug!("Server sent ConnectionDenied.");
+                        }
+                        PacketKind::Ack(_) => {}
+                        PacketKind::DataTransfer => {
+                            debug!("Server sent DataTransfer.");
+
+                            if self
+                                .kind
+                                .connected
+                                .iter()
+                                .all(|host| host.state.last_sent >= sent.id)
+                            {
+                                let removed_payload = self.payload_queue.remove(&sent.id);
+                                debug!("Removed {:#?} from queue.", removed_payload);
+                            }
+                        }
+                        PacketKind::Heartbeat => {}
                     }
 
-                    let removed_packet = self.user_queue.drain(..1).next();
-                    debug!("Removed {:#?} from queue.", removed_packet);
+                    handled_events.push(event_id);
                 }
                 CommonEvent::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
+                    handled_events.push(event_id);
                 }
-                CommonEvent::SendHeartbeat { address } => {
+                CommonEvent::QueuedHeartbeat { address } => {
                     debug!("Handling SendHeartbeat to {:#?}", address);
+                    handled_events.push(event_id);
+                }
+                other => {
+                    warn!("Server catch all for improper event {:#?}.", other);
                 }
             }
         }
 
+        for handled_event in handled_events.drain(..) {
+            let removed_event = self.events.remove(handled_event);
+            debug!("Removed event {:#?}.", removed_event);
+        }
+
         self.events.append(&mut new_events);
-        Ok(self.kind.received_tracker)
+        Ok(self.retrievable_count)
     }
 
     pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
         debug!("Retrieve for server.");
-        self.kind.received_tracker = 0;
+        self.retrievable_count = 0;
         Vec::with_capacity(4)
     }
 }
