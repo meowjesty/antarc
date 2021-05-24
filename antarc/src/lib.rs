@@ -9,6 +9,7 @@
 #![feature(duration_consts_2)]
 #![feature(new_uninit)]
 #![feature(drain_filter)]
+#![feature(hash_drain_filter)]
 
 use core::mem::size_of;
 use std::{

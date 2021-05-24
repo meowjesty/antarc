@@ -106,6 +106,7 @@ pub(crate) struct Footer {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Queued {
     pub(crate) time: Duration,
+    pub(crate) destination: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq)]

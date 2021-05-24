@@ -59,7 +59,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) network: NetworkResource,
     pub(crate) user_queue: Vec<Packet<Queued>>,
     pub(crate) payload_queue: HashMap<PacketId, Payload>,
-    pub(crate) antarc_queue: Vec<(SocketAddr, Packet<Queued>)>,
+    pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) events: EventList,
 }
 
@@ -128,6 +128,18 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             kind,
             network,
         }
+    }
+
+    pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
+        let cancelled_packet = self
+            .user_queue
+            .drain_filter(|queued| queued.id == packet_id)
+            .next()
+            .is_some();
+
+        let cancelled_payload = self.payload_queue.remove(&packet_id).is_some();
+
+        cancelled_packet && cancelled_payload
     }
 }
 
