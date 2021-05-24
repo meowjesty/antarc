@@ -9,7 +9,7 @@ use log::{debug, error, warn};
 
 use super::SendTo;
 use crate::{
-    events::Event,
+    events::CommonEvent,
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
     net::{
         client::{receiver, sender},
@@ -91,17 +91,17 @@ impl NetManager<Server> {
 
         for event in self.network.events.iter() {
             if event.is_readable() {
-                self.events.push(Event::ReadyToReceive);
+                self.network.readable = true;
             }
 
             if event.is_writable() {
-                self.events.push(Event::ReadyToSend);
+                self.network.writable = true;
             }
         }
 
         for event in self.events.drain(..) {
             match event {
-                Event::ReadyToReceive => {
+                CommonEvent::ReadyToReceive => {
                     debug!("Handling ReadyToReceive");
 
                     loop {
@@ -113,7 +113,7 @@ impl NetManager<Server> {
                         ) {
                             Ok(received) => {
                                 debug!("Received new packet {:#?}.", received);
-                                new_events.push(Event::ReceivedPacket { received });
+                                new_events.push(CommonEvent::ReceivedPacket { received });
                                 self.kind.id_tracker += 1;
                                 self.kind.received_tracker += 1;
                             }
@@ -128,24 +128,12 @@ impl NetManager<Server> {
                         }
                     }
                 }
-                Event::ReadyToSend => {
+                // TODO(alex) [high] 2021-05-23: We don't depend on these events anymore, now we
+                // should just check if `self.network.writable` and try to send the packet, this
+                // allows us to cover sending by events, instead of send by queued vec.
+                CommonEvent::ReadyToSend => {
                     debug!("Handling ReadyToSend");
-                    // TODO(alex) 2021-05-18: What to do here ends up being a big problem, and I
-                    // can't think of a good solution.
-                    //
-                    // The packets have an address, so if we were to just send it here, everything
-                    // would be fine, but how do we get the sequence? We need to find a matching
-                    // address in one of the host vectors, which depend on the host state, and get
-                    // the sequence from there. This reqires checking both the `Sent` and `Acked`
-                    // lists of every kind of host.
-                    //
-                    // A similar thing would have to be done on the `Received` and `Retrieved` to
-                    // get the correct ack value, not even talking about `past_acks`.
-                    //
-                    // ADD(alex) 2021-05-18: The server won't send the same packet to every client,
-                    // for example, when client B requests a connection, then the server will send
-                    // a connection accepted to B, but will send a data transfer to client A, which
-                    // is already connected.
+
                     if self.user_queue.is_empty()
                         || self.timer.elapsed()
                             > CHECK_ANTARC_QUEUE + self.kind.last_antarc_queue_check
@@ -181,9 +169,11 @@ impl NetManager<Server> {
                                             Ok(encoded) => encoded,
                                             Err(fail) => {
                                                 error!("Failed encoding packet {:#?}.", fail);
-                                                new_events.push(Event::FailedEncodingPacket {
-                                                    queued: queued.clone(),
-                                                });
+                                                new_events.push(
+                                                    CommonEvent::FailedEncodingPacket {
+                                                        queued: queued.clone(),
+                                                    },
+                                                );
                                                 break;
                                             }
                                         };
@@ -202,13 +192,15 @@ impl NetManager<Server> {
                                                     self.timer.elapsed(),
                                                 );
 
-                                                let sent_event = Event::SentPacket { sent: packet };
+                                                let sent_event =
+                                                    CommonEvent::SentPacket { sent: packet };
                                                 new_events.push(sent_event);
                                             }
                                             Err(fail)
                                                 if fail.kind() == io::ErrorKind::WouldBlock =>
                                             {
                                                 warn!("Would block on send_to {:?}", fail);
+                                                self.network.writable = false;
                                                 break;
                                             }
                                             Err(fail) => {
@@ -216,9 +208,10 @@ impl NetManager<Server> {
                                                     "Server failed sending packet {:#?} to {:#?}.",
                                                     fail, destination
                                                 );
-                                                let failed_event = Event::FailedSendingPacket {
-                                                    queued: queued.clone(),
-                                                };
+                                                let failed_event =
+                                                    CommonEvent::FailedSendingPacket {
+                                                        queued: queued.clone(),
+                                                    };
                                                 new_events.push(failed_event);
                                                 break;
                                             }
@@ -269,7 +262,7 @@ impl NetManager<Server> {
                                     Ok(encoded) => encoded,
                                     Err(fail) => {
                                         error!("Failed encoding packet {:#?}.", fail);
-                                        new_events.push(Event::FailedEncodingPacket {
+                                        new_events.push(CommonEvent::FailedEncodingPacket {
                                             queued: queued.clone(),
                                         });
                                         break;
@@ -295,7 +288,7 @@ impl NetManager<Server> {
                                         state: sent,
                                         kind: queued.kind,
                                     };
-                                    let sent_event = Event::SentPacket { sent: packet };
+                                    let sent_event = CommonEvent::SentPacket { sent: packet };
                                     new_events.push(sent_event);
                                 }
                                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
@@ -307,6 +300,7 @@ impl NetManager<Server> {
                                     // to send, the encoding is performed again,
                                     // even though we could cache it here as a `Packet<Encoded>` and
                                     // insert it into the Host.
+                                    self.network.writable = false;
 
                                     break;
                                 }
@@ -315,7 +309,7 @@ impl NetManager<Server> {
                                         "Server failed sending packet {:#?} to {:#?}.",
                                         fail, destination
                                     );
-                                    let failed_event = Event::FailedSendingPacket {
+                                    let failed_event = CommonEvent::FailedSendingPacket {
                                         queued: queued.clone(),
                                     };
                                     new_events.push(failed_event);
@@ -325,20 +319,20 @@ impl NetManager<Server> {
                         }
                     }
                 }
-                Event::SendConnectionRequest { address } => {
+                CommonEvent::SendConnectionRequest { address } => {
                     error!("Server cannot handle SendConnectionRequest!");
                     unreachable!();
                 }
-                Event::ReceivedConnectionRequest { address } => {
+                CommonEvent::ReceivedConnectionRequest { address } => {
                     debug!("Handling ReceivedConnectionRequest from {:#?}", address);
                 }
-                Event::FailedEncodingPacket { queued } => {
+                CommonEvent::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
                 }
-                Event::FailedSendingPacket { queued } => {
+                CommonEvent::FailedSendingPacket { queued } => {
                     error!("Handling event FailedSendingPacket for {:#?}", queued);
                 }
-                Event::SentPacket { sent } => {
+                CommonEvent::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
                     if self
                         .kind
@@ -353,10 +347,10 @@ impl NetManager<Server> {
                     let removed_packet = self.user_queue.drain(..1).next();
                     debug!("Removed {:#?} from queue.", removed_packet);
                 }
-                Event::ReceivedPacket { received } => {
+                CommonEvent::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
                 }
-                Event::SendHeartbeat { address } => {
+                CommonEvent::SendHeartbeat { address } => {
                     debug!("Handling SendHeartbeat to {:#?}", address);
                 }
             }

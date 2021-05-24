@@ -67,6 +67,8 @@ pub struct NetManager<ClientOrServer> {
 pub(crate) struct NetworkResource {
     pub(crate) tcp_stream: TcpStream,
     pub(crate) udp_socket: UdpSocket,
+    pub(crate) writable: bool,
+    pub(crate) readable: bool,
     pub(crate) poll: Poll,
     pub(crate) events: Events,
 }
@@ -103,6 +105,8 @@ impl NetworkResource {
             udp_socket,
             poll,
             events,
+            writable: false,
+            readable: false,
         }
     }
 }

@@ -19,7 +19,7 @@ pub(crate) enum EventKind {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) enum Event {
+pub(crate) enum CommonEvent {
     ReadyToReceive,
     ReadyToSend,
     SendConnectionRequest { address: SocketAddr },
@@ -31,20 +31,31 @@ pub(crate) enum Event {
     ReceivedPacket { received: Packet<Received> },
 }
 
-impl Event {
+/// TODO(alex) [low] 2021-05-23: These separate event types with a common ground is definitely the
+/// way to go, but right now they add a bit too much refactoring work, so come back to this once
+/// antarc is properly working.
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum ServerEvent {}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum ClientEvent {
+    SendConnectionRequest { address: SocketAddr },
+}
+
+impl CommonEvent {
     pub(crate) fn kind(&self) -> EventKind {
         match self {
-            Event::ReadyToReceive => EventKind::ReadyToReceive,
-            Event::ReadyToSend => EventKind::ReadyToSend,
-            Event::FailedEncodingPacket { .. } => EventKind::FailedEncodingPacket,
-            Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
-            Event::SentPacket { .. } => EventKind::SentPacket,
-            Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,
-            Event::SendConnectionRequest { .. } => EventKind::SendConnectionRequest,
-            Event::ReceivedConnectionRequest { .. } => EventKind::ReceivedConnectionRequest,
-            Event::SendHeartbeat { .. } => EventKind::SendHeartbeat,
+            CommonEvent::ReadyToReceive => EventKind::ReadyToReceive,
+            CommonEvent::ReadyToSend => EventKind::ReadyToSend,
+            CommonEvent::FailedEncodingPacket { .. } => EventKind::FailedEncodingPacket,
+            CommonEvent::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
+            CommonEvent::SentPacket { .. } => EventKind::SentPacket,
+            CommonEvent::ReceivedPacket { .. } => EventKind::ReceivedPacket,
+            CommonEvent::SendConnectionRequest { .. } => EventKind::SendConnectionRequest,
+            CommonEvent::ReceivedConnectionRequest { .. } => EventKind::ReceivedConnectionRequest,
+            CommonEvent::SendHeartbeat { .. } => EventKind::SendHeartbeat,
         }
     }
 }
 
-pub(crate) type EventList = Vec<Event>;
+pub(crate) type EventList = Vec<CommonEvent>;

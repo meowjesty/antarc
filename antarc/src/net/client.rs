@@ -10,7 +10,7 @@ use mio::net::UdpSocket;
 
 use super::SendTo;
 use crate::{
-    events::{Event, EventKind},
+    events::{CommonEvent, EventKind},
     host::{Disconnected, Generic, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
@@ -136,7 +136,7 @@ impl NetManager<Client> {
         self.antarc_queue.push(packet);
         self.kind.id_tracker += 1;
 
-        self.events.push(Event::SendConnectionRequest {
+        self.events.push(CommonEvent::SendConnectionRequest {
             address: server_addr.clone(),
         });
     }
@@ -186,18 +186,18 @@ impl NetManager<Client> {
         for event in self.network.events.iter() {
             if event.token() == NetworkResource::TOKEN {
                 if event.is_readable() {
-                    self.events.push(Event::ReadyToReceive);
+                    self.events.push(CommonEvent::ReadyToReceive);
                 }
 
                 if event.is_writable() {
-                    self.events.push(Event::ReadyToSend);
+                    self.events.push(CommonEvent::ReadyToSend);
                 }
             }
         }
 
         for event in self.events.drain(..) {
             match event {
-                Event::ReadyToReceive => {
+                CommonEvent::ReadyToReceive => {
                     debug!("Handling ReadyToReceive");
                     loop {
                         match receiver(
@@ -208,7 +208,7 @@ impl NetManager<Client> {
                         ) {
                             Ok(received) => {
                                 debug!("Received new packet {:#?}.", received);
-                                new_events.push(Event::ReceivedPacket { received });
+                                new_events.push(CommonEvent::ReceivedPacket { received });
                                 self.kind.id_tracker += 1;
                             }
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
@@ -222,7 +222,7 @@ impl NetManager<Client> {
                         }
                     }
                 }
-                Event::ReadyToSend => {
+                CommonEvent::ReadyToSend => {
                     debug!("Handling ReadyToSend");
 
                     let sequence = self.kind.server.sequence_tracker;
@@ -250,7 +250,7 @@ impl NetManager<Client> {
                             Ok(success) => success,
                             Err(fail) => {
                                 error!("Failed encoding packet {:#?}.", fail);
-                                new_events.push(Event::FailedEncodingPacket {
+                                new_events.push(CommonEvent::FailedEncodingPacket {
                                     queued: queued.clone(),
                                 });
                                 break;
@@ -271,7 +271,7 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: queued.kind,
                                 };
-                                new_events.push(Event::SentPacket { sent: packet });
+                                new_events.push(CommonEvent::SentPacket { sent: packet });
                             }
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
@@ -288,7 +288,7 @@ impl NetManager<Client> {
 
                             Err(fail) => {
                                 error!("Client failed sending packet {:#?}.", fail);
-                                new_events.push(Event::FailedSendingPacket {
+                                new_events.push(CommonEvent::FailedSendingPacket {
                                     queued: queued.clone(),
                                 });
                                 // TODO(alex) 2021-05-17: Must treat 2 different errors
@@ -300,13 +300,13 @@ impl NetManager<Client> {
                         }
                     }
                 }
-                Event::FailedEncodingPacket { queued } => {
+                CommonEvent::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
                 }
-                Event::FailedSendingPacket { queued } => {
+                CommonEvent::FailedSendingPacket { queued } => {
                     error!("Handling event FailedSendingPacket for {:#?}", queued);
                 }
-                Event::SentPacket { sent } => {
+                CommonEvent::SentPacket { sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
 
                     let removed_packet = self.user_queue.drain(..1).next().unwrap();
@@ -315,15 +315,15 @@ impl NetManager<Client> {
                     let removed_payload = self.payload_queue.remove(&sent.id).unwrap();
                     debug!("Removed {:#?} from queue.", removed_payload);
                 }
-                Event::ReceivedPacket { received } => {
+                CommonEvent::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
                     // TODO(alex) 2021-05-17: What to do here before this?
                     self.kind.server.received.push(received);
                 }
-                Event::SendConnectionRequest { address } => {
+                CommonEvent::SendConnectionRequest { address } => {
                     unreachable!();
                 }
-                Event::SendHeartbeat { address } => {
+                CommonEvent::SendHeartbeat { address } => {
                     // TODO(alex) 2021-05-18: Both here and on the server we should check the rtt
                     // to see if a hearbeat is actually neccessary, thus
                     // avoiding a network congestion.
@@ -341,7 +341,7 @@ impl NetManager<Client> {
                     self.user_queue.push(packet);
                     self.kind.id_tracker += 1;
                 }
-                Event::ReceivedConnectionRequest { address } => {
+                CommonEvent::ReceivedConnectionRequest { address } => {
                     error!("Client cannot handle ReceivedConnectionRequest!");
                     unreachable!();
                 }
