@@ -1,11 +1,12 @@
 use core::fmt;
-use std::{net::SocketAddr, time::Instant};
+use std::{collections::HashMap, net::SocketAddr, time::Instant};
 
 use mio::{
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
     Events, Interest, Poll, Token,
 };
 
+use self::server::PacketId;
 use crate::{
     events::EventList,
     packet::{ConnectionId, Packet, Payload, Queued, Received, Sent},
@@ -56,7 +57,8 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) buffer: Vec<u8>,
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
-    pub(crate) user_queue: Vec<(SendTo, Packet<Queued>, Payload)>,
+    pub(crate) user_queue: Vec<Packet<Queued>>,
+    pub(crate) payload_queue: HashMap<PacketId, Payload>,
     pub(crate) antarc_queue: Vec<(SocketAddr, Packet<Queued>)>,
     pub(crate) events: EventList,
 }
@@ -113,6 +115,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
 
         let user_queue = Vec::with_capacity(128);
         let antarc_queue = Vec::with_capacity(128);
+        let payload_queue = HashMap::with_capacity(128);
         let network = NetworkResource::new(address);
 
         Self {
@@ -121,6 +124,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             buffer,
             user_queue,
             antarc_queue,
+            payload_queue,
             kind,
             network,
         }

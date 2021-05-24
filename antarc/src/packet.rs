@@ -251,8 +251,26 @@ impl Packet<Queued> {
         Ok((packet_bytes, footer))
     }
 
-    pub(crate) fn to_sent(self, header: Header, footer: Footer, time: &Instant) -> Packet<Sent> {
-        todo!()
+    pub(crate) fn sent(
+        &self,
+        header: Header,
+        footer: Footer,
+        destination: SocketAddr,
+        time: Duration,
+    ) -> Packet<Sent> {
+        let sent = Sent {
+            header,
+            footer,
+            destination,
+            time,
+        };
+        let packet = Packet {
+            id: self.id,
+            state: sent,
+            kind: self.kind,
+        };
+
+        packet
     }
 }
 

@@ -1,7 +1,7 @@
 use core::mem;
 use std::io::Cursor;
 
-use super::{Ack, Sequence, StatusCode};
+use super::{Ack, Sequence, StatusCode, CONNECTION_ACCEPTED};
 use crate::{AntarcResult, ProtocolId};
 
 /// ### Network Component
@@ -45,7 +45,6 @@ pub(crate) struct Header {
     /// ADD(alex) 2021-02-28: Borrow this from http's status code, so `100 to 199` indicates a
     /// connection request of some sort (fragment, not-fragmented, first attempt, not first
     /// attempt, this is a reconnection, ...), same for other codes.
-
     pub(crate) sequence: Sequence,
 
     /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
@@ -99,6 +98,16 @@ impl Header {
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn decode(cursor: &mut Cursor<&[u8]>) -> AntarcResult<Self> {
         todo!()
+    }
+
+    pub(crate) fn connection_accepted() -> Self {
+        Self {
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            ack: 1,
+            past_acks: 0,
+            status_code: CONNECTION_ACCEPTED,
+            payload_length: 0,
+        }
     }
 }
 
