@@ -33,6 +33,17 @@ pub(crate) enum CommonEvent {
     ReceivedPacket { received: Packet<Received> },
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum ConnectionEvent {
+    RequestConnection { remote: SocketAddr },
+    SentRequest { packet: Packet<Sent> },
+    RequestTimedOut,
+    FailedSendingRequest,
+    // ReceivedAccepted { packet: Packet<Received, ConnectionAccepted> },
+    ConnectionAccepted { packet: Packet<Received> },
+    ConnectionDenied { packet: Packet<Received> },
+}
+
 /// TODO(alex) [low] 2021-05-23: These separate event types with a common ground is definitely the
 /// way to go, but right now they add a bit too much refactoring work, so come back to this once
 /// antarc is properly working.

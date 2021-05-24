@@ -11,10 +11,7 @@ use super::SendTo;
 use crate::{
     events::CommonEvent,
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
-    net::{
-        client::{receiver, sender},
-        NetManager, NetworkResource,
-    },
+    net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued, Sent,
         Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
