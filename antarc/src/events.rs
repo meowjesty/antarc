@@ -35,13 +35,8 @@ pub(crate) enum CommonEvent {
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum ConnectionEvent {
-    RequestConnection { remote: SocketAddr },
-    SentRequest { packet: Packet<Sent> },
-    RequestTimedOut,
-    FailedSendingRequest,
+    ReceivedConnectionRequest { packet: Packet<Received> },
     // ReceivedAccepted { packet: Packet<Received, ConnectionAccepted> },
-    ConnectionAccepted { packet: Packet<Received> },
-    ConnectionDenied { packet: Packet<Received> },
 }
 
 /// TODO(alex) [low] 2021-05-23: These separate event types with a common ground is definitely the

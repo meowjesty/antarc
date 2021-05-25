@@ -11,7 +11,7 @@ use mio::net::UdpSocket;
 use super::SendTo;
 use crate::{
     events::{CommonEvent, ConnectionEvent, EventKind},
-    host::{Disconnected, Generic, Host, HostState, RequestingConnection},
+    host::{Connected, Disconnected, Generic, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
         header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
@@ -66,27 +66,42 @@ impl NetManager<Client> {
     ///
     /// ADD(alex) 2021-05-23: Do the whole connection inside this function, it'll simplify the
     /// `tick` function immensely.
-    pub fn connect(&mut self, server_addr: &SocketAddr) {
-        self.kind
-            .connection_events
-            .push(ConnectionEvent::RequestConnection {
-                remote: server_addr.clone(),
-            });
-
+    pub fn connect(&mut self, server_addr: &SocketAddr) -> Result<ConnectionId, String> {
+        debug!("Connecting to {:#?}.", server_addr);
         let server = Host::new_generic(server_addr.clone());
         self.kind.server = server;
-        // TODO(alex) 2021-05-17: This is not 100% correct, as `connect` might not have been called
-        // yet, but not doing this requires `if let Some` pattern in each event. I have to think of
-        // a better way to handle this ordeal.
         self.kind.server.state.state = HostState::RequestingConnection {
             info: RequestingConnection { attempts: 0 },
         };
 
-        let mut new_events = Vec::with_capacity(8);
-        let mut handled_events = Vec::with_capacity(8);
         let mut time_sent = self.timer.elapsed();
 
-        'connection: loop {
+        let id = self.kind.id_tracker;
+        let sequence = Sequence::default();
+        let ack = 0;
+        let payload = Payload::default();
+        let payload_length = payload.len() as u16;
+        let destination = server_addr.clone();
+
+        let header = Header {
+            sequence,
+            ack,
+            past_acks: 0,
+            status_code: CONNECTION_REQUEST,
+            payload_length,
+        };
+
+        let (bytes, footer) = match Packet::encode(&payload, &header, None) {
+            Ok(encoded) => encoded,
+            Err(fail) => {
+                error!("Failed encoding packet {:#?}.", fail);
+                panic!("{}", fail);
+            }
+        };
+
+        let mut connection_request = Some(bytes.clone());
+
+        loop {
             self.network
                 .poll
                 .poll(&mut self.network.events, Some(Duration::from_millis(150)))
@@ -104,7 +119,7 @@ impl NetManager<Client> {
                 }
             }
 
-            while self.network.readable {
+            'receive: while self.network.readable {
                 match self.network.udp_socket.recv_from(&mut self.buffer) {
                     Ok((num_received, source)) => {
                         debug!("Received new packet {:#?} {:#?}.", num_received, source);
@@ -118,147 +133,83 @@ impl NetManager<Client> {
                         .unwrap();
 
                         if received.kind == PacketKind::ConnectionAccepted {
-                            self.kind
-                                .connection_events
-                                .push(ConnectionEvent::ConnectionAccepted { packet: received });
+                            debug!("Received ConnectionAccepted!");
+                            let connection_id = received.state.footer.connection_id.unwrap();
+                            let info = Connected {
+                                connection_id,
+                                rtt: Duration::default(),
+                                last_sent: 1,
+                            };
+                            self.kind.server.state.state = HostState::Connected { info };
+                            self.kind.id_tracker += 1;
+
+                            self.events.push(CommonEvent::QueuedHeartbeat {
+                                address: server_addr.clone(),
+                            });
+
+                            return Ok(connection_id);
                         } else if received.kind == PacketKind::ConnectionDenied {
-                            self.kind
-                                .connection_events
-                                .push(ConnectionEvent::ConnectionAccepted { packet: received });
+                            debug!("Received ConnectionDenied!");
+                            todo!()
+                        } else {
+                            error!("Received some invalid packet!");
+                            panic!("Invalid packet received {:#?}", received);
                         }
-                        self.kind.id_tracker += 1;
-                        self.retrievable_count += 1;
                     }
                     Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                         warn!("Would block on recv_from {:?}", fail);
                         self.network.readable = false;
-                        break;
+                        break 'receive;
                     }
                     Err(fail) => {
                         warn!("Failed recv_from with {:?}", fail);
                         self.network.readable = false;
-                        break;
+                        break 'receive;
                     }
                 }
+            }
+
+            if self.network.writable == false {
+                continue;
             }
 
             if time_sent + Duration::from_millis(2000) < self.timer.elapsed() {
                 debug!("Wait time for connection response expired.");
-                self.kind
-                    .connection_events
-                    .push(ConnectionEvent::RequestTimedOut);
+                connection_request = Some(bytes.clone());
             }
 
-            for (event_id, event) in self.kind.connection_events.iter().enumerate() {
-                match event {
-                    ConnectionEvent::RequestConnection { remote } if self.network.writable => {
-                        debug!("Handling RequestConnection event to {:#?}.", remote);
+            if let Some(bytes) = connection_request.take() {
+                debug!("Attempting to send connection request {:#?}.", bytes);
 
-                        let id = self.kind.id_tracker;
-                        let sequence = Sequence::default();
-                        let ack = 0;
-                        let payload = Payload::default();
-                        let payload_length = payload.len() as u16;
-                        let destination = remote.clone();
-
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code: CONNECTION_REQUEST,
-                            payload_length,
-                        };
-
-                        let (bytes, footer) = match Packet::encode(&payload, &header, None) {
-                            Ok(encoded) => encoded,
-                            Err(fail) => {
-                                error!("Failed encoding packet {:#?}.", fail);
-                                panic!("{}", fail);
-                            }
-                        };
-
-                        match self.network.udp_socket.send_to(&bytes, destination) {
-                            Ok(num_sent) => {
-                                debug!(
-                                    "Client sent connection request {:#?} to {:#?}.",
-                                    header, destination
-                                );
-                                debug_assert!(num_sent > 0);
-
-                                let sent = Sent {
-                                    header,
-                                    footer,
-                                    destination,
-                                    time: self.timer.elapsed(),
-                                };
-                                time_sent = sent.time;
-
-                                let kind = PacketKind::ConnectionRequest;
-                                let packet = Packet {
-                                    id,
-                                    state: sent,
-                                    kind,
-                                };
-                                let sent_event = ConnectionEvent::SentRequest { packet };
-                                new_events.push(sent_event);
-                                handled_events.push(event_id);
-                            }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                // TODO(alex) 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
-                                let failed_event = ConnectionEvent::FailedSendingRequest;
-                                new_events.push(failed_event);
-                                handled_events.push(event_id);
-                            }
-                            Err(fail) => {
-                                error!(
-                                    "Server failed sending connection request {:#?} to {:#?}.",
-                                    fail, destination
-                                );
-                                panic!("{}", fail);
-                            }
-                        }
+                match self.network.udp_socket.send_to(&bytes, destination) {
+                    Ok(num_sent) => {
+                        debug!(
+                            "Client sent connection request {:#?} to {:#?}.",
+                            header, destination
+                        );
+                        debug_assert!(num_sent > 0);
+                        time_sent = self.timer.elapsed();
                     }
-                    ConnectionEvent::SentRequest { packet } => {}
-                    ConnectionEvent::RequestTimedOut => {}
-                    ConnectionEvent::FailedSendingRequest => {}
-                    ConnectionEvent::ConnectionAccepted { packet } => {
-                        debug!("ConnectionAccepted!");
-                        // TODO(alex) [high] 2021-05-24: Finish implementing the connection part of
-                        // the protocol (client side).
-                        //
-                        // The `SentRequest` event seems a bit useless, as we're checking for
-                        // timeout outside it.
-                        //
-                        // I think we're missing proper increment of packet id, sequence tracker,
-                        // and ack tracker.
-                        //
-                        // After the connection is done, we could raise a `SendHeartbeat` packet to
-                        // ack the connection for the server, as waiting for the user to enqueue a
-                        // data transfer might take too long.
-                        break 'connection;
+                    Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                        warn!("Would block on send_to {:?}", fail);
+
+                        // TODO(alex) 2021-05-23: Right here, the `bytes` belongs to a
+                        // specific Host, so the ownership of this allocation has a
+                        // clear owner. When we fail
+                        // to send, the encoding is performed again,
+                        // even though we could cache it here as a `Packet<Encoded>` and
+                        // insert it into the Host.
+                        self.network.writable = false;
                     }
-                    ConnectionEvent::ConnectionDenied { packet } => {
-                        warn!("ConnectionAccepted!");
-                        break 'connection;
-                    }
-                    other => {
-                        warn!("Network client connection in {:#?} state.", other);
+                    Err(fail) => {
+                        error!(
+                            "Server failed sending connection request {:#?} to {:#?}.",
+                            fail, destination
+                        );
+                        panic!("{}", fail);
                     }
                 }
             }
-
-            for event_id in handled_events.drain(..) {
-                self.kind.connection_events.remove(event_id);
-            }
-
-            self.kind.connection_events.append(&mut new_events);
         }
     }
 
