@@ -66,7 +66,9 @@ impl NetManager<Server> {
             };
 
             // self.user_queue.push(packet);
-            self.events.push(CommonEvent::QueuedDataTransfer { packet });
+            self.event_system
+                .events
+                .push(CommonEvent::QueuedDataTransfer { packet });
         }
 
         self.payload_queue.insert(id, Payload(message));
@@ -109,13 +111,16 @@ impl NetManager<Server> {
                     )
                     .unwrap();
 
-                    self.received_events.push(ReceivedEvent::AckRemote {
-                        header: received.state.header.clone(),
-                    });
+                    self.event_system
+                        .received_events
+                        .push(ReceivedEvent::AckRemote {
+                            header: received.state.header.clone(),
+                        });
 
                     match received.kind {
                         PacketKind::ConnectionRequest => {
-                            self.received_events
+                            self.event_system
+                                .received_events
                                 .push(ReceivedEvent::ConnectionRequest { received });
                         }
                         PacketKind::Ack(_) => {}
@@ -140,7 +145,7 @@ impl NetManager<Server> {
             }
         }
 
-        for (event_id, event) in self.events.iter().enumerate() {
+        for (event_id, event) in self.event_system.events.iter().enumerate() {
             match event {
                 CommonEvent::QueuedDataTransfer { packet } if self.network.writable => {
                     debug!("Handling QueuedDataTransfer {:#?}.", packet);
@@ -403,8 +408,9 @@ impl NetManager<Server> {
             }
         }
 
+        let system = &mut self.event_system;
         // TODO(alex) [high] 2021-05-25: Double mut reference here.
-        for event in self.received_events.drain(..) {
+        for event in system.received_events.drain(..) {
             match event {
                 ReceivedEvent::ConnectionRequest { received } => {
                     self.received_connection_request(received);
@@ -414,11 +420,11 @@ impl NetManager<Server> {
         }
 
         for handled_event in handled_events.drain(..) {
-            let removed_event = self.events.remove(handled_event);
+            let removed_event = self.event_system.events.remove(handled_event);
             debug!("Removed event {:#?}.", removed_event);
         }
 
-        self.events.append(&mut new_events);
+        self.event_system.events.append(&mut new_events);
         Ok(self.retrievable_count)
     }
 

@@ -143,7 +143,7 @@ impl NetManager<Client> {
                             self.kind.server.state.state = HostState::Connected { info };
                             self.kind.id_tracker += 1;
 
-                            self.events.push(CommonEvent::QueuedHeartbeat {
+                            self.event_system.events.push(CommonEvent::QueuedHeartbeat {
                                 address: server_addr.clone(),
                             });
 
@@ -226,7 +226,9 @@ impl NetManager<Client> {
             kind: PacketKind::DataTransfer,
         };
 
-        self.events.push(CommonEvent::QueuedDataTransfer { packet });
+        self.event_system
+            .events
+            .push(CommonEvent::QueuedDataTransfer { packet });
         self.payload_queue.insert(id, Payload(message));
         self.kind.id_tracker += 1;
 
@@ -281,7 +283,9 @@ impl NetManager<Client> {
                     )
                     .unwrap();
 
-                    self.events.push(CommonEvent::ReceivedPacket { received });
+                    self.event_system
+                        .events
+                        .push(CommonEvent::ReceivedPacket { received });
                     self.kind.id_tracker += 1;
                     self.retrievable_count += 1;
                 }
@@ -298,7 +302,7 @@ impl NetManager<Client> {
             }
         }
 
-        for (event_id, event) in self.events.iter().enumerate() {
+        for (event_id, event) in self.event_system.events.iter().enumerate() {
             match event {
                 CommonEvent::QueuedDataTransfer { packet } if self.network.writable => {
                     debug!("Handling QueuedDataTransfer {:#?}.", packet);
@@ -527,11 +531,11 @@ impl NetManager<Client> {
         }
 
         for handled_event in handled_events.drain(..) {
-            let removed_event = self.events.remove(handled_event);
+            let removed_event = self.event_system.events.remove(handled_event);
             debug!("Removed event {:#?}.", removed_event);
         }
 
-        self.events.append(&mut new_events);
+        self.event_system.events.append(&mut new_events);
 
         Ok(self.kind.server.received.len())
     }

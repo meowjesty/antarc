@@ -60,9 +60,8 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) user_queue: Vec<Packet<Queued>>,
     pub(crate) payload_queue: HashMap<PacketId, Payload>,
     pub(crate) antarc_queue: Vec<Packet<Queued>>,
-    pub(crate) events: EventList,
-    pub(crate) received_events: Vec<ReceivedEvent>,
     pub(crate) retrievable_count: usize,
+    pub(crate) event_system: EventSystem,
 }
 
 #[derive(Debug)]
@@ -73,6 +72,24 @@ pub(crate) struct NetworkResource {
     pub(crate) readable: bool,
     pub(crate) poll: Poll,
     pub(crate) events: Events,
+}
+
+#[derive(Debug)]
+pub(crate) struct EventSystem {
+    pub(crate) events: EventList,
+    pub(crate) received_events: Vec<ReceivedEvent>,
+}
+
+impl EventSystem {
+    pub(crate) fn new() -> Self {
+        let events = Vec::with_capacity(1024);
+        let received_events = Vec::with_capacity(1024);
+
+        Self {
+            events,
+            received_events,
+        }
+    }
 }
 
 impl NetworkResource {
@@ -117,8 +134,6 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
     pub(crate) fn new(address: &SocketAddr, kind: ClientOrServer) -> Self {
         let timer = Instant::now();
         let buffer = vec![0x0; MTU_LENGTH];
-        let events = Vec::with_capacity(1024);
-        let received_events = Vec::with_capacity(1024);
 
         let user_queue = Vec::with_capacity(128);
         let antarc_queue = Vec::with_capacity(128);
@@ -126,9 +141,10 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let network = NetworkResource::new(address);
         let retrievable_count = 0;
 
+        let event_system = EventSystem::new();
+
         Self {
             timer,
-            events,
             buffer,
             user_queue,
             antarc_queue,
@@ -136,12 +152,13 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             kind,
             network,
             retrievable_count,
-            received_events,
+            event_system,
         }
     }
 
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         let cancelled_packet = self
+            .event_system
             .events
             .drain_filter(|event| match event {
                 CommonEvent::QueuedDataTransfer { packet } => packet.id == packet_id,
@@ -161,7 +178,7 @@ impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
         f.debug_struct("NetManager")
             .field("timer", &self.timer)
             .field("buffer", &self.buffer.len())
-            .field("events", &self.events.len())
+            .field("events", &self.event_system)
             .field("client_or_server", &self.kind)
             .finish()
     }
