@@ -10,12 +10,12 @@ use log::{debug, error, warn};
 use super::SendTo;
 use crate::{
     events::CommonEvent,
-    host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
+    host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued, Sent,
-        Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
-        HEARTBEAT,
+        header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
+        Received, Sent, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
+        DATA_TRANSFER, HEARTBEAT,
     },
 };
 
@@ -111,7 +111,6 @@ impl NetManager<Server> {
 
                     self.events.push(CommonEvent::ReceivedPacket { received });
                     self.kind.id_tracker += 1;
-                    self.retrievable_count += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv_from {:?}", fail);
@@ -303,8 +302,33 @@ impl NetManager<Server> {
                     error!("Server cannot handle SendConnectionRequest!");
                     unreachable!();
                 }
-                CommonEvent::ReceivedConnectionRequest { address } => {
-                    debug!("Handling ReceivedConnectionRequest from {:#?}", address);
+                CommonEvent::ReceivedConnectionRequest { received } => {
+                    debug!("Handling ReceivedConnectionRequest from {:#?}", received);
+
+                    if let Some(host) = self
+                        .kind
+                        .disconnected
+                        .iter()
+                        .find(|host| host.address == received.source)
+                    {
+                        debug!("{:#?} is disconected!", host);
+                    } else if self
+                        .kind
+                        .requesting_connection
+                        .iter()
+                        .any(|h| h.address == received.source)
+                        || self
+                            .kind
+                            .connected
+                            .iter()
+                            .any(|h| h.address == received.source)
+                    {
+                        error!("Host is already in another state to receive this packet!");
+                        unreachable!();
+                    } else {
+                        debug!("Unknown address, creating new host.");
+                    }
+
                     handled_events.push(event_id);
                 }
                 CommonEvent::FailedEncodingPacket { queued } => {
@@ -350,6 +374,32 @@ impl NetManager<Server> {
                 }
                 CommonEvent::ReceivedPacket { received } => {
                     debug!("Handling ReceivedPacket for {:#?}", received);
+
+                    match received.kind {
+                        PacketKind::ConnectionRequest => {
+                            debug!("Server received a connection request!");
+                            new_events.push(CommonEvent::ReceivedConnectionRequest {
+                                received: received.state.clone(),
+                            });
+                        }
+                        PacketKind::ConnectionAccepted => {
+                            error!("Server cannot receive ConnectionAccepted!");
+                            unreachable!();
+                        }
+                        PacketKind::ConnectionDenied => {
+                            error!("Server cannot receive ConnectionDenied!");
+                            unreachable!();
+                        }
+                        PacketKind::Ack(_) => {}
+                        PacketKind::DataTransfer => {}
+                        PacketKind::Heartbeat => {
+                            debug!("Server received a heartbeat!");
+                        }
+                    }
+
+                    // TODO(alex) [mid] 2021-05-25: Remove this packet if it's not supposed to be
+                    // retrieved by the user!
+
                     handled_events.push(event_id);
                 }
                 CommonEvent::QueuedHeartbeat { address } => {
@@ -369,6 +419,66 @@ impl NetManager<Server> {
 
         self.events.append(&mut new_events);
         Ok(self.retrievable_count)
+    }
+
+    fn received_connection_request(&mut self, packet: Packet<Received>) {
+        debug!("Handling received connecion request for {:#?}", packet);
+
+        let source = packet.state.source;
+        let ack_tracker = packet.state.header.sequence.get();
+
+        // TODO(alex) [high] 2021-05-25: Find a way to remove the specific host, if it exists in the
+        // disconnected list, cannot take just a reference here.
+        let host = if let Some(host) = self
+            .kind
+            .disconnected
+            .iter()
+            .find(|host| host.address == source)
+            .take()
+        {
+            debug!("{:#?} is disconected!", host);
+
+            let info = RequestingConnection { attempts: 0 };
+            let state = HostState::RequestingConnection { info };
+
+            let host = Host {
+                sequence_tracker: Sequence::default(),
+                ack_tracker,
+                last_acked: 0,
+                address: source,
+                received: host.received,
+                state,
+            };
+
+            host
+        } else if self
+            .kind
+            .requesting_connection
+            .iter()
+            .any(|h| h.address == source)
+            || self.kind.connected.iter().any(|h| h.address == source)
+        {
+            error!("Host is already in another state to receive this packet!");
+            unreachable!();
+        } else {
+            debug!("Unknown address, creating new host.");
+            let mut received_list = Vec::with_capacity(128);
+            received_list.append(&mut vec![packet]);
+
+            let info = RequestingConnection { attempts: 0 };
+            let state = HostState::RequestingConnection { info };
+
+            let host = Host {
+                sequence_tracker: Sequence::default(),
+                ack_tracker,
+                last_acked: 0,
+                address: source,
+                received: received_list,
+                state,
+            };
+
+            host
+        };
     }
 
     pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {

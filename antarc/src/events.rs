@@ -2,7 +2,9 @@ use std::{net::SocketAddr, sync::Weak, time::Duration};
 
 use crate::{
     host::Address,
-    packet::{ConnectionId, Encoded, Packet, Payload, Queued, Received, Sent, StatusCode},
+    packet::{
+        header::Header, ConnectionId, Encoded, Packet, Payload, Queued, Received, Sent, StatusCode,
+    },
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -26,7 +28,7 @@ pub(crate) enum CommonEvent {
     QueuedConnectionAccepted { packet: Packet<Queued> },
     QueuedConnectionRequest { packet: Packet<Queued> },
     QueuedHeartbeat { address: SocketAddr },
-    ReceivedConnectionRequest { address: SocketAddr },
+    ReceivedConnectionRequest { received: Received },
     FailedEncodingPacket { queued: Packet<Queued> },
     FailedSendingPacket { queued: Packet<Queued> },
     SentPacket { sent: Packet<Sent> },

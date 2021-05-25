@@ -516,7 +516,7 @@ impl NetManager<Client> {
                     self.user_queue.push(packet);
                     self.kind.id_tracker += 1;
                 }
-                CommonEvent::ReceivedConnectionRequest { address } => {
+                CommonEvent::ReceivedConnectionRequest { .. } => {
                     error!("Client cannot handle ReceivedConnectionRequest!");
                     unreachable!();
                 }
