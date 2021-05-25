@@ -8,7 +8,7 @@ use mio::{
 
 use self::server::PacketId;
 use crate::{
-    events::{CommonEvent, EventList},
+    events::{CommonEvent, EventList, ReceivedEvent},
     packet::{ConnectionId, Packet, Payload, Queued, Received, Sent},
     MTU_LENGTH,
 };
@@ -61,6 +61,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) payload_queue: HashMap<PacketId, Payload>,
     pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) events: EventList,
+    pub(crate) received_events: Vec<ReceivedEvent>,
     pub(crate) retrievable_count: usize,
 }
 
@@ -117,6 +118,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let timer = Instant::now();
         let buffer = vec![0x0; MTU_LENGTH];
         let events = Vec::with_capacity(1024);
+        let received_events = Vec::with_capacity(1024);
 
         let user_queue = Vec::with_capacity(128);
         let antarc_queue = Vec::with_capacity(128);
@@ -134,6 +136,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             kind,
             network,
             retrievable_count,
+            received_events,
         }
     }
 

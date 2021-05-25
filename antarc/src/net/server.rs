@@ -9,7 +9,7 @@ use log::{debug, error, warn};
 
 use super::SendTo;
 use crate::{
-    events::CommonEvent,
+    events::{CommonEvent, ReceivedEvent},
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
@@ -28,7 +28,8 @@ pub struct Server {
     id_tracker: PacketId,
     last_antarc_queue_check: Duration,
     connection_id_tracker: ConnectionId,
-    disconnected: Vec<Host<Disconnected>>,
+    // TODO(alex) [low] 2021-05-25: Why would I need this kind of host?
+    // disconnected: Vec<Host<Disconnected>>,
     requesting_connection: Vec<Host<RequestingConnection>>,
     awaiting_connection_ack: Vec<Host<AwaitingConnectionAck>>,
     connected: Vec<Host<Connected>>,
@@ -40,7 +41,6 @@ impl NetManager<Server> {
             id_tracker: 0,
             last_antarc_queue_check: Duration::default(),
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
-            disconnected: Vec::with_capacity(8),
             requesting_connection: Vec::with_capacity(8),
             awaiting_connection_ack: Vec::with_capacity(8),
             connected: Vec::with_capacity(8),
@@ -109,7 +109,24 @@ impl NetManager<Server> {
                     )
                     .unwrap();
 
-                    self.events.push(CommonEvent::ReceivedPacket { received });
+                    self.received_events.push(ReceivedEvent::AckRemote {
+                        header: received.state.header.clone(),
+                    });
+
+                    match received.kind {
+                        PacketKind::ConnectionRequest => {
+                            self.received_events
+                                .push(ReceivedEvent::ConnectionRequest { received });
+                        }
+                        PacketKind::Ack(_) => {}
+                        PacketKind::DataTransfer => {}
+                        PacketKind::Heartbeat => {}
+                        invalid => {
+                            error!("Server received invalid packet type {:#?}.", invalid);
+                            todo!();
+                        }
+                    }
+
                     self.kind.id_tracker += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
@@ -303,33 +320,7 @@ impl NetManager<Server> {
                     unreachable!();
                 }
                 CommonEvent::ReceivedConnectionRequest { received } => {
-                    debug!("Handling ReceivedConnectionRequest from {:#?}", received);
-
-                    if let Some(host) = self
-                        .kind
-                        .disconnected
-                        .iter()
-                        .find(|host| host.address == received.source)
-                    {
-                        debug!("{:#?} is disconected!", host);
-                    } else if self
-                        .kind
-                        .requesting_connection
-                        .iter()
-                        .any(|h| h.address == received.source)
-                        || self
-                            .kind
-                            .connected
-                            .iter()
-                            .any(|h| h.address == received.source)
-                    {
-                        error!("Host is already in another state to receive this packet!");
-                        unreachable!();
-                    } else {
-                        debug!("Unknown address, creating new host.");
-                    }
-
-                    handled_events.push(event_id);
+                    // self.received_connection_request(received);
                 }
                 CommonEvent::FailedEncodingPacket { queued } => {
                     error!("Handling event FailedEncodingPacket for {:#?}", queued);
@@ -412,6 +403,16 @@ impl NetManager<Server> {
             }
         }
 
+        // TODO(alex) [high] 2021-05-25: Double mut reference here.
+        for event in self.received_events.drain(..) {
+            match event {
+                ReceivedEvent::ConnectionRequest { received } => {
+                    self.received_connection_request(received);
+                }
+                ReceivedEvent::AckRemote { header } => {}
+            }
+        }
+
         for handled_event in handled_events.drain(..) {
             let removed_event = self.events.remove(handled_event);
             debug!("Removed event {:#?}.", removed_event);
@@ -427,31 +428,8 @@ impl NetManager<Server> {
         let source = packet.state.source;
         let ack_tracker = packet.state.header.sequence.get();
 
-        // TODO(alex) [high] 2021-05-25: Find a way to remove the specific host, if it exists in the
-        // disconnected list, cannot take just a reference here.
-        let host = if let Some(host) = self
-            .kind
-            .disconnected
-            .iter()
-            .find(|host| host.address == source)
-            .take()
-        {
-            debug!("{:#?} is disconected!", host);
-
-            let info = RequestingConnection { attempts: 0 };
-            let state = HostState::RequestingConnection { info };
-
-            let host = Host {
-                sequence_tracker: Sequence::default(),
-                ack_tracker,
-                last_acked: 0,
-                address: source,
-                received: host.received,
-                state,
-            };
-
-            host
-        } else if self
+        // TODO(alex) [low] 2021-05-25: Is there a way to better handle this case?
+        if self
             .kind
             .requesting_connection
             .iter()
@@ -460,24 +438,22 @@ impl NetManager<Server> {
         {
             error!("Host is already in another state to receive this packet!");
             unreachable!();
-        } else {
-            debug!("Unknown address, creating new host.");
-            let mut received_list = Vec::with_capacity(128);
-            received_list.append(&mut vec![packet]);
+        }
 
-            let info = RequestingConnection { attempts: 0 };
-            let state = HostState::RequestingConnection { info };
+        let info = RequestingConnection { attempts: 0 };
+        let state = HostState::RequestingConnection { info };
 
-            let host = Host {
-                sequence_tracker: Sequence::default(),
-                ack_tracker,
-                last_acked: 0,
-                address: source,
-                received: received_list,
-                state,
-            };
+        debug!("Unknown address, creating new host.");
+        let mut received_list = Vec::with_capacity(128);
+        received_list.append(&mut vec![packet]);
 
-            host
+        let host = Host {
+            sequence_tracker: Sequence::default(),
+            ack_tracker,
+            last_acked: 0,
+            address: source,
+            received: received_list,
+            state,
         };
     }
 

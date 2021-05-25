@@ -36,6 +36,12 @@ pub(crate) enum CommonEvent {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub(crate) enum ReceivedEvent {
+    ConnectionRequest { received: Packet<Received> },
+    AckRemote { header: Header },
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) enum ConnectionEvent {
     ReceivedConnectionRequest { packet: Packet<Received> },
     // ReceivedAccepted { packet: Packet<Received, ConnectionAccepted> },
