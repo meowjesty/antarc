@@ -408,11 +408,11 @@ impl NetManager<Server> {
             }
         }
 
-        // TODO(alex) [high] 2021-05-25: Double mut reference here.
+        // TODO(alex) [low] 2021-05-26: Check `fn _received_connection_request` notes.
         for event in self.event_system.received_events.drain(..) {
             match event {
                 ReceivedEvent::ConnectionRequest { packet } => {
-                    debug!("Handling received connecion request for {:#?}", packet);
+                    debug!("Handling received connection request for {:#?}", packet);
 
                     let source = packet.state.source;
                     let ack_tracker = packet.state.header.sequence.get();
@@ -436,6 +436,9 @@ impl NetManager<Server> {
                     let mut received_list = Vec::with_capacity(128);
                     received_list.append(&mut vec![packet]);
 
+                    // TODO(alex) [low] 2021-05-26: Always creating a new host here, as I've dropped
+                    // the concept of a `Disconnected` host, this could be revisited later when the
+                    // design is clearer.
                     let host = Host {
                         sequence_tracker: Sequence::default(),
                         ack_tracker,
@@ -444,6 +447,12 @@ impl NetManager<Server> {
                         received: received_list,
                         state,
                     };
+
+                    // TODO(alex) [high] 2021-05-26: Raise the appropriate event to begin the next
+                    // step of the connection process:
+                    // - send back a connection accepted packet;
+                    // - ack connection request packet;
+                    // - put this host in the list of server hosts.
                 }
                 ReceivedEvent::AckRemote { header } => {}
             }
@@ -463,6 +472,9 @@ impl NetManager<Server> {
     // drain the list of events, rust wouldn't be able to tell what changes we could do here. It
     // works perfectly fine when the code is inlined (pasted) in the drain loop, as rust can tell
     // we're not making changes to the very thing we're iterating over.
+    //
+    // Refactor this in the future, when we know what this function does exactly, then we can avoid
+    // passing a full reference to `self`.
     fn _received_connection_request(&self, packet: Packet<Received>) {
         debug!("Handling received connecion request for {:#?}", packet);
 
