@@ -410,7 +410,7 @@ impl NetManager<Server> {
 
         let system = &mut self.event_system;
         // TODO(alex) [high] 2021-05-25: Double mut reference here.
-        for event in system.received_events.drain(..) {
+        for event in system.received_events.into_iter() {
             match event {
                 ReceivedEvent::ConnectionRequest { received } => {
                     self.received_connection_request(received);
