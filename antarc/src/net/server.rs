@@ -121,7 +121,7 @@ impl NetManager<Server> {
                         PacketKind::ConnectionRequest => {
                             self.event_system
                                 .received_events
-                                .push(ReceivedEvent::ConnectionRequest { received });
+                                .push(ReceivedEvent::ConnectionRequest { packet: received });
                         }
                         PacketKind::Ack(_) => {}
                         PacketKind::DataTransfer => {}
@@ -408,12 +408,42 @@ impl NetManager<Server> {
             }
         }
 
-        let system = &mut self.event_system;
         // TODO(alex) [high] 2021-05-25: Double mut reference here.
-        for event in system.received_events.into_iter() {
+        for event in self.event_system.received_events.drain(..) {
             match event {
-                ReceivedEvent::ConnectionRequest { received } => {
-                    self.received_connection_request(received);
+                ReceivedEvent::ConnectionRequest { packet } => {
+                    debug!("Handling received connecion request for {:#?}", packet);
+
+                    let source = packet.state.source;
+                    let ack_tracker = packet.state.header.sequence.get();
+
+                    // TODO(alex) [low] 2021-05-25: Is there a way to better handle this case?
+                    if self
+                        .kind
+                        .requesting_connection
+                        .iter()
+                        .any(|h| h.address == source)
+                        || self.kind.connected.iter().any(|h| h.address == source)
+                    {
+                        error!("Host is already in another state to receive this packet!");
+                        unreachable!();
+                    }
+
+                    let info = RequestingConnection { attempts: 0 };
+                    let state = HostState::RequestingConnection { info };
+
+                    debug!("Unknown address, creating new host.");
+                    let mut received_list = Vec::with_capacity(128);
+                    received_list.append(&mut vec![packet]);
+
+                    let host = Host {
+                        sequence_tracker: Sequence::default(),
+                        ack_tracker,
+                        last_acked: 0,
+                        address: source,
+                        received: received_list,
+                        state,
+                    };
                 }
                 ReceivedEvent::AckRemote { header } => {}
             }
@@ -428,7 +458,12 @@ impl NetManager<Server> {
         Ok(self.retrievable_count)
     }
 
-    fn received_connection_request(&mut self, packet: Packet<Received>) {
+    // TODO(alex) [low] 2021-05-26: Handling events like this won't work, as we get a double borrow
+    // from `DrainIter` in `tick`. This isn't possible because when we borrow `self` as mutable to
+    // drain the list of events, rust wouldn't be able to tell what changes we could do here. It
+    // works perfectly fine when the code is inlined (pasted) in the drain loop, as rust can tell
+    // we're not making changes to the very thing we're iterating over.
+    fn _received_connection_request(&self, packet: Packet<Received>) {
         debug!("Handling received connecion request for {:#?}", packet);
 
         let source = packet.state.source;
