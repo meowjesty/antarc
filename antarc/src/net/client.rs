@@ -124,7 +124,6 @@ impl NetManager<Client> {
             'receive: while self.network.readable {
                 match self.network.udp_socket.recv_from(&mut self.buffer) {
                     Ok((num_received, source)) => {
-                        debug!("Received new packet {:#?} {:#?}.", num_received, source);
                         debug_assert!(num_received > 0);
                         let (packet, payload) = Packet::decode(
                             self.kind.id_tracker,
@@ -133,6 +132,7 @@ impl NetManager<Client> {
                             &self.timer,
                         )
                         .unwrap();
+                        debug!("Received new packet {:#?} {:#?}.", packet, source);
 
                         if packet.kind == PacketKind::ConnectionAccepted {
                             debug!("Received ConnectionAccepted!");
@@ -142,9 +142,14 @@ impl NetManager<Client> {
                                 rtt: Duration::default(),
                                 last_sent: 1,
                             };
+                            self.kind.server.sequence_tracker =
+                                unsafe { Sequence::new_unchecked(2) };
                             self.kind.server.state.state = HostState::Connected { info };
                             self.kind.id_tracker += 1;
                             self.kind.last_sent_time = time_sent;
+                            self.kind.server.local_ack_tracker = packet.state.header.ack;
+                            self.kind.server.remote_ack_tracker =
+                                packet.state.header.sequence.get();
 
                             return Ok(connection_id);
                         } else if packet.kind == PacketKind::ConnectionDenied {
@@ -368,7 +373,6 @@ impl NetManager<Client> {
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
-                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
                                 debug_assert!(num_sent > 0);
 
                                 let sent = Sent {
@@ -382,6 +386,9 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
+                                // TODO(alex) [high] 2021-05-27: Find why the client always send
+                                // `ack: 1`.
+                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
                                 let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.server.sequence_tracker =
@@ -438,7 +445,6 @@ impl NetManager<Client> {
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
-                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
                                 debug_assert!(num_sent > 0);
 
                                 let sent = Sent {
@@ -452,6 +458,9 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
+                                // TODO(alex) [high] 2021-05-27: Find why the client always send
+                                // `ack: 1`.
+                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
                                 let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.last_sent_time = self.timer.elapsed();
                             }
@@ -517,7 +526,6 @@ impl NetManager<Client> {
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
-                                debug!("Client sent packet {:#?} to {:#?}.", header, destination);
                                 debug_assert!(num_sent > 0);
 
                                 let sent = Sent {
@@ -532,6 +540,7 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: PacketKind::Heartbeat,
                                 };
+                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
                                 self.kind.last_sent_time = packet.state.time;
                                 let sent_event = CommonEvent::SentPacket { packet };

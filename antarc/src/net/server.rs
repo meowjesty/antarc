@@ -98,7 +98,6 @@ impl NetManager<Server> {
         while self.network.readable {
             match self.network.udp_socket.recv_from(&mut self.buffer) {
                 Ok((num_received, source)) => {
-                    debug!("Received new packet {:#?} {:#?}.", num_received, source);
                     debug_assert!(num_received > 0);
                     let (packet, payload) = Packet::decode(
                         self.kind.id_tracker,
@@ -107,6 +106,7 @@ impl NetManager<Server> {
                         &self.timer,
                     )
                     .unwrap();
+                    debug!("Received new packet {:#?} {:#?}.", packet, source);
 
                     self.event_system.receiver.push(ReceiverEvent::AckRemote {
                         header: packet.state.header.clone(),
@@ -148,19 +148,14 @@ impl NetManager<Server> {
             }
         }
 
-        while self.network.writable {
-            if self.kind.requesting_connection.len() == 0
-                && self.kind.awaiting_connection_ack.len() == 0
-                && self.kind.connected.len() == 0
-            {
-                break;
-            }
+        let has_host = self.kind.requesting_connection.len() > 0
+            || self.kind.awaiting_connection_ack.len() > 0
+            || self.kind.connected.len() > 0;
+        let has_queued = self.event_system.sender.len() > 0;
 
-            if self.event_system.sender.len() == 0 {
-                // TODO(alex) [mid] 2021-05-26: Prepare a heartbeat packet to send, push the event
-                // here, to avoid needing an if/else.
-                todo!();
-            }
+        // TODO(alex) [mid] 2021-05-27: Send a heartbeat, look at the connected hosts only.
+
+        while self.network.writable && has_host && self.event_system.sender.len() > 0 {
             debug_assert!(self.event_system.sender.len() > 0);
 
             for event in self.event_system.sender.drain(..1) {
@@ -200,7 +195,6 @@ impl NetManager<Server> {
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
-                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
                                 debug_assert!(num_sent > 0);
 
                                 let sent = Sent {
@@ -214,6 +208,7 @@ impl NetManager<Server> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
+                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
 
                                 let sent_event = CommonEvent::SentPacket { packet };
                                 connected.sequence_tracker =
@@ -250,8 +245,8 @@ impl NetManager<Server> {
                         let requesting_connection = self
                             .kind
                             .requesting_connection
-                            .iter()
-                            .find(|host| host.address == packet.state.destination)
+                            .drain_filter(|host| host.address == packet.state.destination)
+                            .next()
                             .unwrap();
 
                         let sequence = Sequence::default();
@@ -276,7 +271,6 @@ impl NetManager<Server> {
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
-                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
                                 debug_assert!(num_sent > 0);
 
                                 let sent = Sent {
@@ -290,7 +284,25 @@ impl NetManager<Server> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
+                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
                                 let sent_event = CommonEvent::SentPacket { packet };
+
+                                let sequence_tracker = Sequence::new(sequence.get() + 1).unwrap();
+                                let state = AwaitingConnectionAck {
+                                    attempts: 0,
+                                    connection_id: self.kind.connection_id_tracker,
+                                    last_sent: 1,
+                                };
+                                let host = Host {
+                                    sequence_tracker,
+                                    remote_ack_tracker: 1,
+                                    local_ack_tracker: requesting_connection.local_ack_tracker,
+                                    address: requesting_connection.address,
+                                    received: requesting_connection.received,
+                                    state,
+                                };
+                                self.kind.awaiting_connection_ack.push(host);
+
                                 self.kind.connection_id_tracker =
                                     NonZeroU16::new(self.kind.connection_id_tracker.get() + 1)
                                         .unwrap();
@@ -305,6 +317,7 @@ impl NetManager<Server> {
                                 // even though we could cache it here as a `Packet<Encoded>` and
                                 // insert it into the Host.
                                 self.network.writable = false;
+                                self.kind.requesting_connection.push(requesting_connection);
 
                                 break;
                             }
@@ -313,6 +326,7 @@ impl NetManager<Server> {
                                     "Server failed sending packet {:#?} to {:#?}.",
                                     fail, destination
                                 );
+                                self.kind.requesting_connection.push(requesting_connection);
                                 break;
                             }
                         }
@@ -384,7 +398,7 @@ impl NetManager<Server> {
                         || self.kind.connected.iter().any(|h| h.address == source)
                     {
                         error!("Host is already in another state to receive this packet!");
-                        unreachable!();
+                        continue;
                     }
 
                     debug!("Unknown address, creating new host.");
@@ -420,6 +434,7 @@ impl NetManager<Server> {
                 }
                 ReceiverEvent::AckRemote { header } => {}
                 ReceiverEvent::DataTransfer { packet, payload } => {
+                    debug!("Handling received data transfer for {:#?}", packet);
                     if self
                         .kind
                         .requesting_connection
@@ -479,13 +494,20 @@ impl NetManager<Server> {
                         host.remote_ack_tracker = packet.state.header.sequence.get();
                         host.received.push(packet);
 
-                        let retrievable =
-                            self.retrievable.get_mut(&host.state.connection_id).unwrap();
-                        retrievable.push(payload.0);
+                        if self.retrievable.contains_key(&host.state.connection_id) {
+                            self.retrievable
+                                .get_mut(&host.state.connection_id)
+                                .unwrap()
+                                .push(payload.0);
+                        } else {
+                            self.retrievable
+                                .insert(host.state.connection_id, vec![payload.0]);
+                        }
                         self.retrievable_count += 1;
                     }
                 }
                 ReceiverEvent::Heartbeat { packet } => {
+                    debug!("Handling received heartbeat for {:#?}", packet);
                     if self
                         .kind
                         .requesting_connection

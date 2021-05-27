@@ -287,14 +287,11 @@ impl Packet<Received> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
-        debug!("length {:?}", buffer_length);
 
         let crc32_position = buffer_length - size_of::<NonZeroU32>();
-        debug!("crc32 position {:?}", crc32_position);
 
         let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
             buffer[crc32_position..].try_into().unwrap();
-        debug!("crc32 bytes {:?}", crc32_bytes);
         let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
         // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
