@@ -50,6 +50,9 @@ pub(crate) enum ReceiverEvent {
         packet: Packet<Received>,
         payload: Payload,
     },
+    Heartbeat {
+        packet: Packet<Received>,
+    },
     AckRemote {
         header: Header,
     },

@@ -39,6 +39,7 @@ pub struct Client {
     pub(crate) id_tracker: u64,
     pub(crate) server: Host<Generic>,
     pub(crate) connection_events: Vec<ConnectionEvent>,
+    pub(crate) last_sent_time: Duration,
 }
 
 impl NetManager<Client> {
@@ -47,6 +48,7 @@ impl NetManager<Client> {
             id_tracker: 0,
             server: Host::new_local(),
             connection_events: Vec::with_capacity(8),
+            last_sent_time: Duration::default(),
         };
         let net_manager = NetManager::new(address, client);
         net_manager
@@ -142,6 +144,7 @@ impl NetManager<Client> {
                             };
                             self.kind.server.state.state = HostState::Connected { info };
                             self.kind.id_tracker += 1;
+                            self.kind.last_sent_time = time_sent;
 
                             return Ok(connection_id);
                         } else if packet.kind == PacketKind::ConnectionDenied {
@@ -305,15 +308,24 @@ impl NetManager<Client> {
                 }
             }
         }
-
-        while self.network.writable {
+        let threshold = self.kind.last_sent_time + Duration::from_millis(1500);
+        let time_expired = threshold < self.timer.elapsed();
+        let has_packet_to_send = self.event_system.sender.len() > 0;
+        if has_packet_to_send == false && time_expired {
+            debug!(
+                "Too much time has passed since we sent a packet {:#?}!",
+                threshold
+            );
+            self.event_system.sender.push(SenderEvent::QueuedHeartbeat {
+                address: self.kind.server.address,
+            })
+        }
+        while self.network.writable && has_packet_to_send {
             if self.event_system.sender.len() == 0 {
-                // TODO(alex) [mid] 2021-05-26: Prepare a heartbeat packet to send, push the event
-                // here, to avoid needing an if/else.
-                todo!();
+                break;
             }
-            debug_assert!(self.event_system.sender.len() > 0);
 
+            // TODO(alex) [high] 2021-05-27: Can't proceed here, we won't have a packet, sometimes.
             for event in self.event_system.sender.drain(..1) {
                 match event {
                     SenderEvent::QueuedDataTransfer { packet } => {
@@ -374,6 +386,7 @@ impl NetManager<Client> {
                                 let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.server.sequence_tracker =
                                     Sequence::new(sequence.get() + 1).unwrap();
+                                self.kind.last_sent_time = self.timer.elapsed();
                             }
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
@@ -440,6 +453,7 @@ impl NetManager<Client> {
                                     kind: packet.kind,
                                 };
                                 let sent_event = CommonEvent::SentPacket { packet };
+                                self.kind.last_sent_time = self.timer.elapsed();
                             }
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
@@ -463,7 +477,91 @@ impl NetManager<Client> {
                             }
                         }
                     }
-                    SenderEvent::QueuedHeartbeat { address } => {}
+                    SenderEvent::QueuedHeartbeat { address } => {
+                        debug!("Handling QueuedHeartbeat {:#?}.", address);
+
+                        match &self.kind.server.state.state {
+                            HostState::Connected { .. } => (),
+                            invalid => {
+                                warn!("Client has server in state other than connected!");
+                                warn!("Skipping this data transfer!");
+                                continue;
+                            }
+                        }
+
+                        let sequence = self.kind.server.sequence_tracker;
+                        let ack = self.kind.server.remote_ack_tracker;
+                        let connection_id = self.kind.server.state.state.connection_id();
+                        let destination = address;
+
+                        let status_code = From::from(HEARTBEAT);
+                        let payload = Payload::default();
+                        let payload_length = payload.len() as u16;
+
+                        let header = Header {
+                            sequence,
+                            ack,
+                            past_acks: 0,
+                            status_code,
+                            payload_length,
+                        };
+
+                        let (bytes, footer) = match Packet::encode(&payload, &header, connection_id)
+                        {
+                            Ok(success) => success,
+                            Err(fail) => {
+                                error!("Failed encoding packet {:#?}.", fail);
+                                break;
+                            }
+                        };
+
+                        match self.network.udp_socket.send_to(&bytes, destination) {
+                            Ok(num_sent) => {
+                                debug!("Client sent packet {:#?} to {:#?}.", header, destination);
+                                debug_assert!(num_sent > 0);
+
+                                let sent = Sent {
+                                    header,
+                                    footer,
+                                    destination,
+                                    time: self.timer.elapsed(),
+                                };
+                                let id = self.kind.id_tracker;
+                                let packet = Packet {
+                                    id,
+                                    state: sent,
+                                    kind: PacketKind::Heartbeat,
+                                };
+
+                                self.kind.last_sent_time = packet.state.time;
+                                let sent_event = CommonEvent::SentPacket { packet };
+                                self.kind.server.sequence_tracker =
+                                    Sequence::new(sequence.get() + 1).unwrap();
+                                self.kind.id_tracker += 1;
+                            }
+                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                                warn!("Would block on send_to {:?}", fail);
+
+                                // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
+                                // specific Host, so the ownership of this allocation has a
+                                // clear owner. When we fail
+                                // to send, the encoding is performed again,
+                                // even though we could cache it here as a `Packet<Encoded>` and
+                                // insert it into the Host.
+                                self.network.writable = false;
+
+                                break;
+                            }
+                            Err(fail) => {
+                                error!(
+                                    "Client failed sending packet {:#?} to {:#?}.",
+                                    fail, destination
+                                );
+
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -120,12 +120,15 @@ impl NetManager<Server> {
                         }
                         PacketKind::Ack(_) => {}
                         PacketKind::DataTransfer => {
-                            // TODO(alex) [mid] 2021-05-26: Insert payload into list of retrievable.
                             self.event_system
                                 .receiver
                                 .push(ReceiverEvent::DataTransfer { packet, payload });
                         }
-                        PacketKind::Heartbeat => {}
+                        PacketKind::Heartbeat => {
+                            self.event_system
+                                .receiver
+                                .push(ReceiverEvent::Heartbeat { packet });
+                        }
                         invalid => {
                             error!("Server received invalid packet type {:#?}.", invalid);
                             todo!();
@@ -480,6 +483,67 @@ impl NetManager<Server> {
                             self.retrievable.get_mut(&host.state.connection_id).unwrap();
                         retrievable.push(payload.0);
                         self.retrievable_count += 1;
+                    }
+                }
+                ReceiverEvent::Heartbeat { packet } => {
+                    if self
+                        .kind
+                        .requesting_connection
+                        .iter()
+                        .any(|h| h.address == packet.state.source)
+                    {
+                        error!(
+                            "Host is requesting connection , invalid for heartbeat {:#?}!",
+                            packet
+                        );
+                        unreachable!();
+                    }
+
+                    if let Some(host) = self
+                        .kind
+                        .awaiting_connection_ack
+                        .drain_filter(|h| {
+                            // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
+                            // connection accepted sent sequence (1).
+                            h.address == packet.state.source && packet.state.header.ack == 1
+                        })
+                        .next()
+                    {
+                        debug!("Host was awaiting connection ack.");
+                        let connection_id = host.state.connection_id;
+                        let last_sent = host.state.last_sent;
+                        let state = Connected {
+                            connection_id,
+                            rtt: Duration::default(),
+                            last_sent,
+                        };
+                        let sequence_tracker = host.sequence_tracker;
+                        let ack_tracker = host.remote_ack_tracker;
+                        let last_acked = host.local_ack_tracker;
+                        let address = host.address;
+                        let received = host.received;
+                        let host = Host {
+                            sequence_tracker,
+                            remote_ack_tracker: ack_tracker,
+                            local_ack_tracker: last_acked,
+                            address,
+                            received,
+                            state,
+                        };
+
+                        self.kind.connected.push(host);
+                    }
+
+                    if let Some(host) = self
+                        .kind
+                        .connected
+                        .iter_mut()
+                        .find(|h| h.address == packet.state.source)
+                    {
+                        debug!("Updating connected host with heartbeat.");
+                        host.local_ack_tracker = packet.state.header.ack;
+                        host.remote_ack_tracker = packet.state.header.sequence.get();
+                        host.received.push(packet);
                     }
                 }
             }
