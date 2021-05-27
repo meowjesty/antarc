@@ -59,6 +59,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) network: NetworkResource,
     pub(crate) user_queue: Vec<Packet<Queued>>,
     pub(crate) payload_queue: HashMap<PacketId, Payload>,
+    pub(crate) retrievable: HashMap<ConnectionId, Vec<Payload>>,
     pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) retrievable_count: usize,
     pub(crate) event_system: EventSystem,
@@ -141,6 +142,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let user_queue = Vec::with_capacity(128);
         let antarc_queue = Vec::with_capacity(128);
         let payload_queue = HashMap::with_capacity(128);
+        let retrievable = HashMap::with_capacity(128);
         let network = NetworkResource::new(address);
         let retrievable_count = 0;
 
@@ -156,6 +158,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             network,
             retrievable_count,
             event_system,
+            retrievable,
         }
     }
 

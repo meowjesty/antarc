@@ -10,7 +10,7 @@ use mio::net::UdpSocket;
 
 use super::SendTo;
 use crate::{
-    events::{CommonEvent, ConnectionEvent, EventKind, SenderEvent},
+    events::{CommonEvent, ConnectionEvent, EventKind, ReceiverEvent, SenderEvent},
     host::{Connected, Disconnected, Generic, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
@@ -124,7 +124,7 @@ impl NetManager<Client> {
                     Ok((num_received, source)) => {
                         debug!("Received new packet {:#?} {:#?}.", num_received, source);
                         debug_assert!(num_received > 0);
-                        let received = Packet::decode(
+                        let (packet, payload) = Packet::decode(
                             self.kind.id_tracker,
                             &self.buffer[..num_received],
                             source,
@@ -132,9 +132,9 @@ impl NetManager<Client> {
                         )
                         .unwrap();
 
-                        if received.kind == PacketKind::ConnectionAccepted {
+                        if packet.kind == PacketKind::ConnectionAccepted {
                             debug!("Received ConnectionAccepted!");
-                            let connection_id = received.state.footer.connection_id.unwrap();
+                            let connection_id = packet.state.footer.connection_id.unwrap();
                             let info = Connected {
                                 connection_id,
                                 rtt: Duration::default(),
@@ -144,12 +144,12 @@ impl NetManager<Client> {
                             self.kind.id_tracker += 1;
 
                             return Ok(connection_id);
-                        } else if received.kind == PacketKind::ConnectionDenied {
+                        } else if packet.kind == PacketKind::ConnectionDenied {
                             debug!("Received ConnectionDenied!");
                             todo!()
                         } else {
                             error!("Received some invalid packet!");
-                            panic!("Invalid packet received {:#?}", received);
+                            panic!("Invalid packet received {:#?}", packet);
                         }
                     }
                     Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
@@ -268,7 +268,7 @@ impl NetManager<Client> {
                 Ok((num_received, source)) => {
                     debug!("Received new packet {:#?} {:#?}.", num_received, source);
                     debug_assert!(num_received > 0);
-                    let received = Packet::decode(
+                    let (packet, payload) = Packet::decode(
                         self.kind.id_tracker,
                         &self.buffer[..num_received],
                         source,
@@ -276,11 +276,22 @@ impl NetManager<Client> {
                     )
                     .unwrap();
 
-                    self.event_system
-                        .common
-                        .push(CommonEvent::ReceivedPacket { packet: received });
+                    self.event_system.receiver.push(ReceiverEvent::AckRemote {
+                        header: packet.state.header.clone(),
+                    });
+
+                    match packet.kind {
+                        PacketKind::ConnectionRequest => {}
+                        PacketKind::ConnectionAccepted => {}
+                        PacketKind::ConnectionDenied => {}
+                        PacketKind::Ack(_) => {}
+                        PacketKind::DataTransfer => {
+                            // TODO(alex) [mid] 2021-05-26: Insert payload into list of retrievable.
+                        }
+                        PacketKind::Heartbeat => {}
+                    }
+
                     self.kind.id_tracker += 1;
-                    self.retrievable_count += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv_from {:?}", fail);
@@ -361,7 +372,7 @@ impl NetManager<Client> {
                                     kind: packet.kind,
                                 };
 
-                                let sent_event = CommonEvent::SentPacket { sent: packet };
+                                let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.server.sequence_tracker =
                                     Sequence::new(sequence.get() + 1).unwrap();
                             }
@@ -429,7 +440,7 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
-                                let sent_event = CommonEvent::SentPacket { sent: packet };
+                                let sent_event = CommonEvent::SentPacket { packet };
                             }
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
@@ -460,25 +471,20 @@ impl NetManager<Client> {
 
         for event in self.event_system.common.drain(..) {
             match event {
-                CommonEvent::SentPacket { sent } => {
-                    debug!("Handling SentPacket for {:#?}", sent);
+                CommonEvent::SentPacket { packet } => {
+                    debug!("Handling SentPacket for {:#?}", packet);
 
-                    match sent.kind {
+                    match packet.kind {
                         PacketKind::ConnectionRequest => {}
                         PacketKind::ConnectionAccepted => {}
                         PacketKind::ConnectionDenied => {}
                         PacketKind::Ack(_) => {}
                         PacketKind::DataTransfer => {
-                            let removed_payload = self.payload_queue.remove(&sent.id).unwrap();
+                            let removed_payload = self.payload_queue.remove(&packet.id).unwrap();
                             debug!("Removed {:#?} from queue.", removed_payload);
                         }
                         PacketKind::Heartbeat => {}
                     }
-                }
-                CommonEvent::ReceivedPacket { packet } => {
-                    debug!("Handling ReceivedPacket for {:#?}", packet);
-                    // TODO(alex) 2021-05-17: What to do here before this?
-                    self.kind.server.received.push(packet.clone());
                 }
             }
         }

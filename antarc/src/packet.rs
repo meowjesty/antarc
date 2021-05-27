@@ -147,7 +147,6 @@ pub(crate) struct Acked {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Received {
     pub(crate) header: Header,
-    pub(crate) payload: Payload,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
     pub(crate) source: SocketAddr,
@@ -284,7 +283,7 @@ impl Packet<Received> {
         buffer: &[u8],
         address: SocketAddr,
         timer: &Instant,
-    ) -> Result<Packet<Received>, String> {
+    ) -> Result<(Packet<Received>, Payload), String> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -364,7 +363,6 @@ impl Packet<Received> {
 
             let state = Received {
                 header,
-                payload,
                 footer,
                 time: timer.elapsed(),
                 source: address,
@@ -372,7 +370,7 @@ impl Packet<Received> {
 
             let packet = Packet { id, state, kind };
 
-            Ok(packet)
+            Ok((packet, payload))
         } else {
             Err(format!(
                 "Received {:#?} crc32, but calculated {:#?}.",

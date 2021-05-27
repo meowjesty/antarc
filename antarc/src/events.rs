@@ -24,8 +24,7 @@ pub(crate) enum EventKind {
 pub(crate) enum CommonEvent {
     // QueuedDataTransfer { packet: Packet<Queued, DataTransfer> },
     // QueuedConnectionRequest { packet: Packet<Queued, ConnectionRequest> },
-    SentPacket { sent: Packet<Sent> },
-    ReceivedPacket { packet: Packet<Received> },
+    SentPacket { packet: Packet<Sent> },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -69,7 +68,6 @@ impl CommonEvent {
     pub(crate) fn kind(&self) -> EventKind {
         match self {
             CommonEvent::SentPacket { .. } => EventKind::SentPacket,
-            CommonEvent::ReceivedPacket { .. } => EventKind::ReceivedPacket,
         }
     }
 }

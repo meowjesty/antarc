@@ -103,7 +103,7 @@ impl NetManager<Server> {
                 Ok((num_received, source)) => {
                     debug!("Received new packet {:#?} {:#?}.", num_received, source);
                     debug_assert!(num_received > 0);
-                    let received = Packet::decode(
+                    let (packet, payload) = Packet::decode(
                         self.kind.id_tracker,
                         &self.buffer[..num_received],
                         source,
@@ -112,17 +112,19 @@ impl NetManager<Server> {
                     .unwrap();
 
                     self.event_system.receiver.push(ReceiverEvent::AckRemote {
-                        header: received.state.header.clone(),
+                        header: packet.state.header.clone(),
                     });
 
-                    match received.kind {
+                    match packet.kind {
                         PacketKind::ConnectionRequest => {
                             self.event_system
                                 .receiver
-                                .push(ReceiverEvent::ConnectionRequest { packet: received });
+                                .push(ReceiverEvent::ConnectionRequest { packet });
                         }
                         PacketKind::Ack(_) => {}
-                        PacketKind::DataTransfer => {}
+                        PacketKind::DataTransfer => {
+                            // TODO(alex) [mid] 2021-05-26: Insert payload into list of retrievable.
+                        }
                         PacketKind::Heartbeat => {}
                         invalid => {
                             error!("Server received invalid packet type {:#?}.", invalid);
@@ -204,7 +206,7 @@ impl NetManager<Server> {
                                     kind: packet.kind,
                                 };
 
-                                let sent_event = CommonEvent::SentPacket { sent: packet };
+                                let sent_event = CommonEvent::SentPacket { packet };
                                 connected.sequence_tracker =
                                     Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
                             }
@@ -279,7 +281,7 @@ impl NetManager<Server> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
-                                let sent_event = CommonEvent::SentPacket { sent: packet };
+                                let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.connection_id_tracker =
                                     NonZeroU16::new(self.kind.connection_id_tracker.get() + 1)
                                         .unwrap();
@@ -317,7 +319,7 @@ impl NetManager<Server> {
 
         for event in self.event_system.common.drain(..) {
             match event {
-                CommonEvent::SentPacket { sent } => {
+                CommonEvent::SentPacket { packet: sent } => {
                     debug!("Handling SentPacket for {:#?}", sent);
 
                     match sent.kind {
@@ -346,32 +348,6 @@ impl NetManager<Server> {
                             }
                         }
                         PacketKind::Heartbeat => {}
-                    }
-                }
-                CommonEvent::ReceivedPacket { packet } => {
-                    debug!("Handling ReceivedPacket for {:#?}", packet);
-
-                    // TODO(alex) [mid] 2021-05-25: Remove this packet if it's not supposed to be
-                    // retrieved by the user!
-                    match packet.kind {
-                        PacketKind::ConnectionRequest => {
-                            debug!("Server received a connection request!");
-                            let connection_request = ReceiverEvent::ConnectionRequest { packet };
-                            self.event_system.receiver.push(connection_request);
-                        }
-                        PacketKind::ConnectionAccepted => {
-                            error!("Server cannot receive ConnectionAccepted!");
-                            unreachable!();
-                        }
-                        PacketKind::ConnectionDenied => {
-                            error!("Server cannot receive ConnectionDenied!");
-                            unreachable!();
-                        }
-                        PacketKind::Ack(_) => {}
-                        PacketKind::DataTransfer => {}
-                        PacketKind::Heartbeat => {
-                            debug!("Server received a heartbeat!");
-                        }
                     }
                 }
             }
