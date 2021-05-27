@@ -45,6 +45,8 @@ pub(crate) struct SendingConnectionRequest {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct AwaitingConnectionAck {
     pub(crate) attempts: u32,
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) last_sent: PacketId,
 }
 
 #[derive(Debug, Clone)]
@@ -70,11 +72,12 @@ pub(crate) struct Connected {
 #[derive(Debug, Clone)]
 pub(crate) struct Host<State> {
     pub(crate) sequence_tracker: Sequence,
-    pub(crate) ack_tracker: Ack,
-    pub(crate) last_acked: Ack,
+    pub(crate) remote_ack_tracker: Ack,
+    pub(crate) local_ack_tracker: Ack,
     pub(crate) address: SocketAddr,
-    // TODO(alex) [mid] 2021-05-26: `Received` should not contain the payload, let's put the payload
-    // in a `HashMap<ConnectionId, Vec<Payload>>` in the server/client, to ease the `retrieve` impl.
+    // TODO(alex) [mid] 2021-05-26: `Received` should not contain the payload, let's put the
+    // payload in a `HashMap<ConnectionId, Vec<Payload>>` in the server/client, to ease the
+    // `retrieve` impl.
     pub(crate) received: Vec<Packet<Received>>,
     pub(crate) state: State,
 }
@@ -84,8 +87,8 @@ impl Host<Disconnected> {
         let state = Disconnected;
         Self {
             sequence_tracker: Sequence::default(),
-            ack_tracker: 0,
-            last_acked: 0,
+            remote_ack_tracker: 0,
+            local_ack_tracker: 0,
             address,
             received: Vec::with_capacity(32),
             state,
@@ -101,8 +104,8 @@ impl Host<Generic> {
 
         Self {
             sequence_tracker: Sequence::default(),
-            ack_tracker: 0,
-            last_acked: 0,
+            remote_ack_tracker: 0,
+            local_ack_tracker: 0,
             address,
             received: Vec::with_capacity(32),
             state,

@@ -59,7 +59,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) network: NetworkResource,
     pub(crate) user_queue: Vec<Packet<Queued>>,
     pub(crate) payload_queue: HashMap<PacketId, Payload>,
-    pub(crate) retrievable: HashMap<ConnectionId, Vec<Payload>>,
+    pub(crate) retrievable: HashMap<ConnectionId, Vec<Vec<u8>>>,
     pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) retrievable_count: usize,
     pub(crate) event_system: EventSystem,

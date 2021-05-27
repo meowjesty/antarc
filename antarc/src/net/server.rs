@@ -80,9 +80,6 @@ impl NetManager<Server> {
     // TODO(alex) 2021-05-17: It's probably a good idea to start working on this before going
     // further, to validate that the ideas I had so far are working. Make this the focus.
     pub fn tick(&mut self) -> Result<usize, String> {
-        let mut new_events = Vec::with_capacity(8);
-        let mut handled_events = Vec::with_capacity(8);
-
         self.network
             .poll
             .poll(&mut self.network.events, Some(Duration::from_millis(150)))
@@ -124,6 +121,9 @@ impl NetManager<Server> {
                         PacketKind::Ack(_) => {}
                         PacketKind::DataTransfer => {
                             // TODO(alex) [mid] 2021-05-26: Insert payload into list of retrievable.
+                            self.event_system
+                                .receiver
+                                .push(ReceiverEvent::DataTransfer { packet, payload });
                         }
                         PacketKind::Heartbeat => {}
                         invalid => {
@@ -176,7 +176,7 @@ impl NetManager<Server> {
                             .unwrap();
 
                         let sequence = connected.sequence_tracker;
-                        let ack = connected.ack_tracker;
+                        let ack = connected.remote_ack_tracker;
                         let connection_id = connected.state.connection_id;
                         let destination = connected.address;
                         let header = Header {
@@ -395,8 +395,8 @@ impl NetManager<Server> {
                     received_list.append(&mut vec![packet]);
                     let host = Host {
                         sequence_tracker: Sequence::default(),
-                        ack_tracker,
-                        last_acked: 0,
+                        remote_ack_tracker: ack_tracker,
+                        local_ack_tracker: 0,
                         address: source,
                         received: received_list,
                         state,
@@ -417,19 +417,74 @@ impl NetManager<Server> {
                 }
                 ReceiverEvent::AckRemote { header } => {}
                 ReceiverEvent::DataTransfer { packet, payload } => {
-                    // TODO(alex) [high] 2021-05-26: Check host state, if it's in
-                    // `AwaitingConnectionAck` mode, then see if this packet acks our connection
-                    // accepted, then put this host into the `Connected` list.
+                    if self
+                        .kind
+                        .requesting_connection
+                        .iter()
+                        .any(|h| h.address == packet.state.source)
+                    {
+                        error!(
+                            "Host is requesting connection , invalid for data transfer {:#?}!",
+                            packet
+                        );
+                        unreachable!();
+                    }
+
+                    if let Some(host) = self
+                        .kind
+                        .awaiting_connection_ack
+                        .drain_filter(|h| {
+                            // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
+                            // connection accepted sent sequence (1).
+                            h.address == packet.state.source && packet.state.header.ack == 1
+                        })
+                        .next()
+                    {
+                        debug!("Host was awaiting connection ack.");
+                        let connection_id = host.state.connection_id;
+                        let last_sent = host.state.last_sent;
+                        let state = Connected {
+                            connection_id,
+                            rtt: Duration::default(),
+                            last_sent,
+                        };
+                        let sequence_tracker = host.sequence_tracker;
+                        let ack_tracker = host.remote_ack_tracker;
+                        let last_acked = host.local_ack_tracker;
+                        let address = host.address;
+                        let received = host.received;
+                        let host = Host {
+                            sequence_tracker,
+                            remote_ack_tracker: ack_tracker,
+                            local_ack_tracker: last_acked,
+                            address,
+                            received,
+                            state,
+                        };
+
+                        self.kind.connected.push(host);
+                    }
+
+                    if let Some(host) = self
+                        .kind
+                        .connected
+                        .iter_mut()
+                        .find(|h| h.address == packet.state.source)
+                    {
+                        debug!("Updating connected host with data transfer.");
+                        host.local_ack_tracker = packet.state.header.ack;
+                        host.remote_ack_tracker = packet.state.header.sequence.get();
+                        host.received.push(packet);
+
+                        let retrievable =
+                            self.retrievable.get_mut(&host.state.connection_id).unwrap();
+                        retrievable.push(payload.0);
+                        self.retrievable_count += 1;
+                    }
                 }
             }
         }
 
-        for handled_event in handled_events.drain(..) {
-            let removed_event = self.event_system.common.remove(handled_event);
-            debug!("Removed event {:#?}.", removed_event);
-        }
-
-        self.event_system.common.append(&mut new_events);
         Ok(self.retrievable_count)
     }
 
@@ -468,17 +523,22 @@ impl NetManager<Server> {
 
         let host = Host {
             sequence_tracker: Sequence::default(),
-            ack_tracker,
-            last_acked: 0,
+            remote_ack_tracker: ack_tracker,
+            local_ack_tracker: 0,
             address: source,
             received: received_list,
             state,
         };
     }
 
-    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
+    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<Vec<u8>>)> {
         debug!("Retrieve for server.");
         self.retrievable_count = 0;
-        Vec::with_capacity(4)
+        let retrievable = self
+            .retrievable
+            .drain()
+            .map(|(k, v)| (k, v))
+            .collect::<Vec<_>>();
+        retrievable
     }
 }

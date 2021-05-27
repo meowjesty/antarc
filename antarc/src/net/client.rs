@@ -329,7 +329,7 @@ impl NetManager<Client> {
                         }
 
                         let sequence = self.kind.server.sequence_tracker;
-                        let ack = self.kind.server.ack_tracker;
+                        let ack = self.kind.server.remote_ack_tracker;
                         let connection_id = self.kind.server.state.state.connection_id();
                         let destination = packet.state.destination;
 
