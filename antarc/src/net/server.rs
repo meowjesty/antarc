@@ -146,13 +146,19 @@ impl NetManager<Server> {
         }
 
         while self.network.writable {
-            debug_assert!(self.event_system.sender.len() > 0);
+            if self.kind.requesting_connection.len() == 0
+                && self.kind.awaiting_connection_ack.len() == 0
+                && self.kind.connected.len() == 0
+            {
+                break;
+            }
 
             if self.event_system.sender.len() == 0 {
                 // TODO(alex) [mid] 2021-05-26: Prepare a heartbeat packet to send, push the event
                 // here, to avoid needing an if/else.
                 todo!();
             }
+            debug_assert!(self.event_system.sender.len() > 0);
 
             for event in self.event_system.sender.drain(..1) {
                 match event {

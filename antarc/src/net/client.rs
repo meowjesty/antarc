@@ -307,13 +307,12 @@ impl NetManager<Client> {
         }
 
         while self.network.writable {
-            debug_assert!(self.event_system.sender.len() > 0);
-
             if self.event_system.sender.len() == 0 {
                 // TODO(alex) [mid] 2021-05-26: Prepare a heartbeat packet to send, push the event
                 // here, to avoid needing an if/else.
                 todo!();
             }
+            debug_assert!(self.event_system.sender.len() > 0);
 
             for event in self.event_system.sender.drain(..1) {
                 match event {
