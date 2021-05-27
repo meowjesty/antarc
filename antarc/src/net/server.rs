@@ -323,6 +323,11 @@ impl NetManager<Server> {
             }
         }
 
+        // TODO(alex) [mid] 2021-05-26: This whole common event thing could go away, we know the
+        // kind of packet we're sending at send time, so no need to match, whatever needs to happen
+        // after send could be done inline (this will generate duplicated code, and I'll probably
+        // end up coming back to this "post-effect" event handler anyway, but let's get a clearer
+        // view of the design first).
         for event in self.event_system.common.drain(..) {
             match event {
                 CommonEvent::SentPacket { packet: sent } => {
@@ -411,6 +416,11 @@ impl NetManager<Server> {
                     self.kind.id_tracker += 1;
                 }
                 ReceiverEvent::AckRemote { header } => {}
+                ReceiverEvent::DataTransfer { packet, payload } => {
+                    // TODO(alex) [high] 2021-05-26: Check host state, if it's in
+                    // `AwaitingConnectionAck` mode, then see if this packet acks our connection
+                    // accepted, then put this host into the `Connected` list.
+                }
             }
         }
 

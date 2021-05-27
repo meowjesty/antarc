@@ -43,8 +43,16 @@ pub(crate) enum SenderEvent {
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum ReceiverEvent {
-    ConnectionRequest { packet: Packet<Received> },
-    AckRemote { header: Header },
+    ConnectionRequest {
+        packet: Packet<Received>,
+    },
+    DataTransfer {
+        packet: Packet<Received>,
+        payload: Payload,
+    },
+    AckRemote {
+        header: Header,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
