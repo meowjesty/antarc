@@ -24,19 +24,26 @@ pub(crate) enum EventKind {
 pub(crate) enum CommonEvent {
     // QueuedDataTransfer { packet: Packet<Queued, DataTransfer> },
     // QueuedConnectionRequest { packet: Packet<Queued, ConnectionRequest> },
+    SentPacket { sent: Packet<Sent> },
+    ReceivedPacket { packet: Packet<Received> },
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum FailureEvent {
+    FailedEncodingPacket { packet: Packet<Queued> },
+    FailedSendingPacket { packet: Packet<Queued> },
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum SenderEvent {
     QueuedDataTransfer { packet: Packet<Queued> },
     QueuedConnectionAccepted { packet: Packet<Queued> },
     QueuedConnectionRequest { packet: Packet<Queued> },
     QueuedHeartbeat { address: SocketAddr },
-    ReceivedConnectionRequest { received: Received },
-    FailedEncodingPacket { queued: Packet<Queued> },
-    FailedSendingPacket { queued: Packet<Queued> },
-    SentPacket { sent: Packet<Sent> },
-    ReceivedPacket { received: Packet<Received> },
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) enum ReceivedEvent {
+pub(crate) enum ReceiverEvent {
     ConnectionRequest { packet: Packet<Received> },
     AckRemote { header: Header },
 }
@@ -61,15 +68,8 @@ pub(crate) enum ClientEvent {
 impl CommonEvent {
     pub(crate) fn kind(&self) -> EventKind {
         match self {
-            CommonEvent::QueuedDataTransfer { .. } => EventKind::QueuedDataTransfer,
-            CommonEvent::QueuedConnectionAccepted { .. } => EventKind::QueuedConnectionAccepted,
-            CommonEvent::FailedEncodingPacket { .. } => EventKind::FailedEncodingPacket,
-            CommonEvent::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
             CommonEvent::SentPacket { .. } => EventKind::SentPacket,
             CommonEvent::ReceivedPacket { .. } => EventKind::ReceivedPacket,
-            CommonEvent::QueuedConnectionRequest { .. } => EventKind::SendConnectionRequest,
-            CommonEvent::ReceivedConnectionRequest { .. } => EventKind::ReceivedConnectionRequest,
-            CommonEvent::QueuedHeartbeat { .. } => EventKind::SendHeartbeat,
         }
     }
 }

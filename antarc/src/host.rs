@@ -73,6 +73,8 @@ pub(crate) struct Host<State> {
     pub(crate) ack_tracker: Ack,
     pub(crate) last_acked: Ack,
     pub(crate) address: SocketAddr,
+    // TODO(alex) [mid] 2021-05-26: `Received` should not contain the payload, let's put the payload
+    // in a `HashMap<ConnectionId, Vec<Payload>>` in the server/client, to ease the `retrieve` impl.
     pub(crate) received: Vec<Packet<Received>>,
     pub(crate) state: State,
 }

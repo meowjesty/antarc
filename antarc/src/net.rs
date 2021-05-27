@@ -8,7 +8,7 @@ use mio::{
 
 use self::server::PacketId;
 use crate::{
-    events::{CommonEvent, EventList, ReceivedEvent},
+    events::{CommonEvent, EventList, ReceiverEvent, SenderEvent},
     packet::{ConnectionId, Packet, Payload, Queued, Received, Sent},
     MTU_LENGTH,
 };
@@ -76,18 +76,21 @@ pub(crate) struct NetworkResource {
 
 #[derive(Debug)]
 pub(crate) struct EventSystem {
-    pub(crate) events: EventList,
-    pub(crate) received_events: Vec<ReceivedEvent>,
+    pub(crate) common: EventList,
+    pub(crate) sender: Vec<SenderEvent>,
+    pub(crate) receiver: Vec<ReceiverEvent>,
 }
 
 impl EventSystem {
     pub(crate) fn new() -> Self {
         let events = Vec::with_capacity(1024);
-        let received_events = Vec::with_capacity(1024);
+        let sender = Vec::with_capacity(1024);
+        let receiver = Vec::with_capacity(1024);
 
         Self {
-            events,
-            received_events,
+            common: events,
+            sender,
+            receiver,
         }
     }
 }
@@ -159,9 +162,9 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         let cancelled_packet = self
             .event_system
-            .events
+            .sender
             .drain_filter(|event| match event {
-                CommonEvent::QueuedDataTransfer { packet } => packet.id == packet_id,
+                SenderEvent::QueuedDataTransfer { packet } => packet.id == packet_id,
                 _ => false,
             })
             .next()
