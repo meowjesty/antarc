@@ -125,6 +125,7 @@ impl NetManager<Client> {
                 match self.network.udp_socket.recv_from(&mut self.buffer) {
                     Ok((num_received, source)) => {
                         debug_assert!(num_received > 0);
+
                         let (packet, payload) = Packet::decode(
                             self.kind.id_tracker,
                             &self.buffer[..num_received],
@@ -141,6 +142,7 @@ impl NetManager<Client> {
                                 connection_id,
                                 rtt: Duration::default(),
                                 last_sent: 1,
+                                time_last_sent: Duration::default(),
                             };
                             self.kind.server.sequence_tracker =
                                 unsafe { Sequence::new_unchecked(2) };
@@ -161,12 +163,12 @@ impl NetManager<Client> {
                         }
                     }
                     Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                        warn!("Would block on recv_from {:?}", fail);
+                        warn!("Would block on recv {:?}", fail);
                         self.network.readable = false;
                         break 'receive;
                     }
                     Err(fail) => {
-                        warn!("Failed recv_from with {:?}", fail);
+                        warn!("Failed recv with {:?}", fail);
                         self.network.readable = false;
                         break 'receive;
                     }
@@ -276,6 +278,15 @@ impl NetManager<Client> {
                 Ok((num_received, source)) => {
                     debug!("Received new packet {:#?} {:#?}.", num_received, source);
                     debug_assert!(num_received > 0);
+
+                    if source != self.kind.server.address {
+                        warn!(
+                            "Packet from unknown source, expected {:#?}, got {:#?}.",
+                            self.kind.server.address, source
+                        );
+                        continue;
+                    }
+
                     let (packet, payload) = Packet::decode(
                         self.kind.id_tracker,
                         &self.buffer[..num_received],
@@ -284,9 +295,8 @@ impl NetManager<Client> {
                     )
                     .unwrap();
 
-                    self.event_system.receiver.push(ReceiverEvent::AckRemote {
-                        header: packet.state.header.clone(),
-                    });
+                    self.kind.server.remote_ack_tracker = packet.state.header.sequence.get();
+                    self.kind.server.local_ack_tracker = packet.state.header.ack;
 
                     match packet.kind {
                         PacketKind::ConnectionRequest => {}
@@ -302,12 +312,12 @@ impl NetManager<Client> {
                     self.kind.id_tracker += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                    warn!("Would block on recv_from {:?}", fail);
+                    warn!("Would block on recv {:?}", fail);
                     self.network.readable = false;
                     break;
                 }
                 Err(fail) => {
-                    warn!("Failed recv_from with {:?}", fail);
+                    warn!("Failed recv with {:?}", fail);
                     self.network.readable = false;
                     break;
                 }
@@ -315,7 +325,7 @@ impl NetManager<Client> {
         }
         let threshold = self.kind.last_sent_time + Duration::from_millis(1500);
         let time_expired = threshold < self.timer.elapsed();
-        let has_packet_to_send = self.event_system.sender.len() > 0;
+        let mut has_packet_to_send = self.event_system.sender.len() > 0;
         if has_packet_to_send == false && time_expired {
             debug!(
                 "Too much time has passed since we sent a packet {:#?}!",
@@ -323,14 +333,10 @@ impl NetManager<Client> {
             );
             self.event_system.sender.push(SenderEvent::QueuedHeartbeat {
                 address: self.kind.server.address,
-            })
+            });
+            has_packet_to_send = true;
         }
-        while self.network.writable && has_packet_to_send {
-            if self.event_system.sender.len() == 0 {
-                break;
-            }
-
-            // TODO(alex) [high] 2021-05-27: Can't proceed here, we won't have a packet, sometimes.
+        while self.network.writable && self.event_system.sender.len() > 0 {
             for event in self.event_system.sender.drain(..1) {
                 match event {
                     SenderEvent::QueuedDataTransfer { packet } => {

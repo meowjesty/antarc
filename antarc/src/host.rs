@@ -63,10 +63,11 @@ pub(crate) struct AckingConnection {
 #[derive(Debug, Clone)]
 pub(crate) struct Connected {
     pub(crate) connection_id: ConnectionId,
-    /// TODO(alex) 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
+    /// TODO(alex) [low] 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
     pub(crate) rtt: Duration,
     pub(crate) last_sent: PacketId,
+    pub(crate) time_last_sent: Duration,
 }
 
 #[derive(Debug, Clone)]

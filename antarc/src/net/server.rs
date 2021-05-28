@@ -154,6 +154,19 @@ impl NetManager<Server> {
         let has_queued = self.event_system.sender.len() > 0;
 
         // TODO(alex) [mid] 2021-05-27: Send a heartbeat, look at the connected hosts only.
+        for host in self.kind.connected.iter() {
+            let threshold = host.state.time_last_sent + Duration::from_millis(1500);
+            let time_expired = threshold < self.timer.elapsed();
+            if time_expired {
+                debug!(
+                    "Time expired, sending host a heartbeat {:#?}.",
+                    host.address
+                );
+                self.event_system.sender.push(SenderEvent::QueuedHeartbeat {
+                    address: host.address,
+                });
+            }
+        }
 
         while self.network.writable && has_host && self.event_system.sender.len() > 0 {
             debug_assert!(self.event_system.sender.len() > 0);
@@ -335,7 +348,83 @@ impl NetManager<Server> {
                         error!("Server cannot handle SendConnectionRequest!");
                         unreachable!();
                     }
-                    SenderEvent::QueuedHeartbeat { address } => {}
+                    SenderEvent::QueuedHeartbeat { address } => {
+                        debug!("Handling QueuedHeartbeat to {:#?}.", address);
+
+                        let payload = Payload::default();
+                        let payload_length = payload.len() as u16;
+
+                        let connected = self
+                            .kind
+                            .connected
+                            .iter_mut()
+                            .find(|host| host.address == address)
+                            .unwrap();
+
+                        let sequence = connected.sequence_tracker;
+                        let ack = connected.remote_ack_tracker;
+                        let connection_id = connected.state.connection_id;
+                        let destination = connected.address;
+                        let header = Header {
+                            sequence,
+                            ack,
+                            past_acks: 0,
+                            status_code: HEARTBEAT,
+                            payload_length,
+                        };
+                        let (bytes, footer) =
+                            match Packet::encode(&payload, &header, Some(connection_id)) {
+                                Ok(encoded) => encoded,
+                                Err(fail) => {
+                                    error!("Failed encoding packet {:#?}.", fail);
+                                    break;
+                                }
+                            };
+
+                        match self.network.udp_socket.send_to(&bytes, destination) {
+                            Ok(num_sent) => {
+                                debug_assert!(num_sent > 0);
+
+                                let sent = Sent {
+                                    header,
+                                    footer,
+                                    destination,
+                                    time: self.timer.elapsed(),
+                                };
+                                let id = self.kind.id_tracker;
+                                let packet = Packet {
+                                    id,
+                                    state: sent,
+                                    kind: PacketKind::Heartbeat,
+                                };
+                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
+
+                                connected.sequence_tracker =
+                                    Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
+                                self.kind.id_tracker += 1;
+                            }
+                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
+                                warn!("Would block on send_to {:?}", fail);
+
+                                // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
+                                // specific Host, so the ownership of this allocation has a
+                                // clear owner. When we fail
+                                // to send, the encoding is performed again,
+                                // even though we could cache it here as a `Packet<Encoded>` and
+                                // insert it into the Host.
+                                self.network.writable = false;
+
+                                break;
+                            }
+                            Err(fail) => {
+                                error!(
+                                    "Server failed sending packet {:#?} to {:#?}.",
+                                    fail, destination
+                                );
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -465,6 +554,7 @@ impl NetManager<Server> {
                             connection_id,
                             rtt: Duration::default(),
                             last_sent,
+                            time_last_sent: Duration::default(),
                         };
                         let sequence_tracker = host.sequence_tracker;
                         let ack_tracker = host.remote_ack_tracker;
@@ -538,6 +628,7 @@ impl NetManager<Server> {
                             connection_id,
                             rtt: Duration::default(),
                             last_sent,
+                            time_last_sent: Duration::default(),
                         };
                         let sequence_tracker = host.sequence_tracker;
                         let ack_tracker = host.remote_ack_tracker;
