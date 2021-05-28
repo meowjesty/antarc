@@ -21,19 +21,17 @@ use crate::{
     MTU_LENGTH,
 };
 
-/// TODO(alex) 2021-05-01: Consider adding a `DebugName` component for every entity, such as when
-/// doing `world.spawn((format!("Packet {:?}", header), components...))`.
-
 /// TODO(alex) 2021-02-26: References for ideas about connection:
 /// http://www.tcpipguide.com/free/t_PPPLinkSetupandPhases.htm
-///
-/// ADD(alex) 2021-02-26: We need a `Disconnecting` state (link termination phase)?
 ///
 /// TODO(alex) 2021-03-04: Client and Server are different beasts right now, I'm thinking about
 /// ways of allowing some sort of peer-to-peer communication, so a `Client` would have to track
 /// connection (`Host<State>`) for multiple other clients. To to this we would need something
 /// that looks more like the `Server`, and some way to keep one node of the network as the main
 /// server? This idea is not clear yet.
+///
+/// ADD(alex) [low] 2021-05-27: Piling on this idea, we could just have the user create a network
+/// with both a `Client` and a `Server`, this isn't a very good idea, and needs more thought.
 #[derive(Debug)]
 pub struct Client {
     pub(crate) id_tracker: u64,
@@ -295,6 +293,9 @@ impl NetManager<Client> {
                     )
                     .unwrap();
 
+                    // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order packets,
+                    // right now we just don't update the ack trackers if they come from a lower
+                    // value than what the host has.
                     self.kind.server.remote_ack_tracker = packet.state.header.sequence.get();
                     self.kind.server.local_ack_tracker = packet.state.header.ack;
 

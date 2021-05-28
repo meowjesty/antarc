@@ -230,12 +230,14 @@ impl NetManager<Server> {
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
 
-                                // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
+                                // TODO(alex) [high] 2021-05-23: Right here, the `bytes` belongs to
+                                // a specific Host, so the ownership of this allocation has a clear
+                                // owner. When we fail to send, the encoding is performed again,
                                 // even though we could cache it here as a `Packet<Encoded>` and
                                 // insert it into the Host.
+                                //
+                                // ADD(alex) [high] 2021-05-27: This requires creating and using
+                                // failure events.
                                 self.network.writable = false;
 
                                 break;
@@ -581,6 +583,9 @@ impl NetManager<Server> {
                     {
                         debug!("Updating connected host with data transfer.");
 
+                        // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
+                        // packets, right now we just don't update the ack trackers if they come
+                        // from a lower value than what the host has.
                         host.local_ack_tracker = (packet.state.header.ack > host.local_ack_tracker)
                             .then(|| packet.state.header.ack)
                             .unwrap_or(host.local_ack_tracker);
@@ -663,6 +668,9 @@ impl NetManager<Server> {
                     {
                         debug!("Updating connected host with heartbeat.");
 
+                        // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
+                        // packets, right now we just don't update the ack trackers if they come
+                        // from a lower value than what the host has.
                         host.local_ack_tracker = (packet.state.header.ack > host.local_ack_tracker)
                             .then(|| packet.state.header.ack)
                             .unwrap_or(host.local_ack_tracker);
