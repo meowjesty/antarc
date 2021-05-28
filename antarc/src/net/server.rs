@@ -580,8 +580,16 @@ impl NetManager<Server> {
                         .find(|h| h.address == packet.state.source)
                     {
                         debug!("Updating connected host with data transfer.");
-                        host.local_ack_tracker = packet.state.header.ack;
-                        host.remote_ack_tracker = packet.state.header.sequence.get();
+
+                        host.local_ack_tracker = (packet.state.header.ack > host.local_ack_tracker)
+                            .then(|| packet.state.header.ack)
+                            .unwrap_or(host.local_ack_tracker);
+
+                        let remote_sequence = packet.state.header.sequence.get();
+                        host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
+                            .then(|| packet.state.header.sequence.get())
+                            .unwrap_or(host.remote_ack_tracker);
+
                         host.received.push(packet);
 
                         if self.retrievable.contains_key(&host.state.connection_id) {
@@ -654,8 +662,16 @@ impl NetManager<Server> {
                         .find(|h| h.address == packet.state.source)
                     {
                         debug!("Updating connected host with heartbeat.");
-                        host.local_ack_tracker = packet.state.header.ack;
-                        host.remote_ack_tracker = packet.state.header.sequence.get();
+
+                        host.local_ack_tracker = (packet.state.header.ack > host.local_ack_tracker)
+                            .then(|| packet.state.header.ack)
+                            .unwrap_or(host.local_ack_tracker);
+
+                        let remote_sequence = packet.state.header.sequence.get();
+                        host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
+                            .then(|| packet.state.header.sequence.get())
+                            .unwrap_or(host.remote_ack_tracker);
+
                         host.received.push(packet);
                     }
                 }

@@ -298,6 +298,18 @@ impl NetManager<Client> {
                     self.kind.server.remote_ack_tracker = packet.state.header.sequence.get();
                     self.kind.server.local_ack_tracker = packet.state.header.ack;
 
+                    let local_ack_tracker = self.kind.server.local_ack_tracker;
+                    self.kind.server.local_ack_tracker = (packet.state.header.ack
+                        > local_ack_tracker)
+                        .then(|| packet.state.header.ack)
+                        .unwrap_or(self.kind.server.local_ack_tracker);
+
+                    let remote_ack_tracker = self.kind.server.remote_ack_tracker;
+                    let remote_sequence = packet.state.header.sequence.get();
+                    self.kind.server.remote_ack_tracker = (remote_sequence > remote_ack_tracker)
+                        .then(|| packet.state.header.sequence.get())
+                        .unwrap_or(self.kind.server.remote_ack_tracker);
+
                     match packet.kind {
                         PacketKind::ConnectionRequest => {}
                         PacketKind::ConnectionAccepted => {}
