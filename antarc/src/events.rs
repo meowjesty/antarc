@@ -1,10 +1,19 @@
-use std::{net::SocketAddr, sync::Weak, time::Duration};
+use std::{
+    array::TryFromSliceError,
+    io,
+    net::SocketAddr,
+    num::{NonZeroU32, TryFromIntError},
+    sync::Weak,
+    time::Duration,
+};
 
 use crate::{
     host::Address,
     packet::{
-        header::Header, ConnectionId, Encoded, Packet, Payload, Queued, Received, Sent, StatusCode,
+        header::Header, ConnectionId, Encoded, Footer, Packet, Payload, Queued, Received, Sent,
+        StatusCode,
     },
+    ProtocolId,
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -27,10 +36,24 @@ pub(crate) enum CommonEvent {
     SentPacket { packet: Packet<Sent> },
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
+pub enum AntarcError {
+    Conversion,
+    InvalidProtocolId { got: u32, expected: ProtocolId },
+    InvalidCrc32 { got: u32, expected: NonZeroU32 },
+    ArrayConversion(TryFromSliceError),
+    IntConversion(TryFromIntError),
+}
+
+#[derive(Debug)]
 pub(crate) enum FailureEvent {
-    FailedEncodingPacket { packet: Packet<Queued> },
-    FailedSendingPacket { packet: Packet<Queued> },
+    SendPacket {
+        packet: Packet<Queued>,
+        footer: Footer,
+        bytes: Vec<u8>,
+    },
+    AntarcError(AntarcError),
+    IO(io::Error),
 }
 
 #[derive(Debug, PartialEq, Clone)]

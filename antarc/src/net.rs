@@ -8,7 +8,7 @@ use mio::{
 
 use self::server::PacketId;
 use crate::{
-    events::{CommonEvent, EventList, ReceiverEvent, SenderEvent},
+    events::{CommonEvent, EventList, FailureEvent, ReceiverEvent, SenderEvent},
     packet::{ConnectionId, Packet, Payload, Queued, Received, Sent},
     MTU_LENGTH,
 };
@@ -80,6 +80,7 @@ pub(crate) struct EventSystem {
     pub(crate) common: EventList,
     pub(crate) sender: Vec<SenderEvent>,
     pub(crate) receiver: Vec<ReceiverEvent>,
+    pub(crate) failures: Vec<FailureEvent>,
 }
 
 impl EventSystem {
@@ -87,11 +88,13 @@ impl EventSystem {
         let events = Vec::with_capacity(1024);
         let sender = Vec::with_capacity(1024);
         let receiver = Vec::with_capacity(1024);
+        let failures = Vec::with_capacity(1024);
 
         Self {
             common: events,
             sender,
             receiver,
+            failures,
         }
     }
 }

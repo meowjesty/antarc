@@ -10,7 +10,10 @@ use crc32fast::Hasher;
 use log::{debug, error};
 
 use self::header::Header;
-use crate::{net::server::PacketId, read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES};
+use crate::{
+    events::AntarcError, net::server::PacketId, read_buffer_inc, ProtocolId, PROTOCOL_ID,
+    PROTOCOL_ID_BYTES,
+};
 
 pub(crate) mod header;
 
@@ -208,10 +211,10 @@ impl Packet<Queued> {
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
     pub(crate) fn encode(
-        payload: &Payload,
+        payload: Payload,
         header: &Header,
         connection_id: Option<ConnectionId>,
-    ) -> Result<(Vec<u8>, Footer), String> {
+    ) -> (Vec<u8>, Footer) {
         let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = header.ack.to_be_bytes().to_vec();
         let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
@@ -226,7 +229,7 @@ impl Packet<Queued> {
             past_acks_bytes,
             status_code_bytes,
             payload_length_bytes,
-            payload.0.clone(),
+            payload.0,
         ]
         .concat();
 
@@ -248,7 +251,7 @@ impl Packet<Queued> {
 
         let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
 
-        Ok((packet_bytes, footer))
+        (packet_bytes, footer)
     }
 
     pub(crate) fn sent(
@@ -283,15 +286,16 @@ impl Packet<Received> {
         buffer: &[u8],
         address: SocketAddr,
         timer: &Instant,
-    ) -> Result<(Packet<Received>, Payload), String> {
+    ) -> Result<(Packet<Received>, Payload), AntarcError> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
 
         let crc32_position = buffer_length - size_of::<NonZeroU32>();
 
-        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
-            buffer[crc32_position..].try_into().unwrap();
+        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] = buffer[crc32_position..]
+            .try_into()
+            .map_err(|fail| AntarcError::ArrayConversion(fail))?;
         let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
         // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
@@ -302,16 +306,18 @@ impl Packet<Received> {
 
         hasher.update(&packet_with_protocol_id);
         let crc32 = hasher.finalize();
+
         if crc32 == crc32_received {
             let buffer = packet_with_protocol_id;
             let mut buffer_position = 0;
             // TODO(alex) 2021-04-01: Find out a way to `from_be_bytes::<NonZeroU32>` to work.
+
             let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
             if PROTOCOL_ID.get() != read_protocol_id {
-                return Err(format!(
-                    "Decoded invalid protocol id {:#?}.",
-                    read_protocol_id
-                ));
+                return Err(AntarcError::InvalidProtocolId {
+                    got: read_protocol_id,
+                    expected: PROTOCOL_ID,
+                });
             }
 
             let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
@@ -347,13 +353,19 @@ impl Packet<Received> {
                     buffer_position,
                     Header::ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
                 );
-                Some(read_connection_id.try_into().unwrap())
+                Some(
+                    read_connection_id
+                        .try_into()
+                        .map_err(|fail| AntarcError::IntConversion(fail))?,
+                )
             } else {
                 None
             };
             let footer = Footer {
                 connection_id,
-                crc32: crc32.try_into().unwrap(),
+                crc32: crc32
+                    .try_into()
+                    .map_err(|fail| AntarcError::IntConversion(fail))?,
             };
 
             let kind = PacketKind::from_header(&header);
@@ -369,10 +381,10 @@ impl Packet<Received> {
 
             Ok((packet, payload))
         } else {
-            Err(format!(
-                "Received {:#?} crc32, but calculated {:#?}.",
-                crc32_received, crc32
-            ))
+            Err(AntarcError::InvalidCrc32 {
+                got: crc32_received,
+                expected: unsafe { NonZeroU32::new_unchecked(crc32) },
+            })
         }
     }
 }

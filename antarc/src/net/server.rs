@@ -9,7 +9,7 @@ use log::{debug, error, warn};
 
 use super::SendTo;
 use crate::{
-    events::{CommonEvent, ReceiverEvent, SenderEvent},
+    events::{CommonEvent, FailureEvent, ReceiverEvent, SenderEvent},
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
@@ -99,13 +99,22 @@ impl NetManager<Server> {
             match self.network.udp_socket.recv_from(&mut self.buffer) {
                 Ok((num_received, source)) => {
                     debug_assert!(num_received > 0);
-                    let (packet, payload) = Packet::decode(
+
+                    let (packet, payload) = match Packet::decode(
                         self.kind.id_tracker,
                         &self.buffer[..num_received],
                         source,
                         &self.timer,
-                    )
-                    .unwrap();
+                    ) {
+                        Ok(decoded) => decoded,
+                        Err(fail) => {
+                            self.event_system
+                                .failures
+                                .push(FailureEvent::AntarcError(fail));
+                            continue;
+                        }
+                    };
+
                     debug!("Received new packet {:#?} {:#?}.", packet, source);
 
                     self.event_system.receiver.push(ReceiverEvent::AckRemote {
@@ -143,6 +152,9 @@ impl NetManager<Server> {
                 }
                 Err(fail) => {
                     warn!("Failed recv_from with {:?}", fail);
+
+                    self.event_system.failures.push(FailureEvent::IO(fail));
+
                     self.network.readable = false;
                 }
             }
@@ -176,7 +188,7 @@ impl NetManager<Server> {
                     SenderEvent::QueuedDataTransfer { packet } => {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
-                        let payload = self.payload_queue.get(&packet.id).unwrap();
+                        let payload = self.payload_queue.remove(&packet.id).unwrap();
                         let payload_length = payload.len() as u16;
 
                         let connected = self
@@ -197,14 +209,7 @@ impl NetManager<Server> {
                             status_code: DATA_TRANSFER,
                             payload_length,
                         };
-                        let (bytes, footer) =
-                            match Packet::encode(&payload, &header, Some(connection_id)) {
-                                Ok(encoded) => encoded,
-                                Err(fail) => {
-                                    error!("Failed encoding packet {:#?}.", fail);
-                                    break;
-                                }
-                            };
+                        let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -240,6 +245,13 @@ impl NetManager<Server> {
                                 // failure events.
                                 self.network.writable = false;
 
+                                let failed = FailureEvent::SendPacket {
+                                    packet,
+                                    footer,
+                                    bytes,
+                                };
+                                self.event_system.failures.push(failed);
+
                                 break;
                             }
                             Err(fail) => {
@@ -247,6 +259,14 @@ impl NetManager<Server> {
                                     "Server failed sending packet {:#?} to {:#?}.",
                                     fail, destination
                                 );
+
+                                let failed = FailureEvent::SendPacket {
+                                    packet,
+                                    footer,
+                                    bytes,
+                                };
+                                self.event_system.failures.push(failed);
+
                                 break;
                             }
                         }
@@ -275,14 +295,7 @@ impl NetManager<Server> {
                             status_code: CONNECTION_ACCEPTED,
                             payload_length,
                         };
-                        let (bytes, footer) =
-                            match Packet::encode(&payload, &header, Some(connection_id)) {
-                                Ok(encoded) => encoded,
-                                Err(fail) => {
-                                    error!("Failed encoding packet {:#?}.", fail);
-                                    break;
-                                }
-                            };
+                        let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -334,6 +347,13 @@ impl NetManager<Server> {
                                 self.network.writable = false;
                                 self.kind.requesting_connection.push(requesting_connection);
 
+                                let failed = FailureEvent::SendPacket {
+                                    packet,
+                                    footer,
+                                    bytes,
+                                };
+                                self.event_system.failures.push(failed);
+
                                 break;
                             }
                             Err(fail) => {
@@ -342,6 +362,14 @@ impl NetManager<Server> {
                                     fail, destination
                                 );
                                 self.kind.requesting_connection.push(requesting_connection);
+
+                                let failed = FailureEvent::SendPacket {
+                                    packet,
+                                    footer,
+                                    bytes,
+                                };
+                                self.event_system.failures.push(failed);
+
                                 break;
                             }
                         }
@@ -374,14 +402,7 @@ impl NetManager<Server> {
                             status_code: HEARTBEAT,
                             payload_length,
                         };
-                        let (bytes, footer) =
-                            match Packet::encode(&payload, &header, Some(connection_id)) {
-                                Ok(encoded) => encoded,
-                                Err(fail) => {
-                                    error!("Failed encoding packet {:#?}.", fail);
-                                    break;
-                                }
-                            };
+                        let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -416,6 +437,24 @@ impl NetManager<Server> {
                                 // insert it into the Host.
                                 self.network.writable = false;
 
+                                let state = Queued {
+                                    time: self.timer.elapsed(),
+                                    destination,
+                                };
+                                let packet = Packet {
+                                    id: self.kind.id_tracker,
+                                    state,
+                                    kind: PacketKind::Heartbeat,
+                                };
+
+                                let failed = FailureEvent::SendPacket {
+                                    packet,
+                                    footer,
+                                    bytes,
+                                };
+                                self.event_system.failures.push(failed);
+                                self.kind.id_tracker += 1;
+
                                 break;
                             }
                             Err(fail) => {
@@ -423,6 +462,25 @@ impl NetManager<Server> {
                                     "Server failed sending packet {:#?} to {:#?}.",
                                     fail, destination
                                 );
+
+                                let state = Queued {
+                                    time: self.timer.elapsed(),
+                                    destination,
+                                };
+                                let packet = Packet {
+                                    id: self.kind.id_tracker,
+                                    state,
+                                    kind: PacketKind::Heartbeat,
+                                };
+
+                                let failed = FailureEvent::SendPacket {
+                                    packet,
+                                    footer,
+                                    bytes,
+                                };
+                                self.event_system.failures.push(failed);
+                                self.kind.id_tracker += 1;
+
                                 break;
                             }
                         }
@@ -682,6 +740,24 @@ impl NetManager<Server> {
 
                         host.received.push(packet);
                     }
+                }
+            }
+        }
+
+        for error in self.event_system.failures.drain(..) {
+            match error {
+                FailureEvent::SendPacket {
+                    packet,
+                    footer,
+                    bytes,
+                } => {
+                    error!("Failed sending packet for {:#?}.", packet);
+                }
+                FailureEvent::AntarcError(fail) => {
+                    error!("Failed internally with {:#?}.", fail);
+                }
+                FailureEvent::IO(fail) => {
+                    error!("Failed with IO error {:#?}.", fail);
                 }
             }
         }

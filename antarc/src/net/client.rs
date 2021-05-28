@@ -61,10 +61,15 @@ impl NetManager<Client> {
     /// plus send part, this would be ideal with `async`;
     ///
     /// 2. It stays as-is, and we rely on `tick` to handle the connection, but then the user won't
+    ///
     /// know much about the connection, we'll be relying on the `retrieve` to return the
     /// `ConnectionId` + the packet payload (which will be done anyway).
     ///
     /// ADD(alex) 2021-05-23: Do the whole connection inside this function, it'll simplify the
+    ///
+    /// ADD(alex) [mid] 2021-05-28: Either return the events here for the user to treat, or have
+    /// a separate function in the API, that passes the errors to the user, I don't like this
+    /// approach very much.
     /// `tick` function immensely.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> Result<ConnectionId, String> {
         debug!("Connecting to {:#?}.", server_addr);
@@ -91,14 +96,7 @@ impl NetManager<Client> {
             payload_length,
         };
 
-        let (bytes, footer) = match Packet::encode(&payload, &header, None) {
-            Ok(encoded) => encoded,
-            Err(fail) => {
-                error!("Failed encoding packet {:#?}.", fail);
-                panic!("{}", fail);
-            }
-        };
-
+        let (bytes, footer) = Packet::encode(payload, &header, None);
         let mut connection_request = Some(bytes.clone());
 
         loop {
@@ -249,10 +247,15 @@ impl NetManager<Client> {
 
     /// TODO(alex) 2021-02-23: Return some indication that the manager received new packets and the
     /// user should call `retrieve`.
+    ///
     /// ADD(alex) 2021-02-26: The return can be made even more general, by having an enum of
     /// possibilities, like `HasMessagesToRetrieve`, `ConnectionLost`. The only success cases I can
     /// think of are `HasMessagesToRetrieve` and `NothingToReport`? But the errors are plenty, like
     /// `ReceivingMessageFromBannedHost`, `FailedToSend`, `FailedToReceive`, `FailedToEncode`, ...
+    ///
+    /// ADD(alex) [mid] 2021-05-28: Either return the events here for the user to treat, or have
+    /// a separate function in the API, that passes the errors to the user, I don't like this
+    /// approach very much.
     pub fn tick(&mut self) -> Result<usize, String> {
         self.network
             .poll
@@ -370,7 +373,7 @@ impl NetManager<Client> {
                         let destination = packet.state.destination;
 
                         let status_code = From::from(packet.kind);
-                        let payload = self.payload_queue.get(&packet.id).unwrap();
+                        let payload = self.payload_queue.remove(&packet.id).unwrap();
                         let payload_length = payload.len() as u16;
 
                         let header = Header {
@@ -381,14 +384,7 @@ impl NetManager<Client> {
                             payload_length,
                         };
 
-                        let (bytes, footer) = match Packet::encode(&payload, &header, connection_id)
-                        {
-                            Ok(success) => success,
-                            Err(fail) => {
-                                error!("Failed encoding packet {:#?}.", fail);
-                                break;
-                            }
-                        };
+                        let (bytes, footer) = Packet::encode(payload, &header, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -405,8 +401,6 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
-                                // TODO(alex) [high] 2021-05-27: Find why the client always send
-                                // `ack: 1`.
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
                                 let sent_event = CommonEvent::SentPacket { packet };
@@ -454,13 +448,7 @@ impl NetManager<Client> {
                             status_code: CONNECTION_REQUEST,
                             payload_length,
                         };
-                        let (bytes, footer) = match Packet::encode(&payload, &header, None) {
-                            Ok(encoded) => encoded,
-                            Err(fail) => {
-                                error!("Failed encoding packet {:#?}.", fail);
-                                break;
-                            }
-                        };
+                        let (bytes, footer) = Packet::encode(payload, &header, None);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -477,8 +465,7 @@ impl NetManager<Client> {
                                     state: sent,
                                     kind: packet.kind,
                                 };
-                                // TODO(alex) [high] 2021-05-27: Find why the client always send
-                                // `ack: 1`.
+
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
                                 let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.last_sent_time = self.timer.elapsed();
@@ -534,14 +521,7 @@ impl NetManager<Client> {
                             payload_length,
                         };
 
-                        let (bytes, footer) = match Packet::encode(&payload, &header, connection_id)
-                        {
-                            Ok(success) => success,
-                            Err(fail) => {
-                                error!("Failed encoding packet {:#?}.", fail);
-                                break;
-                            }
-                        };
+                        let (bytes, footer) = Packet::encode(payload, &header, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
