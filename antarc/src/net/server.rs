@@ -235,21 +235,9 @@ impl NetManager<Server> {
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
 
-                                // TODO(alex) [high] 2021-05-23: Right here, the `bytes` belongs to
-                                // a specific Host, so the ownership of this allocation has a clear
-                                // owner. When we fail to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
-                                //
-                                // ADD(alex) [high] 2021-05-27: This requires creating and using
-                                // failure events.
                                 self.network.writable = false;
 
-                                let failed = FailureEvent::SendPacket {
-                                    packet,
-                                    footer,
-                                    bytes,
-                                };
+                                let failed = FailureEvent::SendPacket { packet };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -260,11 +248,7 @@ impl NetManager<Server> {
                                     fail, destination
                                 );
 
-                                let failed = FailureEvent::SendPacket {
-                                    packet,
-                                    footer,
-                                    bytes,
-                                };
+                                let failed = FailureEvent::SendPacket { packet };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -295,6 +279,10 @@ impl NetManager<Server> {
                             status_code: CONNECTION_ACCEPTED,
                             payload_length,
                         };
+
+                        // NOTE(alex) 2021-05-30: These cannot be cached, as they may become invalid
+                        // when the time to re-send comes (id, sequence may have increased, causing
+                        // possible packet duplication).
                         let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
@@ -338,20 +326,10 @@ impl NetManager<Server> {
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
 
-                                // TODO(alex) 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
                                 self.network.writable = false;
                                 self.kind.requesting_connection.push(requesting_connection);
 
-                                let failed = FailureEvent::SendPacket {
-                                    packet,
-                                    footer,
-                                    bytes,
-                                };
+                                let failed = FailureEvent::SendPacket { packet };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -363,11 +341,7 @@ impl NetManager<Server> {
                                 );
                                 self.kind.requesting_connection.push(requesting_connection);
 
-                                let failed = FailureEvent::SendPacket {
-                                    packet,
-                                    footer,
-                                    bytes,
-                                };
+                                let failed = FailureEvent::SendPacket { packet };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -429,12 +403,6 @@ impl NetManager<Server> {
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
 
-                                // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
                                 self.network.writable = false;
 
                                 let state = Queued {
@@ -447,11 +415,7 @@ impl NetManager<Server> {
                                     kind: PacketKind::Heartbeat,
                                 };
 
-                                let failed = FailureEvent::SendPacket {
-                                    packet,
-                                    footer,
-                                    bytes,
-                                };
+                                let failed = FailureEvent::SendPacket { packet };
                                 self.event_system.failures.push(failed);
                                 self.kind.id_tracker += 1;
 
@@ -473,11 +437,7 @@ impl NetManager<Server> {
                                     kind: PacketKind::Heartbeat,
                                 };
 
-                                let failed = FailureEvent::SendPacket {
-                                    packet,
-                                    footer,
-                                    bytes,
-                                };
+                                let failed = FailureEvent::SendPacket { packet };
                                 self.event_system.failures.push(failed);
                                 self.kind.id_tracker += 1;
 
@@ -746,11 +706,7 @@ impl NetManager<Server> {
 
         for error in self.event_system.failures.drain(..) {
             match error {
-                FailureEvent::SendPacket {
-                    packet,
-                    footer,
-                    bytes,
-                } => {
+                FailureEvent::SendPacket { packet } => {
                     error!("Failed sending packet for {:#?}.", packet);
                 }
                 FailureEvent::AntarcError(fail) => {

@@ -47,11 +47,7 @@ pub enum AntarcError {
 
 #[derive(Debug)]
 pub(crate) enum FailureEvent {
-    SendPacket {
-        packet: Packet<Queued>,
-        footer: Footer,
-        bytes: Vec<u8>,
-    },
+    SendPacket { packet: Packet<Queued> },
     AntarcError(AntarcError),
     IO(io::Error),
 }
