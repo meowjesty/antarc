@@ -10,13 +10,18 @@ use mio::net::UdpSocket;
 
 use super::SendTo;
 use crate::{
-    events::{CommonEvent, ConnectionEvent, EventKind, ReceiverEvent, SenderEvent},
+    events::{FailureEvent, ReceiverEvent, SenderEvent},
     host::{Connected, Disconnected, Generic, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
-        Received, Sent, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
-        DATA_TRANSFER, HEARTBEAT,
+        header::Header,
+        kind::PacketKind,
+        payload::{self, Payload},
+        queued::Queued,
+        received::Received,
+        sequence::Sequence,
+        ConnectionId, Encoded, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     MTU_LENGTH,
 };
@@ -36,7 +41,6 @@ use crate::{
 pub struct Client {
     pub(crate) id_tracker: u64,
     pub(crate) server: Host<Generic>,
-    pub(crate) connection_events: Vec<ConnectionEvent>,
     pub(crate) last_sent_time: Duration,
 }
 
@@ -45,7 +49,6 @@ impl NetManager<Client> {
         let client = Client {
             id_tracker: 0,
             server: Host::new_local(),
-            connection_events: Vec::with_capacity(8),
             last_sent_time: Duration::default(),
         };
         let net_manager = NetManager::new(address, client);
@@ -96,7 +99,7 @@ impl NetManager<Client> {
             payload_length,
         };
 
-        let (bytes, footer) = Packet::encode(payload, &header, None);
+        let (bytes, footer) = Packet::encode(&payload, &header, None);
         let mut connection_request = Some(bytes.clone());
 
         loop {
@@ -201,6 +204,9 @@ impl NetManager<Client> {
                         // to send, the encoding is performed again,
                         // even though we could cache it here as a `Packet<Encoded>` and
                         // insert it into the Host.
+                        self.event_system
+                            .failures
+                            .push(FailureEvent::SendConnectionRequest);
                         self.network.writable = false;
                     }
                     Err(fail) => {
@@ -341,17 +347,7 @@ impl NetManager<Client> {
         }
         let threshold = self.kind.last_sent_time + Duration::from_millis(1500);
         let time_expired = threshold < self.timer.elapsed();
-        let mut has_packet_to_send = self.event_system.sender.len() > 0;
-        if has_packet_to_send == false && time_expired {
-            debug!(
-                "Too much time has passed since we sent a packet {:#?}!",
-                threshold
-            );
-            self.event_system.sender.push(SenderEvent::QueuedHeartbeat {
-                address: self.kind.server.address,
-            });
-            has_packet_to_send = true;
-        }
+
         while self.network.writable && self.event_system.sender.len() > 0 {
             for event in self.event_system.sender.drain(..1) {
                 match event {
@@ -384,7 +380,7 @@ impl NetManager<Client> {
                             payload_length,
                         };
 
-                        let (bytes, footer) = Packet::encode(payload, &header, connection_id);
+                        let (bytes, footer) = Packet::encode(&payload, &header, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -403,7 +399,6 @@ impl NetManager<Client> {
                                 };
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
-                                let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.server.sequence_tracker =
                                     Sequence::new(sequence.get() + 1).unwrap();
                                 self.kind.last_sent_time = self.timer.elapsed();
@@ -431,7 +426,7 @@ impl NetManager<Client> {
                             }
                         }
                     }
-                    SenderEvent::QueuedConnectionAccepted { packet } => {}
+                    SenderEvent::QueuedConnectionAccepted { .. } => {}
                     SenderEvent::QueuedConnectionRequest { packet } => {
                         debug!("Handling QueuedConnectionRequest to {:#?}.", packet);
 
@@ -448,7 +443,7 @@ impl NetManager<Client> {
                             status_code: CONNECTION_REQUEST,
                             payload_length,
                         };
-                        let (bytes, footer) = Packet::encode(payload, &header, None);
+                        let (bytes, footer) = Packet::encode(&payload, &header, None);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -467,7 +462,6 @@ impl NetManager<Client> {
                                 };
 
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
-                                let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.last_sent_time = self.timer.elapsed();
                             }
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
@@ -521,7 +515,7 @@ impl NetManager<Client> {
                             payload_length,
                         };
 
-                        let (bytes, footer) = Packet::encode(payload, &header, connection_id);
+                        let (bytes, footer) = Packet::encode(&payload, &header, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -542,7 +536,6 @@ impl NetManager<Client> {
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
                                 self.kind.last_sent_time = packet.state.time;
-                                let sent_event = CommonEvent::SentPacket { packet };
                                 self.kind.server.sequence_tracker =
                                     Sequence::new(sequence.get() + 1).unwrap();
                                 self.kind.id_tracker += 1;
@@ -569,26 +562,6 @@ impl NetManager<Client> {
                                 break;
                             }
                         }
-                    }
-                }
-            }
-        }
-
-        for event in self.event_system.common.drain(..) {
-            match event {
-                CommonEvent::SentPacket { packet } => {
-                    debug!("Handling SentPacket for {:#?}", packet);
-
-                    match packet.kind {
-                        PacketKind::ConnectionRequest => {}
-                        PacketKind::ConnectionAccepted => {}
-                        PacketKind::ConnectionDenied => {}
-                        PacketKind::Ack(_) => {}
-                        PacketKind::DataTransfer => {
-                            let removed_payload = self.payload_queue.remove(&packet.id).unwrap();
-                            debug!("Removed {:#?} from queue.", removed_payload);
-                        }
-                        PacketKind::Heartbeat => {}
                     }
                 }
             }

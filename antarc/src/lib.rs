@@ -1,4 +1,4 @@
-#![allow(unused_variables, dead_code, unused_imports)]
+#![allow(unused_imports)]
 #![feature(const_panic)]
 #![feature(write_all_vectored)]
 #![feature(bool_to_option)]
@@ -46,6 +46,7 @@ pub type AntarcResult<T> = Result<T, String>;
 /// significance on the most recent data points.
 ///
 /// The weighting for each **older** datum **decreases** exponentially, never reaching zero.
+#[allow(dead_code)]
 pub(crate) const fn exponential_moving_average(
     new_value: Duration,
     old_value: Duration,
@@ -69,21 +70,11 @@ pub(crate) const fn exponential_moving_average(
 /// insert the `ProtocolId`, calculate the packet CRC32 and check against what they received.
 pub(crate) type ProtocolId = NonZeroU32;
 
-pub(crate) type PacketMarker = NonZeroU16;
-
 pub(crate) const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
 pub(crate) const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
-pub(crate) const BUFFER_CAP: usize = Header::ENCODED_SIZE + 128;
-pub(crate) const PADDING: NonZeroU8 = unsafe { NonZeroU8::new_unchecked(0xe0) };
-/// Marks the end of useful data, anything past this can be skipped.
-pub(crate) const END_OF_PACKET: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(0x31f6) };
-pub(crate) const END_OF_PACKET_BYTES: [u8; size_of::<PacketMarker>()] =
-    END_OF_PACKET.get().to_be_bytes();
-// pub const END_OF_PACKET: PacketMarker = 0xa43a;
-// pub const END_OF_PACKET_BYTES: [u8; size_of::<PacketMarker>()] =
-// END_OF_PACKET.to_be_bytes();
+pub(crate) const BUFFER_CAP: usize = Header::ENCODED_SIZE + 512;
+
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
-pub(crate) const PACKED_LEN: usize = BUFFER_CAP + size_of::<PacketMarker>();
 pub(crate) const MTU_LENGTH: usize = 1500;
 
 // TODO(alex) 2021-01-24: How does send / receive works?

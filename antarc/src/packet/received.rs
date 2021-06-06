@@ -1,54 +1,136 @@
-use std::time::Duration;
+use std::{
+    convert::TryInto,
+    mem::size_of,
+    net::SocketAddr,
+    num::NonZeroU32,
+    time::{Duration, Instant},
+};
 
-use super::{header::Header, Footer, Internal, Packet, Payload, Retrieved};
-use crate::AntarcResult;
+use crc32fast::Hasher;
 
-/// TODO(alex) 2021-03-07: Add `num_recvd` to know the number of bytes that were received.
-/// This will be quite common among all packets, so maybe having a `num_bytes` is more appropriate?
-#[derive(Debug)]
+use super::{header::Header, payload::Payload, ConnectionId, Footer, Packet, Sent};
+use crate::{
+    events::AntarcError,
+    packet::{sequence::Sequence, Ack, PacketKind, StatusCode, CONNECTION_REQUEST},
+    read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
+};
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Received {
-    pub(crate) time_received: Duration,
+    pub(crate) header: Header,
+    pub(crate) footer: Footer,
+    pub(crate) time: Duration,
+    pub(crate) source: SocketAddr,
 }
 
 impl Packet<Received> {
-    pub(crate) fn new(
-        header: Header,
-        payload: Payload,
-        footer: Option<Footer>,
-        time_received: Duration,
-    ) -> Self {
-        let state = Received { time_received };
-        let packet = Packet {
-            header,
-            payload,
-            state,
-            footer,
-        };
+    // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
+    // I don't remember if this encode was in a proper working state when the `restart` branch was
+    // created.
+    pub(crate) fn decode(
+        id: u64,
+        buffer: &[u8],
+        address: SocketAddr,
+        timer: &Instant,
+    ) -> Result<(Packet<Received>, Payload), AntarcError> {
+        let mut hasher = Hasher::new();
 
-        packet
-    }
+        let buffer_length = buffer.len();
 
-    pub(crate) fn retrieved(self, time_retrieved: Duration) -> Packet<Retrieved> {
-        let state = Retrieved {
-            time_received: self.state.time_received,
-            time_retrieved,
-        };
-        let packet = self.into_new_state(state);
-        packet
-    }
+        let crc32_position = buffer_length - size_of::<NonZeroU32>();
 
-    pub(crate) fn internald(self, time_internal: Duration) -> Packet<Internal> {
-        let state = Internal {
-            time_received: self.state.time_received,
-            time_internal,
-        };
-        let packet = self.into_new_state(state);
-        packet
-    }
+        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] = buffer[crc32_position..]
+            .try_into()
+            .map_err(|fail| AntarcError::ArrayConversion(fail))?;
+        let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
-    /// TODO(alex) 2021-02-05: Decoding only makes sense in a `Packet<Received>` context, why would
-    /// I want to decode any other state of a packet?
-    pub fn decode(buffer: &[u8], time_received: Duration) -> AntarcResult<Packet<Received>> {
-        todo!()
+        // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
+        // the crc32 is calculated after encoding.
+        let buffer_without_crc32 = &buffer[..crc32_position];
+
+        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, buffer_without_crc32].concat();
+
+        hasher.update(&packet_with_protocol_id);
+        let crc32 = hasher.finalize();
+
+        if crc32 == crc32_received {
+            let buffer = packet_with_protocol_id;
+            let mut buffer_position = 0;
+            // TODO(alex) 2021-04-01: Find out a way to `from_be_bytes::<NonZeroU32>` to work.
+
+            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
+            if PROTOCOL_ID.get() != read_protocol_id {
+                return Err(AntarcError::InvalidProtocolId {
+                    got: read_protocol_id,
+                    expected: PROTOCOL_ID,
+                });
+            }
+
+            let read_sequence = read_buffer_inc!({buffer, buffer_position } : u32);
+            debug_assert_ne!(read_sequence, 0);
+
+            let read_ack = read_buffer_inc!({buffer, buffer_position } : Ack);
+            let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
+            let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
+            let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
+            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
+
+            let sequence = Sequence(read_sequence.try_into().unwrap());
+            let header = Header {
+                sequence,
+                ack: read_ack,
+                past_acks: read_past_acks,
+                status_code: read_status_code,
+                payload_length: read_payload_length,
+            };
+
+            let payload_length = read_payload_length as usize;
+            let read_payload = buffer[buffer_position..buffer_position + payload_length].to_vec();
+            buffer_position += payload_length;
+            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
+            let payload = Payload(read_payload);
+
+            // TODO(alex) 2021-04-29: Change this naked number into something meaningful before it
+            // bites me in the debug assertion again.
+            let connection_id = if read_status_code > CONNECTION_REQUEST {
+                let read_connection_id = read_buffer_inc!({buffer, buffer_position} : u16);
+                debug_assert_ne!(read_connection_id, 0);
+                debug_assert_eq!(
+                    buffer_position,
+                    Header::ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
+                );
+                Some(
+                    read_connection_id
+                        .try_into()
+                        .map_err(|fail| AntarcError::IntConversion(fail))?,
+                )
+            } else {
+                None
+            };
+            let footer = Footer {
+                connection_id,
+                crc32: crc32
+                    .try_into()
+                    .map_err(|fail| AntarcError::IntConversion(fail))?,
+            };
+
+            let kind = PacketKind::from_header(&header);
+
+            let state = Received {
+                header,
+                footer,
+                time: timer.elapsed(),
+                source: address,
+            };
+
+            let packet = Packet { id, state, kind };
+
+            Ok((packet, payload))
+        } else {
+            Err(AntarcError::InvalidCrc32 {
+                got: crc32_received,
+                expected: unsafe { NonZeroU32::new_unchecked(crc32) },
+            })
+        }
     }
 }

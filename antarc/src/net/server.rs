@@ -9,13 +9,18 @@ use log::{debug, error, warn};
 
 use super::SendTo;
 use crate::{
-    events::{CommonEvent, FailureEvent, ReceiverEvent, SenderEvent},
+    events::{FailureEvent, ReceiverEvent, SenderEvent},
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header, ConnectionId, Encoded, Footer, Packet, PacketKind, Payload, Queued,
-        Received, Sent, Sequence, CONNECTION_ACCEPTED, CONNECTION_DENIED, CONNECTION_REQUEST,
-        DATA_TRANSFER, HEARTBEAT,
+        header::Header,
+        kind::PacketKind,
+        payload::{self, Payload},
+        queued::Queued,
+        received::Received,
+        sequence::Sequence,
+        ConnectionId, Encoded, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
 };
 
@@ -209,7 +214,8 @@ impl NetManager<Server> {
                             status_code: DATA_TRANSFER,
                             payload_length,
                         };
-                        let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
+                        let (bytes, footer) =
+                            Packet::encode(&payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -228,7 +234,6 @@ impl NetManager<Server> {
                                 };
                                 debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
 
-                                let sent_event = CommonEvent::SentPacket { packet };
                                 connected.sequence_tracker =
                                     Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
                             }
@@ -237,7 +242,10 @@ impl NetManager<Server> {
 
                                 self.network.writable = false;
 
-                                let failed = FailureEvent::SendPacket { packet };
+                                // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
+                                // it could end up being a duplicated packet, sequence and ack are
+                                // only incremented when send is successful.
+                                let failed = FailureEvent::SendDataTransfer { packet, payload };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -248,7 +256,8 @@ impl NetManager<Server> {
                                     fail, destination
                                 );
 
-                                let failed = FailureEvent::SendPacket { packet };
+                                let payload = Payload::default();
+                                let failed = FailureEvent::SendDataTransfer { packet, payload };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -283,7 +292,8 @@ impl NetManager<Server> {
                         // NOTE(alex) 2021-05-30: These cannot be cached, as they may become invalid
                         // when the time to re-send comes (id, sequence may have increased, causing
                         // possible packet duplication).
-                        let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
+                        let (bytes, footer) =
+                            Packet::encode(&payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -301,7 +311,6 @@ impl NetManager<Server> {
                                     kind: packet.kind,
                                 };
                                 debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
-                                let sent_event = CommonEvent::SentPacket { packet };
 
                                 let sequence_tracker = Sequence::new(sequence.get() + 1).unwrap();
                                 let state = AwaitingConnectionAck {
@@ -329,7 +338,7 @@ impl NetManager<Server> {
                                 self.network.writable = false;
                                 self.kind.requesting_connection.push(requesting_connection);
 
-                                let failed = FailureEvent::SendPacket { packet };
+                                let failed = FailureEvent::SendConnectionAccepted { packet };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -341,7 +350,7 @@ impl NetManager<Server> {
                                 );
                                 self.kind.requesting_connection.push(requesting_connection);
 
-                                let failed = FailureEvent::SendPacket { packet };
+                                let failed = FailureEvent::SendConnectionAccepted { packet };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -376,7 +385,8 @@ impl NetManager<Server> {
                             status_code: HEARTBEAT,
                             payload_length,
                         };
-                        let (bytes, footer) = Packet::encode(payload, &header, Some(connection_id));
+                        let (bytes, footer) =
+                            Packet::encode(&payload, &header, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -415,7 +425,7 @@ impl NetManager<Server> {
                                     kind: PacketKind::Heartbeat,
                                 };
 
-                                let failed = FailureEvent::SendPacket { packet };
+                                let failed = FailureEvent::SendHeartbeat { address };
                                 self.event_system.failures.push(failed);
                                 self.kind.id_tracker += 1;
 
@@ -437,54 +447,13 @@ impl NetManager<Server> {
                                     kind: PacketKind::Heartbeat,
                                 };
 
-                                let failed = FailureEvent::SendPacket { packet };
+                                let failed = FailureEvent::SendHeartbeat { address };
                                 self.event_system.failures.push(failed);
                                 self.kind.id_tracker += 1;
 
                                 break;
                             }
                         }
-                    }
-                }
-            }
-        }
-
-        // TODO(alex) [mid] 2021-05-26: This whole common event thing could go away, we know the
-        // kind of packet we're sending at send time, so no need to match, whatever needs to happen
-        // after send could be done inline (this will generate duplicated code, and I'll probably
-        // end up coming back to this "post-effect" event handler anyway, but let's get a clearer
-        // view of the design first).
-        for event in self.event_system.common.drain(..) {
-            match event {
-                CommonEvent::SentPacket { packet: sent } => {
-                    debug!("Handling SentPacket for {:#?}", sent);
-
-                    match sent.kind {
-                        PacketKind::ConnectionRequest => {
-                            error!("Server cannot have sent a connection request {:#?}.", sent);
-                            unreachable!();
-                        }
-                        PacketKind::ConnectionAccepted => {
-                            debug!("Server sent ConnectionAccepted, no payload to remove.");
-                        }
-                        PacketKind::ConnectionDenied => {
-                            debug!("Server sent ConnectionDenied.");
-                        }
-                        PacketKind::Ack(_) => {}
-                        PacketKind::DataTransfer => {
-                            debug!("Server sent DataTransfer.");
-
-                            if self
-                                .kind
-                                .connected
-                                .iter()
-                                .all(|host| host.state.last_sent >= sent.id)
-                            {
-                                let removed_payload = self.payload_queue.remove(&sent.id);
-                                debug!("Removed {:#?} from queue.", removed_payload);
-                            }
-                        }
-                        PacketKind::Heartbeat => {}
                     }
                 }
             }
@@ -636,7 +605,7 @@ impl NetManager<Server> {
                         .any(|h| h.address == packet.state.source)
                     {
                         error!(
-                            "Host is requesting connection , invalid for heartbeat {:#?}!",
+                            "Host is requesting connection, invalid for heartbeat {:#?}!",
                             packet
                         );
                         unreachable!();
@@ -706,15 +675,16 @@ impl NetManager<Server> {
 
         for error in self.event_system.failures.drain(..) {
             match error {
-                FailureEvent::SendPacket { packet } => {
-                    error!("Failed sending packet for {:#?}.", packet);
-                }
                 FailureEvent::AntarcError(fail) => {
                     error!("Failed internally with {:#?}.", fail);
                 }
                 FailureEvent::IO(fail) => {
                     error!("Failed with IO error {:#?}.", fail);
                 }
+                FailureEvent::SendDataTransfer { .. } => todo!(),
+                FailureEvent::SendConnectionAccepted { .. } => todo!(),
+                FailureEvent::SendConnectionRequest => unreachable!(),
+                FailureEvent::SendHeartbeat { .. } => todo!(),
             }
         }
 

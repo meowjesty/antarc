@@ -20,7 +20,7 @@ fn client_main() {
     // TODO(alex) 2021-05-18: Possible API if `connect` is async-like.
     // let connection_id = client.connect(&server_addr).unwrap();
     // debug!("Connected {:#?}.", connection_id);
-    client.connect(&server_addr);
+    client.connect(&server_addr).unwrap();
 
     let mut d_counter: i32 = 0;
     loop {

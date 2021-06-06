@@ -72,6 +72,7 @@ struct Connected;
 #[derive(Debug, PartialEq, Clone)]
 struct Disconnected;
 
+#[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone)]
 enum ConnectionState {
     RequestingConnection,
@@ -119,10 +120,10 @@ impl Event {
         match self {
             Event::ReadyToReceive => EventKind::ReadyToReceive,
             Event::ReadyToSend => EventKind::ReadyToSend,
-            Event::QueuedPacket { packet } => EventKind::QueuedPacket,
-            Event::FailedSendingPacket { packet } => EventKind::FailedSendingPacket,
-            Event::SentPacket { packet } => EventKind::SentPacket,
-            Event::ReceivedPacket { packet } => EventKind::ReceivedPacket,
+            Event::QueuedPacket { .. } => EventKind::QueuedPacket,
+            Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
+            Event::SentPacket { .. } => EventKind::SentPacket,
+            Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,
         }
     }
 }
