@@ -10,6 +10,7 @@ edition = "2018"
 crc32fast = { version = "*", features = ["std", "nightly"] }
 mio = { version = "*", features = ["os-poll", "net"] }
 log = { version = "*" }
+thiserror = "*"
 
 [dev-dependencies]
 criterion = "*"

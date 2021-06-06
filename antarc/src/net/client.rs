@@ -69,11 +69,11 @@ impl NetManager<Client> {
     /// `ConnectionId` + the packet payload (which will be done anyway).
     ///
     /// ADD(alex) 2021-05-23: Do the whole connection inside this function, it'll simplify the
+    /// `tick` function immensely.
     ///
     /// ADD(alex) [mid] 2021-05-28: Either return the events here for the user to treat, or have
     /// a separate function in the API, that passes the errors to the user, I don't like this
     /// approach very much.
-    /// `tick` function immensely.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> Result<ConnectionId, String> {
         debug!("Connecting to {:#?}.", server_addr);
         let server = Host::new_generic(server_addr.clone());
@@ -262,6 +262,9 @@ impl NetManager<Client> {
     /// ADD(alex) [mid] 2021-05-28: Either return the events here for the user to treat, or have
     /// a separate function in the API, that passes the errors to the user, I don't like this
     /// approach very much.
+    ///
+    /// ADD(alex) [mid] 2021-06-06: Use `thiserror` + `?` operator. Requires having a proper
+    /// `AntarcError` enum.
     pub fn tick(&mut self) -> Result<usize, String> {
         self.network
             .poll
@@ -326,7 +329,13 @@ impl NetManager<Client> {
                         PacketKind::ConnectionDenied => {}
                         PacketKind::Ack(_) => {}
                         PacketKind::DataTransfer => {
-                            // TODO(alex) [mid] 2021-05-26: Insert payload into list of retrievable.
+                            // TODO(alex) [high] 2021-05-26: Insert payload into list of
+                            // retrievable.
+                            //
+                            // ADD(alex) [high] 2021-06-06: Handle these kinds of events!
+                            self.event_system
+                                .receiver
+                                .push(ReceiverEvent::DataTransfer { packet, payload });
                         }
                         PacketKind::Heartbeat => {}
                     }
