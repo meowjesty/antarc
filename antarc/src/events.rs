@@ -55,10 +55,19 @@ pub(crate) enum FailureEvent {
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum SenderEvent {
-    QueuedDataTransfer { packet: Packet<Queued> },
-    QueuedConnectionAccepted { packet: Packet<Queued> },
-    QueuedConnectionRequest { packet: Packet<Queued> },
-    QueuedHeartbeat { address: SocketAddr },
+    QueuedDataTransfer {
+        packet: Packet<Queued>,
+        payload: Payload,
+    },
+    QueuedConnectionAccepted {
+        packet: Packet<Queued>,
+    },
+    QueuedConnectionRequest {
+        packet: Packet<Queued>,
+    },
+    QueuedHeartbeat {
+        address: SocketAddr,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -68,7 +77,6 @@ pub(crate) enum ReceiverEvent {
     },
     DataTransfer {
         packet: Packet<Received<DataTransfer>>,
-        payload: Payload,
     },
     Heartbeat {
         packet: Packet<Received<Heartbeat>>,

@@ -63,7 +63,6 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) kind: ClientOrServer,
     pub(crate) network: NetworkResource,
     pub(crate) user_queue: Vec<Packet<Queued>>,
-    pub(crate) payload_queue: HashMap<PacketId, Payload>,
     pub(crate) retrievable: HashMap<ConnectionId, Vec<Vec<u8>>>,
     pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) retrievable_count: usize,
@@ -146,7 +145,6 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
 
         let user_queue = Vec::with_capacity(128);
         let antarc_queue = Vec::with_capacity(128);
-        let payload_queue = HashMap::with_capacity(128);
         let retrievable = HashMap::with_capacity(128);
         let network = NetworkResource::new(address);
         let retrievable_count = 0;
@@ -158,7 +156,6 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             buffer,
             user_queue,
             antarc_queue,
-            payload_queue,
             kind,
             network,
             retrievable_count,
@@ -172,15 +169,13 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
             .event_system
             .sender
             .drain_filter(|event| match event {
-                SenderEvent::QueuedDataTransfer { packet } => packet.id == packet_id,
+                SenderEvent::QueuedDataTransfer { packet, .. } => packet.id == packet_id,
                 _ => false,
             })
             .next()
             .is_some();
 
-        let cancelled_payload = self.payload_queue.remove(&packet_id).is_some();
-
-        cancelled_packet && cancelled_payload
+        cancelled_packet
     }
 }
 

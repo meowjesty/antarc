@@ -20,14 +20,14 @@ impl Packet<Queued> {
     // created.
     pub(crate) fn encode(
         payload: &Payload,
-        header: &HeaderInfo,
+        header_info: &HeaderInfo,
         connection_id: Option<ConnectionId>,
     ) -> (Vec<u8>, Footer) {
-        let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
-        let ack_bytes = header.ack.to_be_bytes().to_vec();
-        let past_acks_bytes = header.past_acks.to_be_bytes().to_vec();
-        let status_code_bytes = header.status_code.to_be_bytes().to_vec();
-        let payload_length_bytes = header.payload_length.to_be_bytes().to_vec();
+        let sequence_bytes = header_info.sequence.get().to_be_bytes().to_vec();
+        let ack_bytes = header_info.ack.to_be_bytes().to_vec();
+        let past_acks_bytes = header_info.past_acks.to_be_bytes().to_vec();
+        let status_code_bytes = header_info.status_code.to_be_bytes().to_vec();
+        let payload_length_bytes = header_info.payload_length.to_be_bytes().to_vec();
 
         let mut hasher = Hasher::new();
         let mut bytes = vec![

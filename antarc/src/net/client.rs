@@ -84,7 +84,6 @@ impl NetManager<Client> {
 
         let mut time_sent = self.timer.elapsed();
 
-        let id = self.kind.id_tracker;
         let payload = Payload::default();
         let destination = server_addr.clone();
         let header = Header::connection_request();
@@ -115,7 +114,7 @@ impl NetManager<Client> {
                     Ok((num_received, source)) => {
                         debug_assert!(num_received > 0);
 
-                        let (packet, payload) = Packet::decode(
+                        let (packet, _) = Packet::decode(
                             self.kind.id_tracker,
                             &self.buffer[..num_received],
                             source,
@@ -222,19 +221,13 @@ impl NetManager<Client> {
 
         self.event_system
             .sender
-            .push(SenderEvent::QueuedDataTransfer { packet });
-        self.payload_queue.insert(id, Payload(message));
+            .push(SenderEvent::QueuedDataTransfer {
+                packet,
+                payload: Payload(message),
+            });
         self.kind.id_tracker += 1;
 
         id
-    }
-
-    fn heartbeat(&mut self) {}
-
-    pub fn connected(&mut self) {}
-
-    pub fn denied(&mut self) {
-        todo!()
     }
 
     /// TODO(alex) 2021-02-23: Return some indication that the manager received new packets and the
@@ -318,7 +311,7 @@ impl NetManager<Client> {
                             // ADD(alex) [high] 2021-06-06: Handle these kinds of events!
                             let header = Header {
                                 info: packet.state.header.info,
-                                kind: DataTransfer,
+                                kind: DataTransfer { payload },
                             };
                             let state = Received {
                                 header,
@@ -332,7 +325,7 @@ impl NetManager<Client> {
                             };
                             self.event_system
                                 .receiver
-                                .push(ReceiverEvent::DataTransfer { packet, payload });
+                                .push(ReceiverEvent::DataTransfer { packet });
                         }
                         invalid => {
                             panic!("Status code is {:#?}.", invalid);
@@ -353,14 +346,15 @@ impl NetManager<Client> {
                 }
             }
         }
-        let threshold = self.kind.last_sent_time + Duration::from_millis(1500);
-        let time_expired = threshold < self.timer.elapsed();
 
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
+        //
+        // ADD(alex) [high] 2021-06-07: There are new helper functions in `Host` to create the
+        // header and encode, but they're not implemented for the `Generic` host type yet.
         while self.network.writable && self.event_system.sender.len() > 0 {
             for event in self.event_system.sender.drain(..1) {
                 match event {
-                    SenderEvent::QueuedDataTransfer { packet } => {
+                    SenderEvent::QueuedDataTransfer { packet, payload } => {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
                         match &self.kind.server.state.state {
@@ -368,6 +362,7 @@ impl NetManager<Client> {
                             invalid => {
                                 warn!("Client has server in state other than connected!");
                                 warn!("Skipping this data transfer!");
+                                warn!("{:#?}", invalid);
                                 continue;
                             }
                         }
@@ -376,12 +371,10 @@ impl NetManager<Client> {
                         let ack = self.kind.server.remote_ack_tracker;
                         let connection_id = self.kind.server.state.state.connection_id();
                         let destination = packet.state.destination;
+                        let header = Header::data_transfer(sequence, ack, payload);
 
-                        let payload = self.payload_queue.remove(&packet.id).unwrap();
-                        let payload_length = payload.len();
-                        let header = Header::data_transfer(sequence, ack, payload_length);
-
-                        let (bytes, footer) = Packet::encode(&payload, &header.info, connection_id);
+                        let (bytes, footer) =
+                            Packet::encode(&header.kind.payload, &header.info, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {

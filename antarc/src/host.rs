@@ -9,7 +9,11 @@ use log::error;
 use crate::{
     net::server::PacketId,
     packet::{
-        header::DataTransfer, received::Received, sequence::Sequence, Ack, ConnectionId, Packet,
+        header::{ConnectionAccepted, DataTransfer, Header, Heartbeat},
+        payload::{self, Payload},
+        received::Received,
+        sequence::Sequence,
+        Ack, ConnectionId, Footer, Packet,
     },
 };
 
@@ -124,6 +128,51 @@ impl Host<Generic> {
             HostState::Disconnected => true,
             _ => false,
         }
+    }
+}
+
+impl Host<Connected> {
+    pub(crate) fn prepare_data_transfer(
+        &self,
+        payload: Payload,
+    ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
+        let sequence = self.sequence_tracker;
+        let ack = self.remote_ack_tracker;
+        let connection_id = self.state.connection_id;
+        let header = Header::data_transfer(sequence, ack, payload);
+        let (bytes, footer) =
+            Packet::encode(&header.kind.payload, &header.info, Some(connection_id));
+
+        (header, bytes, footer)
+    }
+
+    pub(crate) fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
+        let sequence = self.sequence_tracker;
+        let ack = self.remote_ack_tracker;
+        let connection_id = self.state.connection_id;
+        let header = Header::heartbeat(sequence, ack);
+        let payload = Payload::default();
+        let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
+
+        (header, bytes, footer)
+    }
+}
+
+impl Host<RequestingConnection> {
+    pub(crate) fn prepare_connection_accepted(
+        &self,
+        connection_id: ConnectionId,
+    ) -> (Header<ConnectionAccepted>, Vec<u8>, Footer) {
+        let ack = 1;
+        let connection_id = connection_id;
+        let header = Header::connection_accepted(ack);
+        let payload = Payload::default();
+
+        // NOTE(alex) 2021-05-30: These cannot be cached, as they may become invalid
+        // when the time to re-send comes (id, sequence may have increased, causing
+        // possible packet duplication).
+        let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
+        (header, bytes, footer)
     }
 }
 

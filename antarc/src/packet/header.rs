@@ -1,7 +1,10 @@
 use core::mem;
 use std::{convert::TryInto, io::Cursor};
 
-use super::{Ack, Sequence, StatusCode, CONNECTION_ACCEPTED, CONNECTION_REQUEST, DATA_TRANSFER};
+use super::{
+    payload::Payload, Ack, Sequence, StatusCode, CONNECTION_ACCEPTED, CONNECTION_REQUEST,
+    DATA_TRANSFER,
+};
 use crate::{AntarcResult, ProtocolId};
 
 /// ### Network Component
@@ -51,8 +54,10 @@ pub(crate) struct ConnectionRequest;
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct ConnectionAccepted;
 
-#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct DataTransfer;
+#[derive(Debug, PartialEq, Clone, PartialOrd)]
+pub(crate) struct DataTransfer {
+    pub(crate) payload: Payload,
+}
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct Heartbeat;
@@ -108,8 +113,9 @@ impl Header<DataTransfer> {
     pub(crate) fn data_transfer(
         sequence: Sequence,
         ack: u32,
-        payload_length: usize,
+        payload: Payload,
     ) -> Header<DataTransfer> {
+        let payload_length = payload.len();
         let info = HeaderInfo {
             sequence,
             ack,
@@ -117,7 +123,7 @@ impl Header<DataTransfer> {
             status_code: DATA_TRANSFER,
             payload_length: payload_length.try_into().unwrap(),
         };
-        let kind = DataTransfer;
+        let kind = DataTransfer { payload };
 
         Self { info, kind }
     }
