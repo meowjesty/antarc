@@ -1,7 +1,7 @@
 use core::mem;
-use std::io::Cursor;
+use std::{convert::TryInto, io::Cursor};
 
-use super::{Ack, Sequence, StatusCode, CONNECTION_ACCEPTED};
+use super::{Ack, Sequence, StatusCode, CONNECTION_ACCEPTED, CONNECTION_REQUEST, DATA_TRANSFER};
 use crate::{AntarcResult, ProtocolId};
 
 /// ### Network Component
@@ -37,30 +37,33 @@ use crate::{AntarcResult, ProtocolId};
 /// `CONNECTION_DENIED`, it should represent `Success`, `Failed`, `Refused`, ...
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct Header {
-    /// TODO(alex) 2021-02-05: The `kind` defines the packet as a connection request, or a
-    /// response, maybe a data transfer, and each is handled differently, for example, the protocol
-    /// will read the `body` of a connection request, and of a fragment, but it just passes it in
-    /// the case of a data transfer.
-    /// ADD(alex) 2021-02-28: Borrow this from http's status code, so `100 to 199` indicates a
-    /// connection request of some sort (fragment, not-fragmented, first attempt, not first
-    /// attempt, this is a reconnection, ...), same for other codes.
+pub(crate) struct HeaderInfo {
     pub(crate) sequence: Sequence,
-
-    /// Acks the `Packet` sent from a remote `Host` by taking its `sequence` value.
     pub(crate) ack: Ack,
-    /// Represents the ack bitfields to send previous acked state in a compact manner.
     pub(crate) past_acks: u16,
-    /// TODO(alex) 2021-04-02: This is a bit redundant, whatever is using `Header` should always
-    /// know which kind it is, but the value itself still needs to be sent over the network, so
-    /// I'm keeping this in here (for now), if it's ever taken out, remember to update
-    /// the `Header::ENCODED_SIZE` to account for the change.
-    ///
-    /// ADD(alex) 2021-04-02: The way it's working right now is:
-    /// - `0b0001` : rightmost bit indicates presence of connection id (`0` is ausence);
-    /// - `0b0010` : right bit indicates packet origin (`1` for server, `0` for client);
     pub(crate) status_code: StatusCode,
     pub(crate) payload_length: u16,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
+pub(crate) struct ConnectionRequest;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
+pub(crate) struct ConnectionAccepted;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
+pub(crate) struct DataTransfer;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
+pub(crate) struct Heartbeat;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
+pub(crate) struct Generic;
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
+pub(crate) struct Header<Kind> {
+    pub(crate) info: HeaderInfo,
+    pub(crate) kind: Kind,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -71,7 +74,78 @@ pub(crate) struct Header {
 /// ADD(alex): 2021-02-03: Code duplication will be a minor issue with the state approach I'm using,
 /// just have an `impl` block for the relevant meta-state part of each struct that feeds the
 /// `Header.kind` field during encoding / decoding.
-impl Header {
+impl Header<ConnectionRequest> {
+    pub(crate) fn connection_request() -> Header<ConnectionRequest> {
+        let info = HeaderInfo {
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            ack: 0,
+            past_acks: 0,
+            status_code: CONNECTION_REQUEST,
+            payload_length: 0,
+        };
+        let kind = ConnectionRequest;
+
+        Self { info, kind }
+    }
+}
+
+impl Header<ConnectionAccepted> {
+    pub(crate) fn connection_accepted(ack: u32) -> Header<ConnectionAccepted> {
+        let info = HeaderInfo {
+            sequence: unsafe { Sequence::new_unchecked(1) },
+            ack,
+            past_acks: 0,
+            status_code: CONNECTION_ACCEPTED,
+            payload_length: 0,
+        };
+        let kind = ConnectionAccepted;
+
+        Self { info, kind }
+    }
+}
+
+impl Header<DataTransfer> {
+    pub(crate) fn data_transfer(
+        sequence: Sequence,
+        ack: u32,
+        payload_length: usize,
+    ) -> Header<DataTransfer> {
+        let info = HeaderInfo {
+            sequence,
+            ack,
+            past_acks: 0,
+            status_code: DATA_TRANSFER,
+            payload_length: payload_length.try_into().unwrap(),
+        };
+        let kind = DataTransfer;
+
+        Self { info, kind }
+    }
+}
+
+impl Header<Heartbeat> {
+    pub(crate) fn heartbeat(sequence: Sequence, ack: u32) -> Header<Heartbeat> {
+        let info = HeaderInfo {
+            sequence,
+            ack,
+            past_acks: 0,
+            status_code: DATA_TRANSFER,
+            payload_length: 0,
+        };
+        let kind = Heartbeat;
+
+        Self { info, kind }
+    }
+}
+
+pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Sequence>()
+    + mem::size_of::<Ack>()
+    + mem::size_of::<u16>()
+    + mem::size_of::<StatusCode>()
+    + mem::size_of::<u16>()
+    + mem::size_of::<ProtocolId>();
+
+impl<T> Header<T> {
     // pub(crate) const PROTOCOL_ID: ProtocolId = crate::PROTOCOL_ID;
 
     /// NOTE(alex): This is the size of the `Header` for the fields that are **encoded** and
@@ -80,12 +154,6 @@ impl Header {
     /// WARNING(alex): `size_of::<Self>` is a no-no, as it changes based on struct alignment, so
     /// these values must be calculated separately. Tuples also change alignment, so these must be
     /// added individually.
-    pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Sequence>()
-        + mem::size_of::<Ack>()
-        + mem::size_of::<u16>()
-        + mem::size_of::<StatusCode>()
-        + mem::size_of::<u16>()
-        + mem::size_of::<ProtocolId>();
 
     /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
@@ -98,27 +166,5 @@ impl Header {
     /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
     fn decode(cursor: &mut Cursor<&[u8]>) -> AntarcResult<Self> {
         todo!()
-    }
-
-    pub(crate) fn connection_accepted() -> Self {
-        Self {
-            sequence: unsafe { Sequence::new_unchecked(1) },
-            ack: 1,
-            past_acks: 0,
-            status_code: CONNECTION_ACCEPTED,
-            payload_length: 0,
-        }
-    }
-}
-
-impl Default for Header {
-    fn default() -> Self {
-        Self {
-            sequence: unsafe { Sequence::new_unchecked(1) },
-            ack: 0,
-            past_acks: 0b0,
-            status_code: 0x0,
-            payload_length: 0,
-        }
     }
 }

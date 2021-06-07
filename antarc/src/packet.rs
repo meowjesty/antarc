@@ -76,24 +76,16 @@ pub(crate) struct Footer {
 /// the packet 10, but missed some (9, 8, 7).
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Encoded {
-    pub(crate) header: Header,
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Sent {
-    pub(crate) header: Header,
+pub(crate) struct Sent<Kind> {
+    pub(crate) header: Header<Kind>,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
     pub(crate) destination: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Acked {
-    pub(crate) header: Header,
+pub(crate) struct Acked<Kind> {
+    pub(crate) header: Header<Kind>,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
 }
@@ -115,5 +107,4 @@ pub(crate) struct Acked {
 pub(crate) struct Packet<State> {
     pub(crate) id: PacketId,
     pub(crate) state: State,
-    pub(crate) kind: PacketKind,
 }

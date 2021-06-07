@@ -2,7 +2,11 @@ use std::{mem::size_of, net::SocketAddr, num::NonZeroU32, time::Duration};
 
 use crc32fast::Hasher;
 
-use super::{header::Header, payload::Payload, ConnectionId, Footer, Packet, Sent};
+use super::{
+    header::{Header, HeaderInfo},
+    payload::Payload,
+    ConnectionId, Footer, Packet, Sent,
+};
 use crate::{ProtocolId, PROTOCOL_ID_BYTES};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,7 +20,7 @@ impl Packet<Queued> {
     // created.
     pub(crate) fn encode(
         payload: &Payload,
-        header: &Header,
+        header: &HeaderInfo,
         connection_id: Option<ConnectionId>,
     ) -> (Vec<u8>, Footer) {
         let sequence_bytes = header.sequence.get().to_be_bytes().to_vec();
@@ -56,27 +60,5 @@ impl Packet<Queued> {
         let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
 
         (packet_bytes, footer)
-    }
-
-    pub(crate) fn sent(
-        &self,
-        header: Header,
-        footer: Footer,
-        destination: SocketAddr,
-        time: Duration,
-    ) -> Packet<Sent> {
-        let sent = Sent {
-            header,
-            footer,
-            destination,
-            time,
-        };
-        let packet = Packet {
-            id: self.id,
-            state: sent,
-            kind: self.kind,
-        };
-
-        packet
     }
 }

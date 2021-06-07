@@ -13,13 +13,13 @@ use crate::{
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header,
+        header::{ConnectionRequest, DataTransfer, Header, Heartbeat},
         kind::PacketKind,
         payload::{self, Payload},
         queued::Queued,
         received::Received,
         sequence::Sequence,
-        ConnectionId, Encoded, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
         CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
 };
@@ -64,11 +64,7 @@ impl NetManager<Server> {
                 time: self.timer.elapsed(),
                 destination: host.address,
             };
-            let packet = Packet {
-                id,
-                state,
-                kind: PacketKind::DataTransfer,
-            };
+            let packet = Packet { id, state };
 
             // self.user_queue.push(packet);
             self.event_system
@@ -123,22 +119,66 @@ impl NetManager<Server> {
                     debug!("Received new packet {:#?} {:#?}.", packet, source);
 
                     self.event_system.receiver.push(ReceiverEvent::AckRemote {
-                        header: packet.state.header.clone(),
+                        sequence: packet.state.header.info.sequence,
                     });
 
-                    match packet.kind {
-                        PacketKind::ConnectionRequest => {
+                    match packet.state.header.info.status_code {
+                        CONNECTION_REQUEST => {
+                            let header = Header {
+                                info: packet.state.header.info,
+                                kind: ConnectionRequest,
+                            };
+                            let state = Received {
+                                header,
+                                footer: packet.state.footer,
+                                time: packet.state.time,
+                                source: packet.state.source,
+                            };
+                            let packet = Packet {
+                                id: packet.id,
+                                state,
+                            };
+
                             self.event_system
                                 .receiver
                                 .push(ReceiverEvent::ConnectionRequest { packet });
                         }
-                        PacketKind::Ack(_) => {}
-                        PacketKind::DataTransfer => {
+                        DATA_TRANSFER => {
+                            let header = Header {
+                                info: packet.state.header.info,
+                                kind: DataTransfer,
+                            };
+                            let state = Received {
+                                header,
+                                footer: packet.state.footer,
+                                time: packet.state.time,
+                                source: packet.state.source,
+                            };
+                            let packet = Packet {
+                                id: packet.id,
+                                state,
+                            };
+
                             self.event_system
                                 .receiver
                                 .push(ReceiverEvent::DataTransfer { packet, payload });
                         }
-                        PacketKind::Heartbeat => {
+                        HEARTBEAT => {
+                            let header = Header {
+                                info: packet.state.header.info,
+                                kind: Heartbeat,
+                            };
+                            let state = Received {
+                                header,
+                                footer: packet.state.footer,
+                                time: packet.state.time,
+                                source: packet.state.source,
+                            };
+                            let packet = Packet {
+                                id: packet.id,
+                                state,
+                            };
+
                             self.event_system
                                 .receiver
                                 .push(ReceiverEvent::Heartbeat { packet });
@@ -185,6 +225,7 @@ impl NetManager<Server> {
             }
         }
 
+        // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         while self.network.writable && has_host && self.event_system.sender.len() > 0 {
             debug_assert!(self.event_system.sender.len() > 0);
 
@@ -194,7 +235,7 @@ impl NetManager<Server> {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
                         let payload = self.payload_queue.remove(&packet.id).unwrap();
-                        let payload_length = payload.len() as u16;
+                        let payload_length = payload.len();
 
                         let connected = self
                             .kind
@@ -207,15 +248,10 @@ impl NetManager<Server> {
                         let ack = connected.remote_ack_tracker;
                         let connection_id = connected.state.connection_id;
                         let destination = connected.address;
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code: DATA_TRANSFER,
-                            payload_length,
-                        };
+                        let header = Header::data_transfer(sequence, ack, payload_length);
+
                         let (bytes, footer) =
-                            Packet::encode(&payload, &header, Some(connection_id));
+                            Packet::encode(&payload, &header.info, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -230,7 +266,6 @@ impl NetManager<Server> {
                                 let packet = Packet {
                                     id: packet.id,
                                     state: sent,
-                                    kind: packet.kind,
                                 };
                                 debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
 
@@ -281,19 +316,13 @@ impl NetManager<Server> {
                         let ack = 1;
                         let connection_id = self.kind.connection_id_tracker;
                         let destination = requesting_connection.address;
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code: CONNECTION_ACCEPTED,
-                            payload_length,
-                        };
+                        let header = Header::connection_accepted(ack);
 
                         // NOTE(alex) 2021-05-30: These cannot be cached, as they may become invalid
                         // when the time to re-send comes (id, sequence may have increased, causing
                         // possible packet duplication).
                         let (bytes, footer) =
-                            Packet::encode(&payload, &header, Some(connection_id));
+                            Packet::encode(&payload, &header.info, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -308,7 +337,6 @@ impl NetManager<Server> {
                                 let packet = Packet {
                                     id: packet.id,
                                     state: sent,
-                                    kind: packet.kind,
                                 };
                                 debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
 
@@ -378,15 +406,10 @@ impl NetManager<Server> {
                         let ack = connected.remote_ack_tracker;
                         let connection_id = connected.state.connection_id;
                         let destination = connected.address;
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code: HEARTBEAT,
-                            payload_length,
-                        };
+                        let header = Header::heartbeat(sequence, ack);
+
                         let (bytes, footer) =
-                            Packet::encode(&payload, &header, Some(connection_id));
+                            Packet::encode(&payload, &header.info, Some(connection_id));
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -399,11 +422,7 @@ impl NetManager<Server> {
                                     time: self.timer.elapsed(),
                                 };
                                 let id = self.kind.id_tracker;
-                                let packet = Packet {
-                                    id,
-                                    state: sent,
-                                    kind: PacketKind::Heartbeat,
-                                };
+                                let packet = Packet { id, state: sent };
                                 debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
 
                                 connected.sequence_tracker =
@@ -422,7 +441,6 @@ impl NetManager<Server> {
                                 let packet = Packet {
                                     id: self.kind.id_tracker,
                                     state,
-                                    kind: PacketKind::Heartbeat,
                                 };
 
                                 let failed = FailureEvent::SendHeartbeat { address };
@@ -444,7 +462,6 @@ impl NetManager<Server> {
                                 let packet = Packet {
                                     id: self.kind.id_tracker,
                                     state,
-                                    kind: PacketKind::Heartbeat,
                                 };
 
                                 let failed = FailureEvent::SendHeartbeat { address };
@@ -480,20 +497,18 @@ impl NetManager<Server> {
                     }
 
                     debug!("Unknown address, creating new host.");
-                    let mut received_list = Vec::with_capacity(128);
 
                     // TODO(alex) [low] 2021-05-26: Always creating a new host here, as I've dropped
                     // the concept of a `Disconnected` host, this could be revisited later when the
                     // design is clearer.
-                    let ack_tracker = packet.state.header.sequence.get();
+                    let ack_tracker = packet.state.header.info.sequence.get();
                     let state = RequestingConnection { attempts: 0 };
-                    received_list.append(&mut vec![packet]);
                     let host = Host {
                         sequence_tracker: Sequence::default(),
                         remote_ack_tracker: ack_tracker,
                         local_ack_tracker: 0,
                         address: source,
-                        received: received_list,
+                        received: Vec::with_capacity(128),
                         state,
                     };
 
@@ -503,14 +518,14 @@ impl NetManager<Server> {
                         destination: host.address,
                     };
                     let kind = PacketKind::ConnectionAccepted;
-                    let packet = Packet { id, state, kind };
+                    let packet = Packet { id, state };
                     let connection_accepted = SenderEvent::QueuedConnectionAccepted { packet };
 
                     self.kind.requesting_connection.push(host);
                     self.event_system.sender.push(connection_accepted);
                     self.kind.id_tracker += 1;
                 }
-                ReceiverEvent::AckRemote { header } => {}
+                ReceiverEvent::AckRemote { sequence } => {}
                 ReceiverEvent::DataTransfer { packet, payload } => {
                     debug!("Handling received data transfer for {:#?}", packet);
                     if self
@@ -532,7 +547,7 @@ impl NetManager<Server> {
                         .drain_filter(|h| {
                             // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
                             // connection accepted sent sequence (1).
-                            h.address == packet.state.source && packet.state.header.ack == 1
+                            h.address == packet.state.source && packet.state.header.info.ack == 1
                         })
                         .next()
                     {
@@ -573,13 +588,14 @@ impl NetManager<Server> {
                         // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
                         // packets, right now we just don't update the ack trackers if they come
                         // from a lower value than what the host has.
-                        host.local_ack_tracker = (packet.state.header.ack > host.local_ack_tracker)
-                            .then(|| packet.state.header.ack)
+                        host.local_ack_tracker = (packet.state.header.info.ack
+                            > host.local_ack_tracker)
+                            .then(|| packet.state.header.info.ack)
                             .unwrap_or(host.local_ack_tracker);
 
-                        let remote_sequence = packet.state.header.sequence.get();
+                        let remote_sequence = packet.state.header.info.sequence.get();
                         host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
-                            .then(|| packet.state.header.sequence.get())
+                            .then(|| packet.state.header.info.sequence.get())
                             .unwrap_or(host.remote_ack_tracker);
 
                         host.received.push(packet);
@@ -617,7 +633,7 @@ impl NetManager<Server> {
                         .drain_filter(|h| {
                             // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
                             // connection accepted sent sequence (1).
-                            h.address == packet.state.source && packet.state.header.ack == 1
+                            h.address == packet.state.source && packet.state.header.info.ack == 1
                         })
                         .next()
                     {
@@ -658,16 +674,17 @@ impl NetManager<Server> {
                         // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
                         // packets, right now we just don't update the ack trackers if they come
                         // from a lower value than what the host has.
-                        host.local_ack_tracker = (packet.state.header.ack > host.local_ack_tracker)
-                            .then(|| packet.state.header.ack)
+                        host.local_ack_tracker = (packet.state.header.info.ack
+                            > host.local_ack_tracker)
+                            .then(|| packet.state.header.info.ack)
                             .unwrap_or(host.local_ack_tracker);
 
-                        let remote_sequence = packet.state.header.sequence.get();
+                        let remote_sequence = packet.state.header.info.sequence.get();
                         host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
-                            .then(|| packet.state.header.sequence.get())
+                            .then(|| packet.state.header.info.sequence.get())
                             .unwrap_or(host.remote_ack_tracker);
 
-                        host.received.push(packet);
+                        // host.received.push(packet);
                     }
                 }
             }
@@ -689,49 +706,6 @@ impl NetManager<Server> {
         }
 
         Ok(self.retrievable_count)
-    }
-
-    // TODO(alex) [low] 2021-05-26: Handling events like this won't work, as we get a double borrow
-    // from `DrainIter` in `tick`. This isn't possible because when we borrow `self` as mutable to
-    // drain the list of events, rust wouldn't be able to tell what changes we could do here. It
-    // works perfectly fine when the code is inlined (pasted) in the drain loop, as rust can tell
-    // we're not making changes to the very thing we're iterating over.
-    //
-    // Refactor this in the future, when we know what this function does exactly, then we can avoid
-    // passing a full reference to `self`.
-    fn _received_connection_request(&self, packet: Packet<Received>) {
-        debug!("Handling received connecion request for {:#?}", packet);
-
-        let source = packet.state.source;
-        let ack_tracker = packet.state.header.sequence.get();
-
-        // TODO(alex) [low] 2021-05-25: Is there a way to better handle this case?
-        if self
-            .kind
-            .requesting_connection
-            .iter()
-            .any(|h| h.address == source)
-            || self.kind.connected.iter().any(|h| h.address == source)
-        {
-            error!("Host is already in another state to receive this packet!");
-            unreachable!();
-        }
-
-        let info = RequestingConnection { attempts: 0 };
-        let state = HostState::RequestingConnection { info };
-
-        debug!("Unknown address, creating new host.");
-        let mut received_list = Vec::with_capacity(128);
-        received_list.append(&mut vec![packet]);
-
-        let host = Host {
-            sequence_tracker: Sequence::default(),
-            remote_ack_tracker: ack_tracker,
-            local_ack_tracker: 0,
-            address: source,
-            received: received_list,
-            state,
-        };
     }
 
     pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<Vec<u8>>)> {

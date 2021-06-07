@@ -8,22 +8,28 @@ use std::{
 
 use crc32fast::Hasher;
 
-use super::{header::Header, payload::Payload, ConnectionId, Footer, Packet, Sent};
+use super::{
+    header::{Generic, Header, HeaderInfo},
+    payload::Payload,
+    ConnectionId, Footer, Packet, Sent,
+};
 use crate::{
     events::AntarcError,
-    packet::{sequence::Sequence, Ack, PacketKind, StatusCode, CONNECTION_REQUEST},
+    packet::{
+        header::ENCODED_SIZE, sequence::Sequence, Ack, PacketKind, StatusCode, CONNECTION_REQUEST,
+    },
     read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Received {
-    pub(crate) header: Header,
+pub(crate) struct Received<Kind> {
+    pub(crate) header: Header<Kind>,
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
     pub(crate) source: SocketAddr,
 }
 
-impl Packet<Received> {
+impl Packet<Received<Generic>> {
     // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
@@ -32,16 +38,14 @@ impl Packet<Received> {
         buffer: &[u8],
         address: SocketAddr,
         timer: &Instant,
-    ) -> Result<(Packet<Received>, Payload), AntarcError> {
+    ) -> Result<(Packet<Received<Generic>>, Payload), AntarcError> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
 
         let crc32_position = buffer_length - size_of::<NonZeroU32>();
 
-        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] = buffer[crc32_position..]
-            .try_into()
-            .map_err(|fail| AntarcError::ArrayConversion(fail))?;
+        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] = buffer[crc32_position..].try_into()?;
         let crc32_received = u32::from_be_bytes(*crc32_bytes);
 
         // NOTE(alex): Cannot use the full buffer when recalculating the crc32 for comparison, as
@@ -73,10 +77,10 @@ impl Packet<Received> {
             let read_past_acks = read_buffer_inc!({buffer, buffer_position } : u16);
             let read_status_code = read_buffer_inc!({buffer, buffer_position } : StatusCode);
             let read_payload_length = read_buffer_inc!({buffer, buffer_position } : u16);
-            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE);
+            debug_assert_eq!(buffer_position, ENCODED_SIZE);
 
             let sequence = Sequence(read_sequence.try_into().unwrap());
-            let header = Header {
+            let header_info = HeaderInfo {
                 sequence,
                 ack: read_ack,
                 past_acks: read_past_acks,
@@ -87,7 +91,7 @@ impl Packet<Received> {
             let payload_length = read_payload_length as usize;
             let read_payload = buffer[buffer_position..buffer_position + payload_length].to_vec();
             buffer_position += payload_length;
-            debug_assert_eq!(buffer_position, Header::ENCODED_SIZE + payload_length);
+            debug_assert_eq!(buffer_position, ENCODED_SIZE + payload_length);
             let payload = Payload(read_payload);
 
             // TODO(alex) 2021-04-29: Change this naked number into something meaningful before it
@@ -97,25 +101,21 @@ impl Packet<Received> {
                 debug_assert_ne!(read_connection_id, 0);
                 debug_assert_eq!(
                     buffer_position,
-                    Header::ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
+                    ENCODED_SIZE + payload_length + size_of::<ConnectionId>()
                 );
-                Some(
-                    read_connection_id
-                        .try_into()
-                        .map_err(|fail| AntarcError::IntConversion(fail))?,
-                )
+                Some(read_connection_id.try_into()?)
             } else {
                 None
             };
             let footer = Footer {
                 connection_id,
-                crc32: crc32
-                    .try_into()
-                    .map_err(|fail| AntarcError::IntConversion(fail))?,
+                crc32: crc32.try_into()?,
             };
 
-            let kind = PacketKind::from_header(&header);
-
+            let header = Header {
+                info: header_info,
+                kind: Generic,
+            };
             let state = Received {
                 header,
                 footer,
@@ -123,7 +123,7 @@ impl Packet<Received> {
                 source: address,
             };
 
-            let packet = Packet { id, state, kind };
+            let packet = Packet { id, state };
 
             Ok((packet, payload))
         } else {

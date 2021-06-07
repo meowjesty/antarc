@@ -7,23 +7,33 @@ use std::{
     time::Duration,
 };
 
+use thiserror::Error;
+
 use crate::{
     host::Address,
     packet::{
-        header::Header,
+        header::{ConnectionRequest, DataTransfer, Header, Heartbeat},
         payload::{self, Payload},
         queued::Queued,
         received::Received,
-        ConnectionId, Encoded, Footer, Packet, Sent, StatusCode,
+        sequence::Sequence,
+        ConnectionId, Footer, Packet, Sent, StatusCode,
     },
     ProtocolId,
 };
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum AntarcError {
+    #[error("Protocol id got {:#?}, expected {:#?}", got, expected)]
     InvalidProtocolId { got: u32, expected: ProtocolId },
+
+    #[error("crc32 got {:#?}, expected {:#?}", got, expected)]
     InvalidCrc32 { got: u32, expected: NonZeroU32 },
-    ArrayConversion(TryFromSliceError),
-    IntConversion(TryFromIntError),
+
+    #[error("{0}")]
+    ArrayConversion(#[from] TryFromSliceError),
+
+    #[error("{0}")]
+    IntConversion(#[from] TryFromIntError),
 }
 
 #[derive(Debug)]
@@ -54,17 +64,17 @@ pub(crate) enum SenderEvent {
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum ReceiverEvent {
     ConnectionRequest {
-        packet: Packet<Received>,
+        packet: Packet<Received<ConnectionRequest>>,
     },
     DataTransfer {
-        packet: Packet<Received>,
+        packet: Packet<Received<DataTransfer>>,
         payload: Payload,
     },
     Heartbeat {
-        packet: Packet<Received>,
+        packet: Packet<Received<Heartbeat>>,
     },
     AckRemote {
-        header: Header,
+        sequence: Sequence,
     },
 }
 

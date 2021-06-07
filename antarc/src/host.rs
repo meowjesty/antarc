@@ -8,7 +8,9 @@ use log::error;
 
 use crate::{
     net::server::PacketId,
-    packet::{received::Received, sequence::Sequence, Ack, ConnectionId, Packet},
+    packet::{
+        header::DataTransfer, received::Received, sequence::Sequence, Ack, ConnectionId, Packet,
+    },
 };
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
@@ -79,7 +81,7 @@ pub(crate) struct Host<State> {
     // TODO(alex) [mid] 2021-05-26: `Received` should not contain the payload, let's put the
     // payload in a `HashMap<ConnectionId, Vec<Payload>>` in the server/client, to ease the
     // `retrieve` impl.
-    pub(crate) received: Vec<Packet<Received>>,
+    pub(crate) received: Vec<Packet<Received<DataTransfer>>>,
     pub(crate) state: State,
 }
 

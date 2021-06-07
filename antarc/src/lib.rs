@@ -13,11 +13,12 @@
 
 use core::mem::size_of;
 use std::{
+    any::Any,
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::Duration,
 };
 
-use packet::header::Header;
+use packet::header::{Header, ENCODED_SIZE};
 
 // pub mod client;
 pub(crate) mod events;
@@ -72,7 +73,7 @@ pub(crate) type ProtocolId = NonZeroU32;
 
 pub(crate) const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
 pub(crate) const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
-pub(crate) const BUFFER_CAP: usize = Header::ENCODED_SIZE + 512;
+pub(crate) const BUFFER_CAP: usize = ENCODED_SIZE + 512;
 
 /// The whole buffer + `MARKER` + `END_OF_PACKET` markers.
 pub(crate) const MTU_LENGTH: usize = 1500;

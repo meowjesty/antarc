@@ -14,13 +14,13 @@ use crate::{
     host::{Connected, Disconnected, Generic, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
-        header::Header,
+        header::{DataTransfer, Header},
         kind::PacketKind,
         payload::{self, Payload},
         queued::Queued,
         received::Received,
         sequence::Sequence,
-        ConnectionId, Encoded, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
+        ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
         CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
     MTU_LENGTH,
@@ -85,21 +85,11 @@ impl NetManager<Client> {
         let mut time_sent = self.timer.elapsed();
 
         let id = self.kind.id_tracker;
-        let sequence = Sequence::default();
-        let ack = 0;
         let payload = Payload::default();
-        let payload_length = payload.len() as u16;
         let destination = server_addr.clone();
+        let header = Header::connection_request();
 
-        let header = Header {
-            sequence,
-            ack,
-            past_acks: 0,
-            status_code: CONNECTION_REQUEST,
-            payload_length,
-        };
-
-        let (bytes, footer) = Packet::encode(&payload, &header, None);
+        let (bytes, footer) = Packet::encode(&payload, &header.info, None);
         let mut connection_request = Some(bytes.clone());
 
         loop {
@@ -134,7 +124,7 @@ impl NetManager<Client> {
                         .unwrap();
                         debug!("Received new packet {:#?} {:#?}.", packet, source);
 
-                        if packet.kind == PacketKind::ConnectionAccepted {
+                        if packet.state.header.info.status_code == CONNECTION_ACCEPTED {
                             debug!("Received ConnectionAccepted!");
                             let connection_id = packet.state.footer.connection_id.unwrap();
                             let info = Connected {
@@ -148,12 +138,12 @@ impl NetManager<Client> {
                             self.kind.server.state.state = HostState::Connected { info };
                             self.kind.id_tracker += 1;
                             self.kind.last_sent_time = time_sent;
-                            self.kind.server.local_ack_tracker = packet.state.header.ack;
+                            self.kind.server.local_ack_tracker = packet.state.header.info.ack;
                             self.kind.server.remote_ack_tracker =
-                                packet.state.header.sequence.get();
+                                packet.state.header.info.sequence.get();
 
                             return Ok(connection_id);
-                        } else if packet.kind == PacketKind::ConnectionDenied {
+                        } else if packet.state.header.info.status_code == CONNECTION_DENIED {
                             debug!("Received ConnectionDenied!");
                             todo!()
                         } else {
@@ -228,11 +218,7 @@ impl NetManager<Client> {
             time: self.timer.elapsed(),
             destination,
         };
-        let packet = Packet {
-            id,
-            state,
-            kind: PacketKind::DataTransfer,
-        };
+        let packet = Packet { id, state };
 
         self.event_system
             .sender
@@ -308,36 +294,49 @@ impl NetManager<Client> {
                     // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order packets,
                     // right now we just don't update the ack trackers if they come from a lower
                     // value than what the host has.
-                    self.kind.server.remote_ack_tracker = packet.state.header.sequence.get();
-                    self.kind.server.local_ack_tracker = packet.state.header.ack;
+                    self.kind.server.remote_ack_tracker = packet.state.header.info.sequence.get();
+                    self.kind.server.local_ack_tracker = packet.state.header.info.ack;
 
                     let local_ack_tracker = self.kind.server.local_ack_tracker;
-                    self.kind.server.local_ack_tracker = (packet.state.header.ack
+                    self.kind.server.local_ack_tracker = (packet.state.header.info.ack
                         > local_ack_tracker)
-                        .then(|| packet.state.header.ack)
+                        .then(|| packet.state.header.info.ack)
                         .unwrap_or(self.kind.server.local_ack_tracker);
 
                     let remote_ack_tracker = self.kind.server.remote_ack_tracker;
-                    let remote_sequence = packet.state.header.sequence.get();
+                    let remote_sequence = packet.state.header.info.sequence.get();
                     self.kind.server.remote_ack_tracker = (remote_sequence > remote_ack_tracker)
-                        .then(|| packet.state.header.sequence.get())
+                        .then(|| packet.state.header.info.sequence.get())
                         .unwrap_or(self.kind.server.remote_ack_tracker);
 
-                    match packet.kind {
-                        PacketKind::ConnectionRequest => {}
-                        PacketKind::ConnectionAccepted => {}
-                        PacketKind::ConnectionDenied => {}
-                        PacketKind::Ack(_) => {}
-                        PacketKind::DataTransfer => {
+                    match packet.state.header.info.status_code {
+                        CONNECTION_REQUEST => {}
+                        DATA_TRANSFER => {
                             // TODO(alex) [high] 2021-05-26: Insert payload into list of
                             // retrievable.
                             //
                             // ADD(alex) [high] 2021-06-06: Handle these kinds of events!
+                            let header = Header {
+                                info: packet.state.header.info,
+                                kind: DataTransfer,
+                            };
+                            let state = Received {
+                                header,
+                                footer: packet.state.footer,
+                                time: packet.state.time,
+                                source: packet.state.source,
+                            };
+                            let packet = Packet {
+                                id: packet.id,
+                                state,
+                            };
                             self.event_system
                                 .receiver
                                 .push(ReceiverEvent::DataTransfer { packet, payload });
                         }
-                        PacketKind::Heartbeat => {}
+                        invalid => {
+                            panic!("Status code is {:#?}.", invalid);
+                        }
                     }
 
                     self.kind.id_tracker += 1;
@@ -357,6 +356,7 @@ impl NetManager<Client> {
         let threshold = self.kind.last_sent_time + Duration::from_millis(1500);
         let time_expired = threshold < self.timer.elapsed();
 
+        // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         while self.network.writable && self.event_system.sender.len() > 0 {
             for event in self.event_system.sender.drain(..1) {
                 match event {
@@ -377,19 +377,11 @@ impl NetManager<Client> {
                         let connection_id = self.kind.server.state.state.connection_id();
                         let destination = packet.state.destination;
 
-                        let status_code = From::from(packet.kind);
                         let payload = self.payload_queue.remove(&packet.id).unwrap();
-                        let payload_length = payload.len() as u16;
+                        let payload_length = payload.len();
+                        let header = Header::data_transfer(sequence, ack, payload_length);
 
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code,
-                            payload_length,
-                        };
-
-                        let (bytes, footer) = Packet::encode(&payload, &header, connection_id);
+                        let (bytes, footer) = Packet::encode(&payload, &header.info, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -404,7 +396,6 @@ impl NetManager<Client> {
                                 let packet = Packet {
                                     id: packet.id,
                                     state: sent,
-                                    kind: packet.kind,
                                 };
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
@@ -415,12 +406,6 @@ impl NetManager<Client> {
                             Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                                 warn!("Would block on send_to {:?}", fail);
 
-                                // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
                                 self.network.writable = false;
 
                                 break;
@@ -435,24 +420,17 @@ impl NetManager<Client> {
                             }
                         }
                     }
-                    SenderEvent::QueuedConnectionAccepted { .. } => {}
+                    SenderEvent::QueuedConnectionAccepted { .. } => {
+                        unreachable!()
+                    }
                     SenderEvent::QueuedConnectionRequest { packet } => {
                         debug!("Handling QueuedConnectionRequest to {:#?}.", packet);
 
-                        let sequence = Sequence::default();
-                        let ack = 0;
                         let payload = Payload::default();
-                        let payload_length = payload.len() as u16;
                         let destination = packet.state.destination;
+                        let header = Header::connection_request();
 
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code: CONNECTION_REQUEST,
-                            payload_length,
-                        };
-                        let (bytes, footer) = Packet::encode(&payload, &header, None);
+                        let (bytes, footer) = Packet::encode(&payload, &header.info, None);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -467,7 +445,6 @@ impl NetManager<Client> {
                                 let packet = Packet {
                                     id: packet.id,
                                     state: sent,
-                                    kind: packet.kind,
                                 };
 
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
@@ -512,19 +489,10 @@ impl NetManager<Client> {
                         let connection_id = self.kind.server.state.state.connection_id();
                         let destination = address;
 
-                        let status_code = From::from(HEARTBEAT);
                         let payload = Payload::default();
-                        let payload_length = payload.len() as u16;
+                        let header = Header::heartbeat(sequence, ack);
 
-                        let header = Header {
-                            sequence,
-                            ack,
-                            past_acks: 0,
-                            status_code,
-                            payload_length,
-                        };
-
-                        let (bytes, footer) = Packet::encode(&payload, &header, connection_id);
+                        let (bytes, footer) = Packet::encode(&payload, &header.info, connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -537,11 +505,7 @@ impl NetManager<Client> {
                                     time: self.timer.elapsed(),
                                 };
                                 let id = self.kind.id_tracker;
-                                let packet = Packet {
-                                    id,
-                                    state: sent,
-                                    kind: PacketKind::Heartbeat,
-                                };
+                                let packet = Packet { id, state: sent };
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
 
                                 self.kind.last_sent_time = packet.state.time;
