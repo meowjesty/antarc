@@ -9,7 +9,7 @@ use log::{debug, error, warn};
 
 use super::SendTo;
 use crate::{
-    events::{FailureEvent, ReceiverEvent, SenderEvent},
+    events::{AntarcError, FailureEvent, ReceiverEvent, SenderEvent},
     host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
@@ -245,50 +245,22 @@ impl NetManager<Server> {
                             .find(|host| host.address == packet.state.destination)
                             .unwrap();
 
-                        let destination = connected.address;
                         let (header, bytes, footer) = connected.prepare_data_transfer(payload);
-
-                        match self.network.udp_socket.send_to(&bytes, destination) {
+                        match self.network.udp_socket.send_to(&bytes, connected.address) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
-
-                                let sent = Sent {
-                                    header,
-                                    footer,
-                                    destination,
-                                    time: self.timer.elapsed(),
-                                };
-                                let packet = Packet {
-                                    id: packet.id,
-                                    state: sent,
-                                };
-                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
-
                                 connected.sequence_tracker =
                                     Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
                             }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                self.network.writable = false;
+                            Err(fail) => {
+                                if fail.kind() == io::ErrorKind::WouldBlock {
+                                    warn!("Would block on send_to {:?}", fail);
+                                    self.network.writable = false;
+                                }
 
                                 // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
                                 // it could end up being a duplicated packet, sequence and ack are
                                 // only incremented when send is successful.
-                                let failed = FailureEvent::SendDataTransfer {
-                                    packet,
-                                    payload: header.kind.payload,
-                                };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
-                            Err(fail) => {
-                                error!(
-                                    "Server failed sending packet {:#?} to {:#?}.",
-                                    fail, destination
-                                );
-
                                 let failed = FailureEvent::SendDataTransfer {
                                     packet,
                                     payload: header.kind.payload,
@@ -311,24 +283,12 @@ impl NetManager<Server> {
 
                         let connection_id = self.kind.connection_id_tracker;
                         let destination = requesting_connection.address;
-                        let (header, bytes, footer) =
+                        let (_, bytes, _) =
                             requesting_connection.prepare_connection_accepted(connection_id);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
-
-                                let sent = Sent {
-                                    header,
-                                    footer,
-                                    destination,
-                                    time: self.timer.elapsed(),
-                                };
-                                let packet = Packet {
-                                    id: packet.id,
-                                    state: sent,
-                                };
-                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
 
                                 let state = AwaitingConnectionAck {
                                     attempts: 0,
@@ -353,22 +313,15 @@ impl NetManager<Server> {
                                     NonZeroU16::new(self.kind.connection_id_tracker.get() + 1)
                                         .unwrap();
                             }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                self.network.writable = false;
-                                self.kind.requesting_connection.push(requesting_connection);
-
-                                let failed = FailureEvent::SendConnectionAccepted { packet };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
                             Err(fail) => {
                                 error!(
                                     "Server failed sending packet {:#?} to {:#?}.",
                                     fail, destination
                                 );
+                                if fail.kind() == io::ErrorKind::WouldBlock {
+                                    warn!("Would block on send_to {:?}", fail);
+                                    self.network.writable = false;
+                                }
                                 self.kind.requesting_connection.push(requesting_connection);
 
                                 let failed = FailureEvent::SendConnectionAccepted { packet };
@@ -378,7 +331,7 @@ impl NetManager<Server> {
                             }
                         }
                     }
-                    SenderEvent::QueuedConnectionRequest { packet } => {
+                    SenderEvent::QueuedConnectionRequest { .. } => {
                         error!("Server cannot handle SendConnectionRequest!");
                         unreachable!();
                     }
@@ -393,41 +346,26 @@ impl NetManager<Server> {
                             .unwrap();
 
                         let destination = connected.address;
-                        let (header, bytes, footer) = connected.prepare_heartbeat();
+                        let (_, bytes, _) = connected.prepare_heartbeat();
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
 
-                                let sent = Sent {
-                                    header,
-                                    footer,
-                                    destination,
-                                    time: self.timer.elapsed(),
-                                };
-                                let id = self.kind.id_tracker;
-                                let packet = Packet { id, state: sent };
-                                debug!("Server sent packet {:#?} to {:#?}.", packet, destination);
-
                                 connected.sequence_tracker =
                                     Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
                                 self.kind.id_tracker += 1;
-                            }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                self.network.writable = false;
-
-                                let failed = FailureEvent::SendHeartbeat { address };
-                                self.event_system.failures.push(failed);
-
-                                break;
                             }
                             Err(fail) => {
                                 error!(
                                     "Server failed sending packet {:#?} to {:#?}.",
                                     fail, destination
                                 );
+
+                                if fail.kind() == io::ErrorKind::WouldBlock {
+                                    warn!("Would block on send_to {:?}", fail);
+                                    self.network.writable = false;
+                                }
 
                                 let failed = FailureEvent::SendHeartbeat { address };
                                 self.event_system.failures.push(failed);
@@ -481,7 +419,6 @@ impl NetManager<Server> {
                         time: self.timer.elapsed(),
                         destination: host.address,
                     };
-                    let kind = PacketKind::ConnectionAccepted;
                     let packet = Packet { id, state };
                     let connection_accepted = SenderEvent::QueuedConnectionAccepted { packet };
 
@@ -489,7 +426,7 @@ impl NetManager<Server> {
                     self.event_system.sender.push(connection_accepted);
                     self.kind.id_tracker += 1;
                 }
-                ReceiverEvent::AckRemote { sequence } => {}
+                ReceiverEvent::AckRemote { .. } => {}
                 ReceiverEvent::DataTransfer { packet } => {
                     debug!("Handling received data transfer for {:#?}", packet);
                     if self

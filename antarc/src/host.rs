@@ -1,19 +1,23 @@
 use std::{
     convert::TryInto,
+    io,
     net::SocketAddr,
     time::{Duration, Instant},
 };
 
-use log::error;
+use log::{debug, error, warn};
+use mio::net::UdpSocket;
 
 use crate::{
+    events::{AntarcError, FailureEvent},
     net::server::PacketId,
     packet::{
         header::{ConnectionAccepted, DataTransfer, Header, Heartbeat},
         payload::{self, Payload},
+        queued::Queued,
         received::Received,
         sequence::Sequence,
-        Ack, ConnectionId, Footer, Packet,
+        Ack, ConnectionId, Footer, Packet, Sent,
     },
 };
 
@@ -155,6 +159,41 @@ impl Host<Connected> {
         let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
 
         (header, bytes, footer)
+    }
+
+    pub(crate) fn send_packet(
+        &mut self,
+        socket: &UdpSocket,
+        packet: Packet<Queued>,
+        payload: Payload,
+        time: Duration,
+    ) -> Result<(), AntarcError> {
+        let (header, bytes, footer) = self.prepare_data_transfer(payload);
+        match socket.send_to(&bytes, self.address) {
+            Ok(num_sent) => {
+                debug_assert!(num_sent > 0);
+
+                let sent = Sent {
+                    header,
+                    footer,
+                    destination: self.address,
+                    time,
+                };
+                let packet = Packet {
+                    id: packet.id,
+                    state: sent,
+                };
+
+                self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
+
+                Ok(())
+            }
+            Err(fail) => Err(AntarcError::Send {
+                fail,
+                packet,
+                payload: header.kind.payload,
+            }),
+        }
     }
 }
 

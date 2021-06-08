@@ -21,8 +21,8 @@ use crate::{
     },
     ProtocolId,
 };
-#[derive(Debug, Clone, Error)]
-pub enum AntarcError {
+#[derive(Debug, Error)]
+pub(crate) enum AntarcError {
     #[error("Protocol id got {:#?}, expected {:#?}", got, expected)]
     InvalidProtocolId { got: u32, expected: ProtocolId },
 
@@ -34,6 +34,13 @@ pub enum AntarcError {
 
     #[error("{0}")]
     IntConversion(#[from] TryFromIntError),
+
+    #[error("`{}`", fail)]
+    Send {
+        fail: io::Error,
+        packet: Packet<Queued>,
+        payload: Payload,
+    },
 }
 
 #[derive(Debug)]
