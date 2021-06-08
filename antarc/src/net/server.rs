@@ -28,6 +28,32 @@ pub type PacketId = u64;
 
 const CHECK_ANTARC_QUEUE: Duration = Duration::from_millis(250);
 
+// TODO(alex) [mid] 2021-06-08: Is this the right approach to reducing duplication?
+#[macro_export]
+macro_rules! send {
+    ($self: expr, $host: expr, $bytes: expr, OnError $failed: expr) => {{
+        match $self.network.udp_socket.send_to(&$bytes, $host.address) {
+            Ok(num_sent) => {
+                debug_assert!(num_sent > 0);
+                $host.after_send();
+            }
+            Err(fail) => {
+                if fail.kind() == io::ErrorKind::WouldBlock {
+                    warn!("Would block on send_to {:?}", fail);
+                    $self.network.writable = false;
+                }
+
+                // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
+                // it could end up being a duplicated packet, sequence and ack are
+                // only incremented when send is successful.
+                $self.event_system.failures.push($failed);
+
+                break;
+            }
+        }
+    }};
+}
+
 #[derive(Debug)]
 pub struct Server {
     id_tracker: PacketId,
@@ -253,33 +279,21 @@ impl NetManager<Server> {
                             .unwrap();
 
                         let (header, bytes, _) = connected.prepare_data_transfer(payload);
-                        match self.network.udp_socket.send_to(&bytes, connected.address) {
-                            Ok(num_sent) => {
-                                debug_assert!(num_sent > 0);
-                                connected.after_send();
+                        send!(
+                            self,
+                            connected,
+                            bytes,
+                            OnError FailureEvent::SendDataTransfer {
+                                packet,
+                                payload: header.kind.payload
                             }
-                            Err(fail) => {
-                                if fail.kind() == io::ErrorKind::WouldBlock {
-                                    warn!("Would block on send_to {:?}", fail);
-                                    self.network.writable = false;
-                                }
-
-                                // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
-                                // it could end up being a duplicated packet, sequence and ack are
-                                // only incremented when send is successful.
-                                let failed = FailureEvent::SendDataTransfer {
-                                    packet,
-                                    payload: header.kind.payload,
-                                };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
-                        }
+                        );
                     }
                     SenderEvent::QueuedConnectionAccepted { packet } => {
                         debug!("Handling QueuedConnectionAccepted {:#?}.", packet);
 
+                        // TODO(alex) [high] 2021-06-08: Implement `after_send` for this kind of
+                        // host, enabling the `send!` macro.
                         let requesting_connection = self
                             .kind
                             .requesting_connection
