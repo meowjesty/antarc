@@ -230,6 +230,13 @@ impl NetManager<Server> {
         // ADD(alex) [high] 2021-06-07: Refactored part of the header and encoding into `Host`
         // functions, but having a hard time figuring out how to refactor the more type dependent
         // things. Like, how do I refactor the send match, if each send is different?
+        //
+        // ADD(alex) [high] 2021-06-08: Still having a hard time figuring out the previous comment,
+        // I've tried putting it into a separate function, but we consume the Payload in the
+        // `prepare_` method, so on error, we return it and end up pretty much with this same code.
+        //
+        // The best approach on what to do next is probably to do the `after_send` functions, like
+        // changing host state on connection accepted sent, and so on.
         while self.network.writable && has_host && self.event_system.sender.len() > 0 {
             debug_assert!(self.event_system.sender.len() > 0);
 

@@ -349,8 +349,8 @@ impl NetManager<Client> {
 
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         //
-        // ADD(alex) [high] 2021-06-07: There are new helper functions in `Host` to create the
-        // header and encode, but they're not implemented for the `Generic` host type yet.
+        // ADD(alex) [high] 2021-06-08: Trimmed down some of the duplicated code, but this function
+        // is still quite big and repetitive.
         while self.network.writable && self.event_system.sender.len() > 0 {
             for event in self.event_system.sender.drain(..1) {
                 match event {
