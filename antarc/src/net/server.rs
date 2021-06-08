@@ -245,12 +245,11 @@ impl NetManager<Server> {
                             .find(|host| host.address == packet.state.destination)
                             .unwrap();
 
-                        let (header, bytes, footer) = connected.prepare_data_transfer(payload);
+                        let (header, bytes, _) = connected.prepare_data_transfer(payload);
                         match self.network.udp_socket.send_to(&bytes, connected.address) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
-                                connected.sequence_tracker =
-                                    Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
+                                connected.after_send();
                             }
                             Err(fail) => {
                                 if fail.kind() == io::ErrorKind::WouldBlock {
@@ -610,35 +609,4 @@ impl NetManager<Server> {
             .collect::<Vec<_>>();
         retrievable
     }
-}
-
-fn prepare_connection_accepted(connection_id: ConnectionId, destination: SocketAddr) {
-    let ack = 1;
-    let header = Header::connection_accepted(ack);
-    let payload = Payload::default();
-    let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
-}
-
-fn prepare_data_transfer1(
-    sequence: Sequence,
-    ack: u32,
-    connection_id: Option<ConnectionId>,
-    payload: Payload,
-) -> (Header<DataTransfer>, Vec<u8>, Footer) {
-    let header = Header::data_transfer(sequence, ack, payload);
-    let (bytes, footer) = Packet::encode(&header.kind.payload, &header.info, connection_id);
-    (header, bytes, footer)
-}
-
-fn prepare_data_transfer2(
-    connected: &Host<Connected>,
-    payload: Payload,
-) -> (SocketAddr, Header<DataTransfer>, Vec<u8>, Footer) {
-    let sequence = connected.sequence_tracker;
-    let ack = connected.remote_ack_tracker;
-    let connection_id = connected.state.connection_id;
-    let destination = connected.address;
-    let header = Header::data_transfer(sequence, ack, payload);
-    let (bytes, footer) = Packet::encode(&header.kind.payload, &header.info, Some(connection_id));
-    (destination, header, bytes, footer)
 }

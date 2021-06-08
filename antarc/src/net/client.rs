@@ -88,7 +88,7 @@ impl NetManager<Client> {
         let destination = server_addr.clone();
         let header = Header::connection_request();
 
-        let (bytes, footer) = Packet::encode(&payload, &header.info, None);
+        let (bytes, _) = Packet::encode(&payload, &header.info, None);
         let mut connection_request = Some(bytes.clone());
 
         loop {
@@ -367,47 +367,30 @@ impl NetManager<Client> {
                             }
                         }
 
-                        let sequence = self.kind.server.sequence_tracker;
-                        let ack = self.kind.server.remote_ack_tracker;
-                        let connection_id = self.kind.server.state.state.connection_id();
                         let destination = packet.state.destination;
-                        let header = Header::data_transfer(sequence, ack, payload);
-
-                        let (bytes, footer) =
-                            Packet::encode(&header.kind.payload, &header.info, connection_id);
+                        let (header, bytes, _) = self.kind.server.prepare_data_transfer(payload);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
 
-                                let sent = Sent {
-                                    header,
-                                    footer,
-                                    destination,
-                                    time: self.timer.elapsed(),
-                                };
-                                let packet = Packet {
-                                    id: packet.id,
-                                    state: sent,
-                                };
-                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
-
-                                self.kind.server.sequence_tracker =
-                                    Sequence::new(sequence.get() + 1).unwrap();
+                                self.kind.server.after_send();
                                 self.kind.last_sent_time = self.timer.elapsed();
                             }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                self.network.writable = false;
-
-                                break;
-                            }
                             Err(fail) => {
-                                error!(
-                                    "Client failed sending packet {:#?} to {:#?}.",
-                                    fail, destination
-                                );
+                                if fail.kind() == io::ErrorKind::WouldBlock {
+                                    warn!("Would block on send_to {:?}", fail);
+                                    self.network.writable = false;
+                                }
+
+                                // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
+                                // it could end up being a duplicated packet, sequence and ack are
+                                // only incremented when send is successful.
+                                let failed = FailureEvent::SendDataTransfer {
+                                    packet,
+                                    payload: header.kind.payload,
+                                };
+                                self.event_system.failures.push(failed);
 
                                 break;
                             }
@@ -443,24 +426,18 @@ impl NetManager<Client> {
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
                                 self.kind.last_sent_time = self.timer.elapsed();
                             }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                // TODO(alex) 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
-                                self.network.writable = false;
-
-                                break;
-                            }
                             Err(fail) => {
-                                error!(
-                                    "Server failed sending packet {:#?} to {:#?}.",
-                                    fail, destination
-                                );
+                                if fail.kind() == io::ErrorKind::WouldBlock {
+                                    warn!("Would block on send_to {:?}", fail);
+                                    self.network.writable = false;
+                                }
+
+                                // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
+                                // it could end up being a duplicated packet, sequence and ack are
+                                // only incremented when send is successful.
+                                let failed = FailureEvent::SendConnectionRequest;
+                                self.event_system.failures.push(failed);
+
                                 break;
                             }
                         }
@@ -471,59 +448,36 @@ impl NetManager<Client> {
                         match &self.kind.server.state.state {
                             HostState::Connected { .. } => (),
                             invalid => {
-                                warn!("Client has server in state other than connected!");
-                                warn!("Skipping this data transfer!");
+                                warn!(
+                                    "Client has server in state other than connected {:#?}!",
+                                    invalid
+                                );
+                                warn!("Skipping this heartbeat!");
                                 continue;
                             }
                         }
 
-                        let sequence = self.kind.server.sequence_tracker;
-                        let ack = self.kind.server.remote_ack_tracker;
-                        let connection_id = self.kind.server.state.state.connection_id();
-                        let destination = address;
-
-                        let payload = Payload::default();
-                        let header = Header::heartbeat(sequence, ack);
-
-                        let (bytes, footer) = Packet::encode(&payload, &header.info, connection_id);
+                        let destination = self.kind.server.address;
+                        let (_, bytes, _) = self.kind.server.prepare_heartbeat();
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
 
-                                let sent = Sent {
-                                    header,
-                                    footer,
-                                    destination,
-                                    time: self.timer.elapsed(),
-                                };
-                                let id = self.kind.id_tracker;
-                                let packet = Packet { id, state: sent };
-                                debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
-
-                                self.kind.last_sent_time = packet.state.time;
-                                self.kind.server.sequence_tracker =
-                                    Sequence::new(sequence.get() + 1).unwrap();
+                                self.kind.last_sent_time = self.timer.elapsed();
+                                self.kind.server.after_send();
                                 self.kind.id_tracker += 1;
                             }
-                            Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                                warn!("Would block on send_to {:?}", fail);
-
-                                // TODO(alex) [low] 2021-05-23: Right here, the `bytes` belongs to a
-                                // specific Host, so the ownership of this allocation has a
-                                // clear owner. When we fail
-                                // to send, the encoding is performed again,
-                                // even though we could cache it here as a `Packet<Encoded>` and
-                                // insert it into the Host.
-                                self.network.writable = false;
-
-                                break;
-                            }
                             Err(fail) => {
-                                error!(
-                                    "Client failed sending packet {:#?} to {:#?}.",
-                                    fail, destination
-                                );
+                                if fail.kind() == io::ErrorKind::WouldBlock {
+                                    warn!("Would block on send_to {:?}", fail);
+                                    self.network.writable = false;
+                                }
+
+                                let failed = FailureEvent::SendHeartbeat {
+                                    address: destination,
+                                };
+                                self.event_system.failures.push(failed);
 
                                 break;
                             }

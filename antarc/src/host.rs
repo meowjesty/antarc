@@ -107,6 +107,12 @@ impl Host<Disconnected> {
     }
 }
 
+impl<T> Host<T> {
+    pub(crate) fn after_send(&mut self) {
+        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
+    }
+}
+
 impl Host<Generic> {
     pub(crate) fn new_generic(address: SocketAddr) -> Self {
         let state = Generic {
@@ -120,6 +126,39 @@ impl Host<Generic> {
             address,
             received: Vec::with_capacity(32),
             state,
+        }
+    }
+
+    pub(crate) fn prepare_data_transfer(
+        &self,
+        payload: Payload,
+    ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
+        if let HostState::Connected { info } = &self.state.state {
+            let sequence = self.sequence_tracker;
+            let ack = self.remote_ack_tracker;
+            let connection_id = info.connection_id;
+            let header = Header::data_transfer(sequence, ack, payload);
+            let (bytes, footer) =
+                Packet::encode(&header.kind.payload, &header.info, Some(connection_id));
+
+            (header, bytes, footer)
+        } else {
+            panic!("Host invalid state {:#?}", self);
+        }
+    }
+
+    pub(crate) fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
+        if let HostState::Connected { info } = &self.state.state {
+            let sequence = self.sequence_tracker;
+            let ack = self.remote_ack_tracker;
+            let connection_id = info.connection_id;
+            let header = Header::heartbeat(sequence, ack);
+            let payload = Payload::default();
+            let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
+
+            (header, bytes, footer)
+        } else {
+            panic!("Host invalid state {:#?}", self);
         }
     }
 
@@ -159,41 +198,6 @@ impl Host<Connected> {
         let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
 
         (header, bytes, footer)
-    }
-
-    pub(crate) fn send_packet(
-        &mut self,
-        socket: &UdpSocket,
-        packet: Packet<Queued>,
-        payload: Payload,
-        time: Duration,
-    ) -> Result<(), AntarcError> {
-        let (header, bytes, footer) = self.prepare_data_transfer(payload);
-        match socket.send_to(&bytes, self.address) {
-            Ok(num_sent) => {
-                debug_assert!(num_sent > 0);
-
-                let sent = Sent {
-                    header,
-                    footer,
-                    destination: self.address,
-                    time,
-                };
-                let packet = Packet {
-                    id: packet.id,
-                    state: sent,
-                };
-
-                self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
-
-                Ok(())
-            }
-            Err(fail) => Err(AntarcError::Send {
-                fail,
-                packet,
-                payload: header.kind.payload,
-            }),
-        }
     }
 }
 

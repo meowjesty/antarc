@@ -34,13 +34,6 @@ pub(crate) enum AntarcError {
 
     #[error("{0}")]
     IntConversion(#[from] TryFromIntError),
-
-    #[error("`{}`", fail)]
-    Send {
-        fail: io::Error,
-        packet: Packet<Queued>,
-        payload: Payload,
-    },
 }
 
 #[derive(Debug)]
