@@ -31,7 +31,7 @@ const CHECK_ANTARC_QUEUE: Duration = Duration::from_millis(250);
 // TODO(alex) [mid] 2021-06-08: Is this the right approach to reducing duplication?
 #[macro_export]
 macro_rules! send {
-    ($self: expr, $host: expr, $bytes: expr, OnError $failed: expr) => {{
+    ($self: expr, $host: expr, $bytes: expr, OnError -> $failed: expr ) => {{
         match $self.network.udp_socket.send_to(&$bytes, $host.address) {
             Ok(num_sent) => {
                 debug_assert!(num_sent > 0);
@@ -263,6 +263,11 @@ impl NetManager<Server> {
         //
         // The best approach on what to do next is probably to do the `after_send` functions, like
         // changing host state on connection accepted sent, and so on.
+        //
+        // Changing state on `after_send` is a bit too cumbersome (and hard to make it work without
+        // hacks), I think the best approach is what I'm doing now, after `send!` just do the state
+        // changing, if things went wrong the macro `break`s out of the loop and we never change
+        // state improperly.
         while self.network.writable && has_host && self.event_system.sender.len() > 0 {
             debug_assert!(self.event_system.sender.len() > 0);
 
@@ -283,7 +288,7 @@ impl NetManager<Server> {
                             self,
                             connected,
                             bytes,
-                            OnError FailureEvent::SendDataTransfer {
+                            OnError -> FailureEvent::SendDataTransfer {
                                 packet,
                                 payload: header.kind.payload
                             }
@@ -292,64 +297,31 @@ impl NetManager<Server> {
                     SenderEvent::QueuedConnectionAccepted { packet } => {
                         debug!("Handling QueuedConnectionAccepted {:#?}.", packet);
 
-                        // TODO(alex) [high] 2021-06-08: Implement `after_send` for this kind of
-                        // host, enabling the `send!` macro.
-                        let requesting_connection = self
+                        // TODO(alex) [mid] 2021-06-08: A `HashMap<SocketAddr, Host<State>>` is
+                        // probably more appropriate, as this find address is pertinent.
+                        // NOTE(alex): If `DrainIter` is used here, then `send!` would require a way
+                        // of putting the host back into the proper list.
+                        let (index, requesting_connection) = self
                             .kind
                             .requesting_connection
-                            .drain_filter(|host| host.address == packet.state.destination)
-                            .next()
+                            .iter_mut()
+                            .enumerate()
+                            .find(|(_, host)| host.address == packet.state.destination)
                             .unwrap();
 
                         let connection_id = self.kind.connection_id_tracker;
-                        let destination = requesting_connection.address;
                         let (_, bytes, _) =
                             requesting_connection.prepare_connection_accepted(connection_id);
 
-                        match self.network.udp_socket.send_to(&bytes, destination) {
-                            Ok(num_sent) => {
-                                debug_assert!(num_sent > 0);
+                        send!(self, requesting_connection, bytes,
+                            OnError -> FailureEvent::SendConnectionAccepted { packet });
 
-                                let state = AwaitingConnectionAck {
-                                    attempts: 0,
-                                    connection_id: self.kind.connection_id_tracker,
-                                    last_sent: 1,
-                                };
-                                let host = Host {
-                                    sequence_tracker: unsafe {
-                                        Sequence::new_unchecked(
-                                            requesting_connection.sequence_tracker.get() + 1,
-                                        )
-                                    },
-                                    remote_ack_tracker: 1,
-                                    local_ack_tracker: requesting_connection.local_ack_tracker,
-                                    address: requesting_connection.address,
-                                    received: requesting_connection.received,
-                                    state,
-                                };
-                                self.kind.awaiting_connection_ack.push(host);
+                        let requesting_connection = self.kind.requesting_connection.remove(index);
+                        let host = requesting_connection.await_connection(connection_id);
+                        self.kind.awaiting_connection_ack.push(host);
 
-                                self.kind.connection_id_tracker =
-                                    NonZeroU16::new(self.kind.connection_id_tracker.get() + 1)
-                                        .unwrap();
-                            }
-                            Err(fail) => {
-                                error!(
-                                    "Server failed sending packet {:#?} to {:#?}.",
-                                    fail, destination
-                                );
-                                if fail.kind() == io::ErrorKind::WouldBlock {
-                                    warn!("Would block on send_to {:?}", fail);
-                                    self.network.writable = false;
-                                }
-                                self.kind.requesting_connection.push(requesting_connection);
-
-                                let failed = FailureEvent::SendConnectionAccepted { packet };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
-                        }
+                        self.kind.connection_id_tracker =
+                            NonZeroU16::new(self.kind.connection_id_tracker.get() + 1).unwrap();
                     }
                     SenderEvent::QueuedConnectionRequest { .. } => {
                         error!("Server cannot handle SendConnectionRequest!");
@@ -365,34 +337,11 @@ impl NetManager<Server> {
                             .find(|host| host.address == address)
                             .unwrap();
 
-                        let destination = connected.address;
+                        let address = connected.address;
                         let (_, bytes, _) = connected.prepare_heartbeat();
 
-                        match self.network.udp_socket.send_to(&bytes, destination) {
-                            Ok(num_sent) => {
-                                debug_assert!(num_sent > 0);
-
-                                connected.sequence_tracker =
-                                    Sequence::new(connected.sequence_tracker.get() + 1).unwrap();
-                                self.kind.id_tracker += 1;
-                            }
-                            Err(fail) => {
-                                error!(
-                                    "Server failed sending packet {:#?} to {:#?}.",
-                                    fail, destination
-                                );
-
-                                if fail.kind() == io::ErrorKind::WouldBlock {
-                                    warn!("Would block on send_to {:?}", fail);
-                                    self.network.writable = false;
-                                }
-
-                                let failed = FailureEvent::SendHeartbeat { address };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
-                        }
+                        send!(self, connected, bytes,
+                            OnError -> FailureEvent::SendHeartbeat { address });
                     }
                 }
             }

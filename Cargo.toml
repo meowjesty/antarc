@@ -7,4 +7,5 @@ members = [
     "with-state",
     "with-state-no-event",
     "with-callback",
+    "host-state",
 ]

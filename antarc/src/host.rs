@@ -107,12 +107,6 @@ impl Host<Disconnected> {
     }
 }
 
-impl<T> Host<T> {
-    pub(crate) fn after_send(&mut self) {
-        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
-    }
-}
-
 impl Host<Generic> {
     pub(crate) fn new_generic(address: SocketAddr) -> Self {
         let state = Generic {
@@ -172,6 +166,10 @@ impl Host<Generic> {
             _ => false,
         }
     }
+
+    pub(crate) fn after_send(&mut self) {
+        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
+    }
 }
 
 impl Host<Connected> {
@@ -199,6 +197,11 @@ impl Host<Connected> {
 
         (header, bytes, footer)
     }
+
+    pub(crate) fn after_send(&mut self) {
+        debug!("{:#?} after send.", self);
+        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
+    }
 }
 
 impl Host<RequestingConnection> {
@@ -216,6 +219,32 @@ impl Host<RequestingConnection> {
         // possible packet duplication).
         let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
         (header, bytes, footer)
+    }
+
+    pub(crate) fn after_send(&mut self) {
+        debug!("{:#?} after send.", self);
+        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
+    }
+
+    pub(crate) fn await_connection(
+        self,
+        connection_id: ConnectionId,
+    ) -> Host<AwaitingConnectionAck> {
+        let state = AwaitingConnectionAck {
+            attempts: 0,
+            connection_id,
+            last_sent: 1,
+        };
+        let host = Host {
+            sequence_tracker: unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) },
+            remote_ack_tracker: 1,
+            local_ack_tracker: self.local_ack_tracker,
+            address: self.address,
+            received: self.received,
+            state,
+        };
+
+        host
     }
 }
 
