@@ -9,6 +9,7 @@ use mio::{
 use self::server::PacketId;
 use crate::{
     events::{FailureEvent, ReceiverEvent, SenderEvent},
+    host::{AwaitingConnectionAck, Connected, Host, RequestingConnection},
     packet::{
         payload::{self, Payload},
         queued::Queued,
@@ -20,14 +21,6 @@ use crate::{
 
 pub mod client;
 pub mod server;
-
-#[derive(Debug, PartialEq, Clone)]
-pub(crate) enum ConnectionState {
-    RequestingConnection,
-    AwaitingConnectionResponse,
-    Disconnected,
-    Connected,
-}
 
 /// TODO(alex) 2021-02-07: A `Peer<Client>` will connect to the main `Peer<Server>`, and it'll
 /// receive information about the other `Peer<Client>` that are connected to the same server. They
@@ -60,23 +53,42 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) timer: Instant,
     /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
     pub(crate) buffer: Vec<u8>,
-    pub(crate) kind: ClientOrServer,
+    pub(crate) net_type: ClientOrServer,
     pub(crate) network: NetworkResource,
-    pub(crate) user_queue: Vec<Packet<Queued>>,
+    pub(crate) connection: Connection,
     pub(crate) retrievable: HashMap<ConnectionId, Vec<Vec<u8>>>,
-    pub(crate) antarc_queue: Vec<Packet<Queued>>,
     pub(crate) retrievable_count: usize,
     pub(crate) event_system: EventSystem,
 }
 
 #[derive(Debug)]
 pub(crate) struct NetworkResource {
-    pub(crate) tcp_stream: TcpStream,
     pub(crate) udp_socket: UdpSocket,
     pub(crate) writable: bool,
     pub(crate) readable: bool,
     pub(crate) poll: Poll,
     pub(crate) events: Events,
+}
+
+#[derive(Debug)]
+pub(crate) struct Connection {
+    pub(crate) id_tracker: PacketId,
+    // TODO(alex) [low] 2021-05-25: Why would I need this kind of host?
+    // disconnected: Vec<Host<Disconnected>>,
+    pub(crate) requesting_connection: Vec<Host<RequestingConnection>>,
+    pub(crate) awaiting_connection_ack: Vec<Host<AwaitingConnectionAck>>,
+    pub(crate) connected: Vec<Host<Connected>>,
+}
+
+impl Connection {
+    pub(crate) fn new() -> Self {
+        Self {
+            id_tracker: 0,
+            requesting_connection: Vec::with_capacity(32),
+            awaiting_connection_ack: Vec::with_capacity(32),
+            connected: Vec::with_capacity(32),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -104,20 +116,9 @@ impl NetworkResource {
     pub(crate) const TOKEN: Token = Token(0xdad);
 
     pub(crate) fn new(address: &SocketAddr) -> Self {
-        // TODO(alex) 2021-05-11: Change this to `TcpSocket`, but then we cannot register with the
-        // poller here (tcp), the `Client::connect` will do the actual `bind` call and register.
-        let mut tcp_stream = TcpStream::connect(*address).unwrap();
         let mut udp_socket = UdpSocket::bind(*address).unwrap();
         let poll = Poll::new().unwrap();
         let events = Events::with_capacity(1024);
-
-        poll.registry()
-            .register(
-                &mut tcp_stream,
-                Self::TOKEN,
-                Interest::READABLE | Interest::WRITABLE,
-            )
-            .unwrap();
 
         poll.registry()
             .register(
@@ -128,7 +129,6 @@ impl NetworkResource {
             .unwrap();
 
         Self {
-            tcp_stream,
             udp_socket,
             poll,
             events,
@@ -143,10 +143,9 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let timer = Instant::now();
         let buffer = vec![0x0; MTU_LENGTH];
 
-        let user_queue = Vec::with_capacity(128);
-        let antarc_queue = Vec::with_capacity(128);
         let retrievable = HashMap::with_capacity(128);
         let network = NetworkResource::new(address);
+        let connection = Connection::new();
         let retrievable_count = 0;
 
         let event_system = EventSystem::new();
@@ -154,10 +153,9 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         Self {
             timer,
             buffer,
-            user_queue,
-            antarc_queue,
-            kind,
+            net_type: kind,
             network,
+            connection,
             retrievable_count,
             event_system,
             retrievable,
@@ -185,7 +183,8 @@ impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
             .field("timer", &self.timer)
             .field("buffer", &self.buffer.len())
             .field("events", &self.event_system)
-            .field("client_or_server", &self.kind)
+            .field("client_or_server", &self.net_type)
+            .field("connection", &self.connection)
             .finish()
     }
 }

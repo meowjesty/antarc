@@ -205,6 +205,18 @@ impl Host<Connected> {
 }
 
 impl Host<RequestingConnection> {
+    pub(crate) fn new_requesting_connection(address: SocketAddr) -> Self {
+        let state = RequestingConnection { attempts: 0 };
+        Self {
+            sequence_tracker: Sequence::default(),
+            remote_ack_tracker: 0,
+            local_ack_tracker: 0,
+            address,
+            received: Vec::with_capacity(32),
+            state,
+        }
+    }
+
     pub(crate) fn prepare_connection_accepted(
         &self,
         connection_id: ConnectionId,
@@ -234,6 +246,27 @@ impl Host<RequestingConnection> {
             attempts: 0,
             connection_id,
             last_sent: 1,
+        };
+        let host = Host {
+            sequence_tracker: unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) },
+            remote_ack_tracker: 1,
+            local_ack_tracker: self.local_ack_tracker,
+            address: self.address,
+            received: self.received,
+            state,
+        };
+
+        host
+    }
+}
+
+impl Host<AwaitingConnectionAck> {
+    pub(crate) fn connection_accepted(self) -> Host<Connected> {
+        let state = Connected {
+            connection_id: self.state.connection_id,
+            rtt: Duration::default(),
+            last_sent: self.state.last_sent,
+            time_last_sent: Duration::default(),
         };
         let host = Host {
             sequence_tracker: unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) },

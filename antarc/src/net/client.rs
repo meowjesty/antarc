@@ -39,16 +39,12 @@ use crate::{
 /// with both a `Client` and a `Server`, this isn't a very good idea, and needs more thought.
 #[derive(Debug)]
 pub struct Client {
-    pub(crate) id_tracker: u64,
-    pub(crate) server: Host<Generic>,
     pub(crate) last_sent_time: Duration,
 }
 
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
         let client = Client {
-            id_tracker: 0,
-            server: Host::new_local(),
             last_sent_time: Duration::default(),
         };
         let net_manager = NetManager::new(address, client);
@@ -76,11 +72,8 @@ impl NetManager<Client> {
     /// approach very much.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> Result<ConnectionId, String> {
         debug!("Connecting to {:#?}.", server_addr);
-        let server = Host::new_generic(server_addr.clone());
-        self.kind.server = server;
-        self.kind.server.state.state = HostState::RequestingConnection {
-            info: RequestingConnection { attempts: 0 },
-        };
+        let server = Host::new_requesting_connection(server_addr.clone());
+        self.connection.requesting_connection.insert(0, server);
 
         let mut time_sent = self.timer.elapsed();
 
@@ -115,7 +108,7 @@ impl NetManager<Client> {
                         debug_assert!(num_received > 0);
 
                         let (packet, _) = Packet::decode(
-                            self.kind.id_tracker,
+                            self.connection.id_tracker,
                             &self.buffer[..num_received],
                             source,
                             &self.timer,
@@ -125,21 +118,15 @@ impl NetManager<Client> {
 
                         if packet.state.header.info.status_code == CONNECTION_ACCEPTED {
                             debug!("Received ConnectionAccepted!");
+                            let server = self.connection.awaiting_connection_ack.remove(0);
+                            let mut connected = server.connection_accepted();
                             let connection_id = packet.state.footer.connection_id.unwrap();
-                            let info = Connected {
-                                connection_id,
-                                rtt: Duration::default(),
-                                last_sent: 1,
-                                time_last_sent: Duration::default(),
-                            };
-                            self.kind.server.sequence_tracker =
-                                unsafe { Sequence::new_unchecked(2) };
-                            self.kind.server.state.state = HostState::Connected { info };
-                            self.kind.id_tracker += 1;
-                            self.kind.last_sent_time = time_sent;
-                            self.kind.server.local_ack_tracker = packet.state.header.info.ack;
-                            self.kind.server.remote_ack_tracker =
-                                packet.state.header.info.sequence.get();
+                            self.connection.id_tracker += 1;
+                            self.net_type.last_sent_time = time_sent;
+                            connected.local_ack_tracker = packet.state.header.info.ack;
+                            connected.remote_ack_tracker = packet.state.header.info.sequence.get();
+
+                            self.connection.connected.insert(0, connected);
 
                             return Ok(connection_id);
                         } else if packet.state.header.info.status_code == CONNECTION_DENIED {
@@ -183,6 +170,20 @@ impl NetManager<Client> {
                         );
                         debug_assert!(num_sent > 0);
                         time_sent = self.timer.elapsed();
+
+                        // TODO(alex) [high] 2021-06-09: This breaks the whole client-side, we need
+                        // a way to convert `RequestingConnection->???` into something that is
+                        // awaiting a connection accepted/denied, the current struct used by the
+                        // server is `AwaitingConnectionAck`, but cannot be used here, as it
+                        // requires a `ConnectionId`. It's ok for the server, as it's generated
+                        // there, but the client can only wait for it.
+                        //
+                        // Could we just nuke this field from `AwaitingConnectionAck`? If a new
+                        // state is required (`AwaitingConnectionResponse` for example) that doesn'T
+                        // have this field, then `NetManager::Connection` will be different for
+                        // `Server` and `Client`.
+                        let server = self.connection.requesting_connection.remove(0);
+                        // let awaiting_connection = server.sent_request()
                     }
                     Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                         warn!("Would block on send_to {:?}", fail);
@@ -211,8 +212,8 @@ impl NetManager<Client> {
     }
 
     pub fn enqueue(&mut self, message: Vec<u8>) -> u64 {
-        let id = self.kind.id_tracker;
-        let destination = self.kind.server.address;
+        let id = self.connection.id_tracker;
+        let destination = self.connection.connected.get(0).unwrap().address;
         let state = Queued {
             time: self.timer.elapsed(),
             destination,
@@ -225,7 +226,7 @@ impl NetManager<Client> {
                 packet,
                 payload: Payload(message),
             });
-        self.kind.id_tracker += 1;
+        self.connection.id_tracker += 1;
 
         id
     }
@@ -268,16 +269,17 @@ impl NetManager<Client> {
                     debug!("Received new packet {:#?} {:#?}.", num_received, source);
                     debug_assert!(num_received > 0);
 
-                    if source != self.kind.server.address {
+                    if source != self.connection.connected.get(0).unwrap().address {
                         warn!(
                             "Packet from unknown source, expected {:#?}, got {:#?}.",
-                            self.kind.server.address, source
+                            self.connection.connected.get(0).unwrap().address,
+                            source
                         );
                         continue;
                     }
 
                     let (packet, payload) = Packet::decode(
-                        self.kind.id_tracker,
+                        self.connection.id_tracker,
                         &self.buffer[..num_received],
                         source,
                         &self.timer,
@@ -287,20 +289,37 @@ impl NetManager<Client> {
                     // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order packets,
                     // right now we just don't update the ack trackers if they come from a lower
                     // value than what the host has.
-                    self.kind.server.remote_ack_tracker = packet.state.header.info.sequence.get();
-                    self.kind.server.local_ack_tracker = packet.state.header.info.ack;
+                    self.connection
+                        .connected
+                        .get_mut(0)
+                        .unwrap()
+                        .remote_ack_tracker = packet.state.header.info.sequence.get();
+                    self.connection
+                        .connected
+                        .get_mut(0)
+                        .unwrap()
+                        .local_ack_tracker = packet.state.header.info.ack;
 
-                    let local_ack_tracker = self.kind.server.local_ack_tracker;
-                    self.kind.server.local_ack_tracker = (packet.state.header.info.ack
-                        > local_ack_tracker)
+                    let local_ack_tracker =
+                        self.connection.connected.get(0).unwrap().local_ack_tracker;
+                    self.connection
+                        .connected
+                        .get_mut(0)
+                        .unwrap()
+                        .local_ack_tracker = (packet.state.header.info.ack > local_ack_tracker)
                         .then(|| packet.state.header.info.ack)
-                        .unwrap_or(self.kind.server.local_ack_tracker);
+                        .unwrap_or(self.connection.connected.get(0).unwrap().local_ack_tracker);
 
-                    let remote_ack_tracker = self.kind.server.remote_ack_tracker;
+                    let remote_ack_tracker =
+                        self.connection.connected.get(0).unwrap().remote_ack_tracker;
                     let remote_sequence = packet.state.header.info.sequence.get();
-                    self.kind.server.remote_ack_tracker = (remote_sequence > remote_ack_tracker)
+                    self.connection
+                        .connected
+                        .get_mut(0)
+                        .unwrap()
+                        .remote_ack_tracker = (remote_sequence > remote_ack_tracker)
                         .then(|| packet.state.header.info.sequence.get())
-                        .unwrap_or(self.kind.server.remote_ack_tracker);
+                        .unwrap_or(self.connection.connected.get(0).unwrap().remote_ack_tracker);
 
                     match packet.state.header.info.status_code {
                         CONNECTION_REQUEST => {}
@@ -332,7 +351,7 @@ impl NetManager<Client> {
                         }
                     }
 
-                    self.kind.id_tracker += 1;
+                    self.connection.id_tracker += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv {:?}", fail);
@@ -357,25 +376,20 @@ impl NetManager<Client> {
                     SenderEvent::QueuedDataTransfer { packet, payload } => {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
-                        match &self.kind.server.state.state {
-                            HostState::Connected { .. } => (),
-                            invalid => {
-                                warn!("Client has server in state other than connected!");
-                                warn!("Skipping this data transfer!");
-                                warn!("{:#?}", invalid);
-                                continue;
-                            }
-                        }
-
                         let destination = packet.state.destination;
-                        let (header, bytes, _) = self.kind.server.prepare_data_transfer(payload);
+                        let (header, bytes, _) = self
+                            .connection
+                            .connected
+                            .get(0)
+                            .unwrap()
+                            .prepare_data_transfer(payload);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
 
-                                self.kind.server.after_send();
-                                self.kind.last_sent_time = self.timer.elapsed();
+                                self.connection.connected.get_mut(0).unwrap().after_send();
+                                self.net_type.last_sent_time = self.timer.elapsed();
                             }
                             Err(fail) => {
                                 if fail.kind() == io::ErrorKind::WouldBlock {
@@ -424,7 +438,7 @@ impl NetManager<Client> {
                                 };
 
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
-                                self.kind.last_sent_time = self.timer.elapsed();
+                                self.net_type.last_sent_time = self.timer.elapsed();
                             }
                             Err(fail) => {
                                 if fail.kind() == io::ErrorKind::WouldBlock {
@@ -445,28 +459,21 @@ impl NetManager<Client> {
                     SenderEvent::QueuedHeartbeat { address } => {
                         debug!("Handling QueuedHeartbeat {:#?}.", address);
 
-                        match &self.kind.server.state.state {
-                            HostState::Connected { .. } => (),
-                            invalid => {
-                                warn!(
-                                    "Client has server in state other than connected {:#?}!",
-                                    invalid
-                                );
-                                warn!("Skipping this heartbeat!");
-                                continue;
-                            }
-                        }
-
-                        let destination = self.kind.server.address;
-                        let (_, bytes, _) = self.kind.server.prepare_heartbeat();
+                        let destination = self.connection.connected.get(0).unwrap().address;
+                        let (_, bytes, _) = self
+                            .connection
+                            .connected
+                            .get(0)
+                            .unwrap()
+                            .prepare_heartbeat();
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
                                 debug_assert!(num_sent > 0);
 
-                                self.kind.last_sent_time = self.timer.elapsed();
-                                self.kind.server.after_send();
-                                self.kind.id_tracker += 1;
+                                self.net_type.last_sent_time = self.timer.elapsed();
+                                self.connection.connected.get_mut(0).unwrap().after_send();
+                                self.connection.id_tracker += 1;
                             }
                             Err(fail) => {
                                 if fail.kind() == io::ErrorKind::WouldBlock {
@@ -487,7 +494,7 @@ impl NetManager<Client> {
             }
         }
 
-        Ok(self.kind.server.received.len())
+        Ok(self.connection.connected.get(0).unwrap().received.len())
     }
 
     /// NOTE(alex): This is less of a system, and more just a function that the user will call,

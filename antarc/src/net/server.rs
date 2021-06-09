@@ -56,25 +56,15 @@ macro_rules! send {
 
 #[derive(Debug)]
 pub struct Server {
-    id_tracker: PacketId,
     last_antarc_queue_check: Duration,
     connection_id_tracker: ConnectionId,
-    // TODO(alex) [low] 2021-05-25: Why would I need this kind of host?
-    // disconnected: Vec<Host<Disconnected>>,
-    requesting_connection: Vec<Host<RequestingConnection>>,
-    awaiting_connection_ack: Vec<Host<AwaitingConnectionAck>>,
-    connected: Vec<Host<Connected>>,
 }
 
 impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
         let server = Server {
-            id_tracker: 0,
             last_antarc_queue_check: Duration::default(),
             connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
-            requesting_connection: Vec::with_capacity(8),
-            awaiting_connection_ack: Vec::with_capacity(8),
-            connected: Vec::with_capacity(8),
         };
         let net_manager = NetManager::new(address, server);
         net_manager
@@ -83,9 +73,9 @@ impl NetManager<Server> {
     // TODO(alex) 2021-05-23: Allow the user to specify the destination of these messages, we then
     // check if they're in the `connected` list, and queue the packets as normal.
     pub fn enqueue(&mut self, message: Vec<u8>) -> PacketId {
-        let id = self.kind.id_tracker;
+        let id = self.connection.id_tracker;
 
-        for host in self.kind.connected.iter() {
+        for host in self.connection.connected.iter() {
             let state = Queued {
                 time: self.timer.elapsed(),
                 destination: host.address,
@@ -100,7 +90,7 @@ impl NetManager<Server> {
                 });
         }
 
-        self.kind.id_tracker += 1;
+        self.connection.id_tracker += 1;
 
         id
     }
@@ -129,7 +119,7 @@ impl NetManager<Server> {
                     debug_assert!(num_received > 0);
 
                     let (packet, payload) = match Packet::decode(
-                        self.kind.id_tracker,
+                        self.connection.id_tracker,
                         &self.buffer[..num_received],
                         source,
                         &self.timer,
@@ -216,7 +206,7 @@ impl NetManager<Server> {
                         }
                     }
 
-                    self.kind.id_tracker += 1;
+                    self.connection.id_tracker += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv_from {:?}", fail);
@@ -233,7 +223,7 @@ impl NetManager<Server> {
         }
 
         // TODO(alex) [mid] 2021-05-27: Send a heartbeat, look at the connected hosts only.
-        for host in self.kind.connected.iter() {
+        for host in self.connection.connected.iter() {
             let threshold = host.state.time_last_sent + Duration::from_millis(1500);
             let time_expired = threshold < self.timer.elapsed();
             if time_expired {
@@ -247,9 +237,9 @@ impl NetManager<Server> {
             }
         }
 
-        let has_host = self.kind.requesting_connection.len() > 0
-            || self.kind.awaiting_connection_ack.len() > 0
-            || self.kind.connected.len() > 0;
+        let has_host = self.connection.requesting_connection.len() > 0
+            || self.connection.awaiting_connection_ack.len() > 0
+            || self.connection.connected.len() > 0;
 
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         //
@@ -277,7 +267,7 @@ impl NetManager<Server> {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
                         let connected = self
-                            .kind
+                            .connection
                             .connected
                             .iter_mut()
                             .find(|host| host.address == packet.state.destination)
@@ -302,26 +292,27 @@ impl NetManager<Server> {
                         // NOTE(alex): If `DrainIter` is used here, then `send!` would require a way
                         // of putting the host back into the proper list.
                         let (index, requesting_connection) = self
-                            .kind
+                            .connection
                             .requesting_connection
                             .iter_mut()
                             .enumerate()
                             .find(|(_, host)| host.address == packet.state.destination)
                             .unwrap();
 
-                        let connection_id = self.kind.connection_id_tracker;
+                        let connection_id = self.net_type.connection_id_tracker;
                         let (_, bytes, _) =
                             requesting_connection.prepare_connection_accepted(connection_id);
 
                         send!(self, requesting_connection, bytes,
                             OnError -> FailureEvent::SendConnectionAccepted { packet });
 
-                        let requesting_connection = self.kind.requesting_connection.remove(index);
+                        let requesting_connection =
+                            self.connection.requesting_connection.remove(index);
                         let host = requesting_connection.await_connection(connection_id);
-                        self.kind.awaiting_connection_ack.push(host);
+                        self.connection.awaiting_connection_ack.push(host);
 
-                        self.kind.connection_id_tracker =
-                            NonZeroU16::new(self.kind.connection_id_tracker.get() + 1).unwrap();
+                        self.net_type.connection_id_tracker =
+                            NonZeroU16::new(self.net_type.connection_id_tracker.get() + 1).unwrap();
                     }
                     SenderEvent::QueuedConnectionRequest { .. } => {
                         error!("Server cannot handle SendConnectionRequest!");
@@ -331,7 +322,7 @@ impl NetManager<Server> {
                         debug!("Handling QueuedHeartbeat to {:#?}.", address);
 
                         let connected = self
-                            .kind
+                            .connection
                             .connected
                             .iter_mut()
                             .find(|host| host.address == address)
@@ -357,11 +348,15 @@ impl NetManager<Server> {
 
                     // TODO(alex) [low] 2021-05-25: Is there a way to better handle this case?
                     if self
-                        .kind
+                        .connection
                         .requesting_connection
                         .iter()
                         .any(|h| h.address == source)
-                        || self.kind.connected.iter().any(|h| h.address == source)
+                        || self
+                            .connection
+                            .connected
+                            .iter()
+                            .any(|h| h.address == source)
                     {
                         error!("Host is already in another state to receive this packet!");
                         continue;
@@ -383,7 +378,7 @@ impl NetManager<Server> {
                         state,
                     };
 
-                    let id = self.kind.id_tracker;
+                    let id = self.connection.id_tracker;
                     let state = Queued {
                         time: self.timer.elapsed(),
                         destination: host.address,
@@ -391,15 +386,15 @@ impl NetManager<Server> {
                     let packet = Packet { id, state };
                     let connection_accepted = SenderEvent::QueuedConnectionAccepted { packet };
 
-                    self.kind.requesting_connection.push(host);
+                    self.connection.requesting_connection.push(host);
                     self.event_system.sender.push(connection_accepted);
-                    self.kind.id_tracker += 1;
+                    self.connection.id_tracker += 1;
                 }
                 ReceiverEvent::AckRemote { .. } => {}
                 ReceiverEvent::DataTransfer { packet } => {
                     debug!("Handling received data transfer for {:#?}", packet);
                     if self
-                        .kind
+                        .connection
                         .requesting_connection
                         .iter()
                         .any(|h| h.address == packet.state.source)
@@ -412,7 +407,7 @@ impl NetManager<Server> {
                     }
 
                     if let Some(host) = self
-                        .kind
+                        .connection
                         .awaiting_connection_ack
                         .drain_filter(|h| {
                             // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
@@ -444,11 +439,11 @@ impl NetManager<Server> {
                             state,
                         };
 
-                        self.kind.connected.push(host);
+                        self.connection.connected.push(host);
                     }
 
                     if let Some(host) = self
-                        .kind
+                        .connection
                         .connected
                         .iter_mut()
                         .find(|h| h.address == packet.state.source)
@@ -476,7 +471,7 @@ impl NetManager<Server> {
                 ReceiverEvent::Heartbeat { packet } => {
                     debug!("Handling received heartbeat for {:#?}", packet);
                     if self
-                        .kind
+                        .connection
                         .requesting_connection
                         .iter()
                         .any(|h| h.address == packet.state.source)
@@ -489,7 +484,7 @@ impl NetManager<Server> {
                     }
 
                     if let Some(host) = self
-                        .kind
+                        .connection
                         .awaiting_connection_ack
                         .drain_filter(|h| {
                             // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
@@ -521,11 +516,11 @@ impl NetManager<Server> {
                             state,
                         };
 
-                        self.kind.connected.push(host);
+                        self.connection.connected.push(host);
                     }
 
                     if let Some(host) = self
-                        .kind
+                        .connection
                         .connected
                         .iter_mut()
                         .find(|h| h.address == packet.state.source)

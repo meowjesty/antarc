@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-
-trait Connection {}
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    fmt,
+};
 
 #[derive(Debug, PartialEq, Clone)]
 struct Connecting;
@@ -17,41 +19,59 @@ struct Host<State> {
     state: State,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug)]
 struct Client {
-    connecting: Option<Host<Connecting>>,
-    awaiting: Option<Host<Awaiting>>,
-    connected: Option<Host<Connected>>,
-    // server: HashMap<impl Connection, Host>,
+    connecting: Vec<Host<Connecting>>,
+    awaiting: Vec<Host<Awaiting>>,
+    connected: Vec<Host<Connected>>,
 }
 
 fn main() {
     let mut client = Client {
-        connecting: None,
-        awaiting: None,
-        connected: None,
+        connecting: Vec::with_capacity(1),
+        awaiting: Vec::with_capacity(1),
+        connected: Vec::with_capacity(1),
     };
 
     println!("Connect to server {:#?}", client);
-    client.connecting = Some(Host {
-        id: 1,
-        state: Connecting,
-    });
+    client.connecting.insert(
+        0,
+        Host {
+            id: 1,
+            state: Connecting,
+        },
+    );
     println!("connecting... {:#?}", client);
 
     println!("Received connection ack");
-    let connecting = client.connecting.take().unwrap();
-    client.awaiting = Some(Host {
-        id: connecting.id,
-        state: Awaiting,
-    });
+    let connecting = client.connecting.remove(0);
+    client.awaiting.insert(
+        0,
+        Host {
+            id: connecting.id,
+            state: Awaiting,
+        },
+    );
     println!("awaiting connection accepted ... {:#?}", client);
 
     println!("Received connection accepted!");
-    let awaiting = client.awaiting.take().unwrap();
-    client.connected = Some(Host {
-        id: awaiting.id,
-        state: Connected,
-    });
+    let awaiting = client.awaiting.remove(0);
+    client.connected.insert(
+        0,
+        Host {
+            id: awaiting.id,
+            state: Connected,
+        },
+    );
+    println!("connected {:#?}", client);
+
+    let insert_again = client.connected.remove(0);
+    client.awaiting.insert(
+        0,
+        Host {
+            id: insert_again.id,
+            state: Awaiting,
+        },
+    );
     println!("connected {:#?}", client);
 }
