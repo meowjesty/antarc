@@ -8,4 +8,5 @@ members = [
     "with-state-no-event",
     "with-callback",
     "host-state",
+    "antarc-protocol",
 ]
