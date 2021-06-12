@@ -10,7 +10,7 @@ use log::{debug, error, warn};
 use super::SendTo;
 use crate::{
     events::{AntarcError, FailureEvent, ReceiverEvent, SenderEvent},
-    host::{AwaitingConnectionAck, Connected, Disconnected, Host, HostState, RequestingConnection},
+    host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
         header::{ConnectionRequest, DataTransfer, Header, Heartbeat},
@@ -224,7 +224,7 @@ impl NetManager<Server> {
 
         // TODO(alex) [mid] 2021-05-27: Send a heartbeat, look at the connected hosts only.
         for host in self.connection.connected.iter() {
-            let threshold = host.state.time_last_sent + Duration::from_millis(1500);
+            let threshold = host.state.latest_sent_time + Duration::from_millis(1500);
             let time_expired = threshold < self.timer.elapsed();
             if time_expired {
                 debug!(
@@ -242,22 +242,6 @@ impl NetManager<Server> {
             || self.connection.connected.len() > 0;
 
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
-        //
-        // ADD(alex) [high] 2021-06-07: Refactored part of the header and encoding into `Host`
-        // functions, but having a hard time figuring out how to refactor the more type dependent
-        // things. Like, how do I refactor the send match, if each send is different?
-        //
-        // ADD(alex) [high] 2021-06-08: Still having a hard time figuring out the previous comment,
-        // I've tried putting it into a separate function, but we consume the Payload in the
-        // `prepare_` method, so on error, we return it and end up pretty much with this same code.
-        //
-        // The best approach on what to do next is probably to do the `after_send` functions, like
-        // changing host state on connection accepted sent, and so on.
-        //
-        // Changing state on `after_send` is a bit too cumbersome (and hard to make it work without
-        // hacks), I think the best approach is what I'm doing now, after `send!` just do the state
-        // changing, if things went wrong the macro `break`s out of the loop and we never change
-        // state improperly.
         while self.network.writable && has_host && self.event_system.sender.len() > 0 {
             debug_assert!(self.event_system.sender.len() > 0);
 
@@ -308,7 +292,7 @@ impl NetManager<Server> {
 
                         let requesting_connection =
                             self.connection.requesting_connection.remove(index);
-                        let host = requesting_connection.await_connection(connection_id);
+                        let host = requesting_connection.await_connection();
                         self.connection.awaiting_connection_ack.push(host);
 
                         self.net_type.connection_id_tracker =
@@ -367,16 +351,7 @@ impl NetManager<Server> {
                     // TODO(alex) [low] 2021-05-26: Always creating a new host here, as I've dropped
                     // the concept of a `Disconnected` host, this could be revisited later when the
                     // design is clearer.
-                    let ack_tracker = packet.state.header.info.sequence.get();
-                    let state = RequestingConnection { attempts: 0 };
-                    let host = Host {
-                        sequence_tracker: Sequence::default(),
-                        remote_ack_tracker: ack_tracker,
-                        local_ack_tracker: 0,
-                        address: source,
-                        received: Vec::with_capacity(128),
-                        state,
-                    };
+                    let host = Host::received_connection_request(source);
 
                     let id = self.connection.id_tracker;
                     let state = Queued {
@@ -417,27 +392,8 @@ impl NetManager<Server> {
                         .next()
                     {
                         debug!("Host was awaiting connection ack.");
-                        let connection_id = host.state.connection_id;
-                        let last_sent = host.state.last_sent;
-                        let state = Connected {
-                            connection_id,
-                            rtt: Duration::default(),
-                            last_sent,
-                            time_last_sent: Duration::default(),
-                        };
-                        let sequence_tracker = host.sequence_tracker;
-                        let ack_tracker = host.remote_ack_tracker;
-                        let last_acked = host.local_ack_tracker;
-                        let address = host.address;
-                        let received = host.received;
-                        let host = Host {
-                            sequence_tracker,
-                            remote_ack_tracker: ack_tracker,
-                            local_ack_tracker: last_acked,
-                            address,
-                            received,
-                            state,
-                        };
+                        let connection_id = packet.state.footer.connection_id.unwrap();
+                        let host = host.connection_accepted(connection_id);
 
                         self.connection.connected.push(host);
                     }
@@ -463,7 +419,7 @@ impl NetManager<Server> {
                             .then(|| packet.state.header.info.sequence.get())
                             .unwrap_or(host.remote_ack_tracker);
 
-                        host.received.push(packet);
+                        host.state.recv_data_transfers.push(packet);
 
                         self.retrievable_count += 1;
                     }
@@ -494,27 +450,8 @@ impl NetManager<Server> {
                         .next()
                     {
                         debug!("Host was awaiting connection ack.");
-                        let connection_id = host.state.connection_id;
-                        let last_sent = host.state.last_sent;
-                        let state = Connected {
-                            connection_id,
-                            rtt: Duration::default(),
-                            last_sent,
-                            time_last_sent: Duration::default(),
-                        };
-                        let sequence_tracker = host.sequence_tracker;
-                        let ack_tracker = host.remote_ack_tracker;
-                        let last_acked = host.local_ack_tracker;
-                        let address = host.address;
-                        let received = host.received;
-                        let host = Host {
-                            sequence_tracker,
-                            remote_ack_tracker: ack_tracker,
-                            local_ack_tracker: last_acked,
-                            address,
-                            received,
-                            state,
-                        };
+                        let connection_id = packet.state.footer.connection_id.unwrap();
+                        let host = host.connection_accepted(connection_id);
 
                         self.connection.connected.push(host);
                     }
@@ -540,7 +477,7 @@ impl NetManager<Server> {
                             .then(|| packet.state.header.info.sequence.get())
                             .unwrap_or(host.remote_ack_tracker);
 
-                        // host.received.push(packet);
+                        host.state.recv_heartbeats.push(packet);
                     }
                 }
             }

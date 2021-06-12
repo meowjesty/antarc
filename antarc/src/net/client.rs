@@ -11,7 +11,7 @@ use mio::net::UdpSocket;
 use super::SendTo;
 use crate::{
     events::{FailureEvent, ReceiverEvent, SenderEvent},
-    host::{Connected, Disconnected, Generic, Host, HostState, RequestingConnection},
+    host::{Connected, Disconnected, Host, RequestingConnection},
     net::{NetManager, NetworkResource},
     packet::{
         header::{DataTransfer, Header},
@@ -72,7 +72,7 @@ impl NetManager<Client> {
     /// approach very much.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> Result<ConnectionId, String> {
         debug!("Connecting to {:#?}.", server_addr);
-        let server = Host::new_requesting_connection(server_addr.clone());
+        let server = Host::starting_connection_request(server_addr.clone());
         self.connection.requesting_connection.insert(0, server);
 
         let mut time_sent = self.timer.elapsed();
@@ -119,7 +119,8 @@ impl NetManager<Client> {
                         if packet.state.header.info.status_code == CONNECTION_ACCEPTED {
                             debug!("Received ConnectionAccepted!");
                             let server = self.connection.awaiting_connection_ack.remove(0);
-                            let mut connected = server.connection_accepted();
+                            let connection_id = packet.state.footer.connection_id.unwrap();
+                            let mut connected = server.connection_accepted(connection_id);
                             let connection_id = packet.state.footer.connection_id.unwrap();
                             self.connection.id_tracker += 1;
                             self.net_type.last_sent_time = time_sent;
@@ -183,7 +184,10 @@ impl NetManager<Client> {
                         // have this field, then `NetManager::Connection` will be different for
                         // `Server` and `Client`.
                         let server = self.connection.requesting_connection.remove(0);
-                        // let awaiting_connection = server.sent_request()
+                        let awaiting_connection = server.await_connection();
+                        self.connection
+                            .awaiting_connection_ack
+                            .push(awaiting_connection);
                     }
                     Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                         warn!("Would block on send_to {:?}", fail);
@@ -494,7 +498,7 @@ impl NetManager<Client> {
             }
         }
 
-        Ok(self.connection.connected.get(0).unwrap().received.len())
+        todo!()
     }
 
     /// NOTE(alex): This is less of a system, and more just a function that the user will call,

@@ -48,26 +48,8 @@ pub(crate) struct RequestingConnection {
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct SendingConnectionRequest {
-    pub(crate) attempts: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub(crate) struct AwaitingConnectionAck {
     pub(crate) attempts: u32,
-    pub(crate) connection_id: ConnectionId,
-    pub(crate) last_sent: PacketId,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AwaitingConnectionResponse {
-    pub(crate) attempts: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AckingConnection {
-    attempts: u32,
-    pub(crate) connection_id: ConnectionId,
 }
 
 #[derive(Debug, Clone)]
@@ -76,8 +58,14 @@ pub(crate) struct Connected {
     /// TODO(alex) [low] 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
     pub(crate) rtt: Duration,
-    pub(crate) last_sent: PacketId,
-    pub(crate) time_last_sent: Duration,
+    pub(crate) latest_sent_id: PacketId,
+    pub(crate) latest_sent_time: Duration,
+
+    pub(crate) recv_data_transfers: Vec<Packet<Received<DataTransfer>>>,
+    pub(crate) recv_heartbeats: Vec<Packet<Received<Heartbeat>>>,
+
+    pub(crate) sent_data_transfers: Vec<Packet<Sent<DataTransfer>>>,
+    pub(crate) sent_heartbeats: Vec<Packet<Sent<Heartbeat>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,10 +74,6 @@ pub(crate) struct Host<State> {
     pub(crate) remote_ack_tracker: Ack,
     pub(crate) local_ack_tracker: Ack,
     pub(crate) address: SocketAddr,
-    // TODO(alex) [mid] 2021-05-26: `Received` should not contain the payload, let's put the
-    // payload in a `HashMap<ConnectionId, Vec<Payload>>` in the server/client, to ease the
-    // `retrieve` impl.
-    pub(crate) received: Vec<Packet<Received<DataTransfer>>>,
     pub(crate) state: State,
 }
 
@@ -101,74 +85,8 @@ impl Host<Disconnected> {
             remote_ack_tracker: 0,
             local_ack_tracker: 0,
             address,
-            received: Vec::with_capacity(32),
             state,
         }
-    }
-}
-
-impl Host<Generic> {
-    pub(crate) fn new_generic(address: SocketAddr) -> Self {
-        let state = Generic {
-            state: HostState::Disconnected,
-        };
-
-        Self {
-            sequence_tracker: Sequence::default(),
-            remote_ack_tracker: 0,
-            local_ack_tracker: 0,
-            address,
-            received: Vec::with_capacity(32),
-            state,
-        }
-    }
-
-    pub(crate) fn prepare_data_transfer(
-        &self,
-        payload: Payload,
-    ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
-        if let HostState::Connected { info } = &self.state.state {
-            let sequence = self.sequence_tracker;
-            let ack = self.remote_ack_tracker;
-            let connection_id = info.connection_id;
-            let header = Header::data_transfer(sequence, ack, payload);
-            let (bytes, footer) =
-                Packet::encode(&header.kind.payload, &header.info, Some(connection_id));
-
-            (header, bytes, footer)
-        } else {
-            panic!("Host invalid state {:#?}", self);
-        }
-    }
-
-    pub(crate) fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
-        if let HostState::Connected { info } = &self.state.state {
-            let sequence = self.sequence_tracker;
-            let ack = self.remote_ack_tracker;
-            let connection_id = info.connection_id;
-            let header = Header::heartbeat(sequence, ack);
-            let payload = Payload::default();
-            let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
-
-            (header, bytes, footer)
-        } else {
-            panic!("Host invalid state {:#?}", self);
-        }
-    }
-
-    pub(crate) fn new_local() -> Self {
-        Self::new_generic("127.0.0.1:7777".parse().unwrap())
-    }
-
-    pub(crate) fn disconnected(&self) -> bool {
-        match self.state.state {
-            HostState::Disconnected => true,
-            _ => false,
-        }
-    }
-
-    pub(crate) fn after_send(&mut self) {
-        self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
     }
 }
 
@@ -205,14 +123,24 @@ impl Host<Connected> {
 }
 
 impl Host<RequestingConnection> {
-    pub(crate) fn new_requesting_connection(address: SocketAddr) -> Self {
+    pub(crate) fn starting_connection_request(address: SocketAddr) -> Self {
         let state = RequestingConnection { attempts: 0 };
         Self {
             sequence_tracker: Sequence::default(),
             remote_ack_tracker: 0,
             local_ack_tracker: 0,
             address,
-            received: Vec::with_capacity(32),
+            state,
+        }
+    }
+
+    pub(crate) fn received_connection_request(address: SocketAddr) -> Self {
+        let state = RequestingConnection { attempts: 0 };
+        Self {
+            sequence_tracker: Sequence::default(),
+            remote_ack_tracker: 1,
+            local_ack_tracker: 0,
+            address,
             state,
         }
     }
@@ -238,21 +166,13 @@ impl Host<RequestingConnection> {
         self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
     }
 
-    pub(crate) fn await_connection(
-        self,
-        connection_id: ConnectionId,
-    ) -> Host<AwaitingConnectionAck> {
-        let state = AwaitingConnectionAck {
-            attempts: 0,
-            connection_id,
-            last_sent: 1,
-        };
+    pub(crate) fn await_connection(self) -> Host<AwaitingConnectionAck> {
+        let state = AwaitingConnectionAck { attempts: 0 };
         let host = Host {
             sequence_tracker: unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) },
             remote_ack_tracker: 1,
             local_ack_tracker: self.local_ack_tracker,
             address: self.address,
-            received: self.received,
             state,
         };
 
@@ -261,50 +181,31 @@ impl Host<RequestingConnection> {
 }
 
 impl Host<AwaitingConnectionAck> {
-    pub(crate) fn connection_accepted(self) -> Host<Connected> {
+    pub(crate) fn connection_accepted(self, connection_id: ConnectionId) -> Host<Connected> {
+        let recv_data_transfers = Vec::with_capacity(32);
+        let recv_heartbeats = Vec::with_capacity(32);
+        let sent_data_transfers = Vec::with_capacity(32);
+        let sent_heartbeats = Vec::with_capacity(32);
+
         let state = Connected {
-            connection_id: self.state.connection_id,
+            connection_id,
             rtt: Duration::default(),
-            last_sent: self.state.last_sent,
-            time_last_sent: Duration::default(),
+            latest_sent_id: 0,
+            latest_sent_time: Duration::default(),
+            recv_data_transfers,
+            recv_heartbeats,
+            sent_data_transfers,
+            sent_heartbeats,
         };
         let host = Host {
             sequence_tracker: unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) },
             remote_ack_tracker: 1,
             local_ack_tracker: self.local_ack_tracker,
             address: self.address,
-            received: self.received,
             state,
         };
 
         host
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Generic {
-    // TODO(alex) 2021-05-17: This name is horrible, the naming conventions used here are kinda
-    // confusing in general, `host.rs` file warrants a big renaming.
-    pub(crate) state: HostState,
-}
-
-// TODO(alex) 2021-05-17: Should I reverse this with `HostInfo`? We could have a struct `Host` that
-// takes an enum `HostState` with these additional fields, this will simplify passing down hosts
-// between events and so on.
-#[derive(Debug, Clone)]
-pub(crate) enum HostState {
-    Disconnected,
-    RequestingConnection { info: RequestingConnection },
-    AwaitingConnectionResponse { info: AwaitingConnectionResponse },
-    Connected { info: Connected },
-}
-
-impl HostState {
-    pub(crate) fn connection_id(&self) -> Option<ConnectionId> {
-        match self {
-            HostState::Connected { info } => Some(info.connection_id),
-            _ => None,
-        }
     }
 }
 
