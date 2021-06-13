@@ -7,7 +7,7 @@ use super::{
     payload::Payload,
     ConnectionId, Footer, Packet, Sent,
 };
-use crate::{ProtocolId, PROTOCOL_ID_BYTES};
+use crate::{net::server::PacketId, ProtocolId, PROTOCOL_ID_BYTES};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Queued {
@@ -60,5 +60,33 @@ impl Packet<Queued> {
         let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
 
         (packet_bytes, footer)
+    }
+
+    pub(crate) fn new(packet_id: PacketId, time: Duration, destination: SocketAddr) -> Self {
+        let state = Queued { time, destination };
+        let packet = Packet {
+            id: packet_id,
+            state,
+        };
+
+        packet
+    }
+
+    pub(crate) fn to_sent<T>(
+        self,
+        header: Header<T>,
+        footer: Footer,
+        time: Duration,
+        destination: SocketAddr,
+    ) -> Packet<Sent<T>> {
+        let state = Sent {
+            header,
+            footer,
+            time,
+            destination,
+        };
+        let packet = Packet { id: self.id, state };
+
+        packet
     }
 }

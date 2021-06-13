@@ -1,5 +1,5 @@
 use core::mem;
-use std::{convert::TryInto, io::Cursor};
+use std::{convert::TryInto, io::Cursor, marker::PhantomData};
 
 use super::{
     payload::Payload, Ack, Sequence, StatusCode, CONNECTION_ACCEPTED, CONNECTION_REQUEST,
@@ -54,10 +54,14 @@ pub(crate) struct ConnectionRequest;
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct ConnectionAccepted;
 
+// TODO(alex) 2021-06-13 [high]: Is there any reason to keep the list of all payloads received/sent?
+// When the user schedules a packet, we keep the payload as part of the event, so we ping-pong the
+// payload until it's properly sent, or the packet is cancelled.
+// On the receiver side, we don't care at all about the payload, as there is no failure point, we
+// hold it until the user retrieves all payloads and that's it.
+// Think dropping it from here makes perfect sense.
 #[derive(Debug, PartialEq, Clone, PartialOrd)]
-pub(crate) struct DataTransfer {
-    pub(crate) payload: Payload,
-}
+pub(crate) struct DataTransfer;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct Heartbeat;
@@ -68,7 +72,7 @@ pub(crate) struct Generic;
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
 pub(crate) struct Header<Kind> {
     pub(crate) info: HeaderInfo,
-    pub(crate) kind: Kind,
+    pub(crate) marker: PhantomData<Kind>,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -88,9 +92,11 @@ impl Header<ConnectionRequest> {
             status_code: CONNECTION_REQUEST,
             payload_length: 0,
         };
-        let kind = ConnectionRequest;
 
-        Self { info, kind }
+        Self {
+            info,
+            marker: PhantomData::default(),
+        }
     }
 }
 
@@ -103,9 +109,11 @@ impl Header<ConnectionAccepted> {
             status_code: CONNECTION_ACCEPTED,
             payload_length: 0,
         };
-        let kind = ConnectionAccepted;
 
-        Self { info, kind }
+        Self {
+            info,
+            marker: PhantomData::default(),
+        }
     }
 }
 
@@ -113,19 +121,20 @@ impl Header<DataTransfer> {
     pub(crate) fn data_transfer(
         sequence: Sequence,
         ack: u32,
-        payload: Payload,
+        payload_length: u16,
     ) -> Header<DataTransfer> {
-        let payload_length = payload.len();
         let info = HeaderInfo {
             sequence,
             ack,
             past_acks: 0,
             status_code: DATA_TRANSFER,
-            payload_length: payload_length.try_into().unwrap(),
+            payload_length,
         };
-        let kind = DataTransfer { payload };
 
-        Self { info, kind }
+        Self {
+            info,
+            marker: PhantomData::default(),
+        }
     }
 }
 
@@ -138,9 +147,11 @@ impl Header<Heartbeat> {
             status_code: DATA_TRANSFER,
             payload_length: 0,
         };
-        let kind = Heartbeat;
 
-        Self { info, kind }
+        Self {
+            info,
+            marker: PhantomData::default(),
+        }
     }
 }
 

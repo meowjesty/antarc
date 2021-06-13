@@ -21,6 +21,7 @@ use std::{
 use packet::header::{Header, ENCODED_SIZE};
 
 // pub mod client;
+pub(crate) mod connection;
 pub(crate) mod events;
 pub mod host;
 pub mod net;

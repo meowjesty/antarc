@@ -9,7 +9,11 @@ use std::{
 use crc32fast::Hasher;
 use log::{debug, error};
 
-use self::{header::Header, kind::PacketKind, payload::Payload};
+use self::{
+    header::{Header, Heartbeat},
+    kind::PacketKind,
+    payload::Payload,
+};
 use crate::{
     events::AntarcError, net::server::PacketId, packet::sequence::Sequence, read_buffer_inc,
     ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
@@ -81,6 +85,26 @@ pub(crate) struct Sent<Kind> {
     pub(crate) footer: Footer,
     pub(crate) time: Duration,
     pub(crate) destination: SocketAddr,
+}
+
+impl Packet<Sent<Heartbeat>> {
+    pub(crate) fn sent_heartbeat(
+        id: PacketId,
+        header: Header<Heartbeat>,
+        footer: Footer,
+        time: Duration,
+        destination: SocketAddr,
+    ) -> Self {
+        let state = Sent {
+            header,
+            footer,
+            time,
+            destination,
+        };
+        let packet = Packet { id, state };
+
+        packet
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

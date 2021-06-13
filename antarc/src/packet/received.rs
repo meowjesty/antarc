@@ -1,5 +1,6 @@
 use std::{
     convert::TryInto,
+    marker::PhantomData,
     mem::size_of,
     net::SocketAddr,
     num::NonZeroU32,
@@ -9,7 +10,7 @@ use std::{
 use crc32fast::Hasher;
 
 use super::{
-    header::{Generic, Header, HeaderInfo},
+    header::{ConnectionRequest, DataTransfer, Generic, Header, HeaderInfo, Heartbeat},
     payload::Payload,
     ConnectionId, Footer, Packet, Sent,
 };
@@ -114,7 +115,7 @@ impl Packet<Received<Generic>> {
 
             let header = Header {
                 info: header_info,
-                kind: Generic,
+                marker: PhantomData::default(),
             };
             let state = Received {
                 header,
@@ -132,5 +133,68 @@ impl Packet<Received<Generic>> {
                 expected: unsafe { NonZeroU32::new_unchecked(crc32) },
             })
         }
+    }
+}
+
+impl From<Packet<Received<Generic>>> for Packet<Received<DataTransfer>> {
+    fn from(packet: Packet<Received<Generic>>) -> Self {
+        let header = Header {
+            info: packet.state.header.info,
+            marker: PhantomData::default(),
+        };
+        let state = Received {
+            header,
+            footer: packet.state.footer,
+            time: packet.state.time,
+            source: packet.state.source,
+        };
+        let packet = Packet {
+            id: packet.id,
+            state,
+        };
+
+        packet
+    }
+}
+
+impl From<Packet<Received<Generic>>> for Packet<Received<ConnectionRequest>> {
+    fn from(packet: Packet<Received<Generic>>) -> Self {
+        let header = Header {
+            info: packet.state.header.info,
+            marker: PhantomData::default(),
+        };
+        let state = Received {
+            header,
+            footer: packet.state.footer,
+            time: packet.state.time,
+            source: packet.state.source,
+        };
+        let packet = Packet {
+            id: packet.id,
+            state,
+        };
+
+        packet
+    }
+}
+
+impl From<Packet<Received<Generic>>> for Packet<Received<Heartbeat>> {
+    fn from(packet: Packet<Received<Generic>>) -> Self {
+        let header = Header {
+            info: packet.state.header.info,
+            marker: PhantomData::default(),
+        };
+        let state = Received {
+            header,
+            footer: packet.state.footer,
+            time: packet.state.time,
+            source: packet.state.source,
+        };
+        let packet = Packet {
+            id: packet.id,
+            state,
+        };
+
+        packet
     }
 }

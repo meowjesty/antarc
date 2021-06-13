@@ -108,7 +108,7 @@ impl NetManager<Client> {
                         debug_assert!(num_received > 0);
 
                         let (packet, _) = Packet::decode(
-                            self.connection.id_tracker,
+                            self.connection.packet_id_tracker,
                             &self.buffer[..num_received],
                             source,
                             &self.timer,
@@ -122,7 +122,7 @@ impl NetManager<Client> {
                             let connection_id = packet.state.footer.connection_id.unwrap();
                             let mut connected = server.connection_accepted(connection_id);
                             let connection_id = packet.state.footer.connection_id.unwrap();
-                            self.connection.id_tracker += 1;
+                            self.connection.packet_id_tracker += 1;
                             self.net_type.last_sent_time = time_sent;
                             connected.local_ack_tracker = packet.state.header.info.ack;
                             connected.remote_ack_tracker = packet.state.header.info.sequence.get();
@@ -216,7 +216,7 @@ impl NetManager<Client> {
     }
 
     pub fn enqueue(&mut self, message: Vec<u8>) -> u64 {
-        let id = self.connection.id_tracker;
+        let id = self.connection.packet_id_tracker;
         let destination = self.connection.connected.get(0).unwrap().address;
         let state = Queued {
             time: self.timer.elapsed(),
@@ -230,7 +230,7 @@ impl NetManager<Client> {
                 packet,
                 payload: Payload(message),
             });
-        self.connection.id_tracker += 1;
+        self.connection.packet_id_tracker += 1;
 
         id
     }
@@ -283,7 +283,7 @@ impl NetManager<Client> {
                     }
 
                     let (packet, payload) = Packet::decode(
-                        self.connection.id_tracker,
+                        self.connection.packet_id_tracker,
                         &self.buffer[..num_received],
                         source,
                         &self.timer,
@@ -332,30 +332,19 @@ impl NetManager<Client> {
                             // retrievable.
                             //
                             // ADD(alex) [high] 2021-06-06: Handle these kinds of events!
-                            let header = Header {
-                                info: packet.state.header.info,
-                                kind: DataTransfer { payload },
-                            };
-                            let state = Received {
-                                header,
-                                footer: packet.state.footer,
-                                time: packet.state.time,
-                                source: packet.state.source,
-                            };
-                            let packet = Packet {
-                                id: packet.id,
-                                state,
-                            };
                             self.event_system
                                 .receiver
-                                .push(ReceiverEvent::DataTransfer { packet });
+                                .push(ReceiverEvent::DataTransfer {
+                                    packet: packet.into(),
+                                    payload,
+                                });
                         }
                         invalid => {
                             panic!("Status code is {:#?}.", invalid);
                         }
                     }
 
-                    self.connection.id_tracker += 1;
+                    self.connection.packet_id_tracker += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv {:?}", fail);
@@ -386,7 +375,7 @@ impl NetManager<Client> {
                             .connected
                             .get(0)
                             .unwrap()
-                            .prepare_data_transfer(payload);
+                            .prepare_data_transfer(&payload);
 
                         match self.network.udp_socket.send_to(&bytes, destination) {
                             Ok(num_sent) => {
@@ -404,10 +393,7 @@ impl NetManager<Client> {
                                 // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
                                 // it could end up being a duplicated packet, sequence and ack are
                                 // only incremented when send is successful.
-                                let failed = FailureEvent::SendDataTransfer {
-                                    packet,
-                                    payload: header.kind.payload,
-                                };
+                                let failed = FailureEvent::SendDataTransfer { packet, payload };
                                 self.event_system.failures.push(failed);
 
                                 break;
@@ -477,7 +463,7 @@ impl NetManager<Client> {
 
                                 self.net_type.last_sent_time = self.timer.elapsed();
                                 self.connection.connected.get_mut(0).unwrap().after_send();
-                                self.connection.id_tracker += 1;
+                                self.connection.packet_id_tracker += 1;
                             }
                             Err(fail) => {
                                 if fail.kind() == io::ErrorKind::WouldBlock {

@@ -8,6 +8,7 @@ use mio::{
 
 use self::server::PacketId;
 use crate::{
+    connection::Connection,
     events::{FailureEvent, ReceiverEvent, SenderEvent},
     host::{AwaitingConnectionAck, Connected, Host, RequestingConnection},
     packet::{
@@ -56,7 +57,7 @@ pub struct NetManager<ClientOrServer> {
     pub(crate) net_type: ClientOrServer,
     pub(crate) network: NetworkResource,
     pub(crate) connection: Connection,
-    pub(crate) retrievable: HashMap<ConnectionId, Vec<Vec<u8>>>,
+    pub(crate) retrievable: Vec<(ConnectionId, Vec<u8>)>,
     pub(crate) retrievable_count: usize,
     pub(crate) event_system: EventSystem,
 }
@@ -68,27 +69,6 @@ pub(crate) struct NetworkResource {
     pub(crate) readable: bool,
     pub(crate) poll: Poll,
     pub(crate) events: Events,
-}
-
-#[derive(Debug)]
-pub(crate) struct Connection {
-    pub(crate) id_tracker: PacketId,
-    // TODO(alex) [low] 2021-05-25: Why would I need this kind of host?
-    // disconnected: Vec<Host<Disconnected>>,
-    pub(crate) requesting_connection: Vec<Host<RequestingConnection>>,
-    pub(crate) awaiting_connection_ack: Vec<Host<AwaitingConnectionAck>>,
-    pub(crate) connected: Vec<Host<Connected>>,
-}
-
-impl Connection {
-    pub(crate) fn new() -> Self {
-        Self {
-            id_tracker: 0,
-            requesting_connection: Vec::with_capacity(32),
-            awaiting_connection_ack: Vec::with_capacity(32),
-            connected: Vec::with_capacity(32),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -143,7 +123,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
         let timer = Instant::now();
         let buffer = vec![0x0; MTU_LENGTH];
 
-        let retrievable = HashMap::with_capacity(128);
+        let retrievable = Vec::with_capacity(128);
         let network = NetworkResource::new(address);
         let connection = Connection::new();
         let retrievable_count = 0;

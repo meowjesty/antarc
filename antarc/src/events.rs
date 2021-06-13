@@ -77,6 +77,7 @@ pub(crate) enum ReceiverEvent {
     },
     DataTransfer {
         packet: Packet<Received<DataTransfer>>,
+        payload: Payload,
     },
     Heartbeat {
         packet: Packet<Received<Heartbeat>>,

@@ -73,7 +73,7 @@ impl NetManager<Server> {
     // TODO(alex) 2021-05-23: Allow the user to specify the destination of these messages, we then
     // check if they're in the `connected` list, and queue the packets as normal.
     pub fn enqueue(&mut self, message: Vec<u8>) -> PacketId {
-        let id = self.connection.id_tracker;
+        let id = self.connection.packet_id_tracker;
 
         for host in self.connection.connected.iter() {
             let state = Queued {
@@ -90,7 +90,7 @@ impl NetManager<Server> {
                 });
         }
 
-        self.connection.id_tracker += 1;
+        self.connection.packet_id_tracker += 1;
 
         id
     }
@@ -119,7 +119,7 @@ impl NetManager<Server> {
                     debug_assert!(num_received > 0);
 
                     let (packet, payload) = match Packet::decode(
-                        self.connection.id_tracker,
+                        self.connection.packet_id_tracker,
                         &self.buffer[..num_received],
                         source,
                         &self.timer,
@@ -141,64 +141,24 @@ impl NetManager<Server> {
 
                     match packet.state.header.info.status_code {
                         CONNECTION_REQUEST => {
-                            let header = Header {
-                                info: packet.state.header.info,
-                                kind: ConnectionRequest,
-                            };
-                            let state = Received {
-                                header,
-                                footer: packet.state.footer,
-                                time: packet.state.time,
-                                source: packet.state.source,
-                            };
-                            let packet = Packet {
-                                id: packet.id,
-                                state,
-                            };
-
                             self.event_system
                                 .receiver
-                                .push(ReceiverEvent::ConnectionRequest { packet });
+                                .push(ReceiverEvent::ConnectionRequest {
+                                    packet: packet.into(),
+                                });
                         }
                         DATA_TRANSFER => {
-                            let header = Header {
-                                info: packet.state.header.info,
-                                kind: DataTransfer { payload },
-                            };
-                            let state = Received {
-                                header,
-                                footer: packet.state.footer,
-                                time: packet.state.time,
-                                source: packet.state.source,
-                            };
-                            let packet = Packet {
-                                id: packet.id,
-                                state,
-                            };
-
                             self.event_system
                                 .receiver
-                                .push(ReceiverEvent::DataTransfer { packet });
+                                .push(ReceiverEvent::DataTransfer {
+                                    packet: packet.into(),
+                                    payload,
+                                });
                         }
                         HEARTBEAT => {
-                            let header = Header {
-                                info: packet.state.header.info,
-                                kind: Heartbeat,
-                            };
-                            let state = Received {
-                                header,
-                                footer: packet.state.footer,
-                                time: packet.state.time,
-                                source: packet.state.source,
-                            };
-                            let packet = Packet {
-                                id: packet.id,
-                                state,
-                            };
-
-                            self.event_system
-                                .receiver
-                                .push(ReceiverEvent::Heartbeat { packet });
+                            self.event_system.receiver.push(ReceiverEvent::Heartbeat {
+                                packet: packet.into(),
+                            });
                         }
                         invalid => {
                             error!("Server received invalid packet type {:#?}.", invalid);
@@ -206,7 +166,7 @@ impl NetManager<Server> {
                         }
                     }
 
-                    self.connection.id_tracker += 1;
+                    self.connection.packet_id_tracker += 1;
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv_from {:?}", fail);
@@ -237,12 +197,11 @@ impl NetManager<Server> {
             }
         }
 
-        let has_host = self.connection.requesting_connection.len() > 0
-            || self.connection.awaiting_connection_ack.len() > 0
-            || self.connection.connected.len() > 0;
-
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
-        while self.network.writable && has_host && self.event_system.sender.len() > 0 {
+        while self.network.writable
+            && self.event_system.sender.is_empty() == false
+            && self.connection.is_empty() == false
+        {
             debug_assert!(self.event_system.sender.len() > 0);
 
             for event in self.event_system.sender.drain(..1) {
@@ -250,23 +209,28 @@ impl NetManager<Server> {
                     SenderEvent::QueuedDataTransfer { packet, payload } => {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
+                        let destination = packet.state.destination;
                         let connected = self
                             .connection
                             .connected
                             .iter_mut()
-                            .find(|host| host.address == packet.state.destination)
+                            .find(|host| host.address == destination)
                             .unwrap();
 
-                        let (header, bytes, _) = connected.prepare_data_transfer(payload);
+                        let (header, bytes, footer) = connected.prepare_data_transfer(&payload);
                         send!(
                             self,
                             connected,
                             bytes,
                             OnError -> FailureEvent::SendDataTransfer {
                                 packet,
-                                payload: header.kind.payload
+                                payload
                             }
                         );
+
+                        let sent =
+                            packet.to_sent(header, footer, self.timer.elapsed(), destination);
+                        connected.state.sent_data_transfers.push(sent);
                     }
                     SenderEvent::QueuedConnectionAccepted { packet } => {
                         debug!("Handling QueuedConnectionAccepted {:#?}.", packet);
@@ -313,10 +277,26 @@ impl NetManager<Server> {
                             .unwrap();
 
                         let address = connected.address;
-                        let (_, bytes, _) = connected.prepare_heartbeat();
+                        let (header, bytes, footer) = connected.prepare_heartbeat();
 
                         send!(self, connected, bytes,
                             OnError -> FailureEvent::SendHeartbeat { address });
+
+                        // TODO(alex) [vhigh] 2021-06-13: Don't think I need to keep a list of every
+                        // type of packet, to ack packets that are not data transfers I could just
+                        // keep a `not_acked: Vec<HeaderInfo>` just to get access to sequence and
+                        // timer values.
+                        //
+                        // Hmm, as it stands, it would be something pretty similar to what I'm doing
+                        // already, so maybe I'm trying to solve a non-problem.
+                        let sent = Packet::sent_heartbeat(
+                            self.connection.packet_id_tracker,
+                            header,
+                            footer,
+                            self.timer.elapsed(),
+                            address,
+                        );
+                        connected.state.sent_heartbeats.push(sent);
                     }
                 }
             }
@@ -331,17 +311,7 @@ impl NetManager<Server> {
                     let source = packet.state.source;
 
                     // TODO(alex) [low] 2021-05-25: Is there a way to better handle this case?
-                    if self
-                        .connection
-                        .requesting_connection
-                        .iter()
-                        .any(|h| h.address == source)
-                        || self
-                            .connection
-                            .connected
-                            .iter()
-                            .any(|h| h.address == source)
-                    {
+                    if self.connection.is_known(&source) {
                         error!("Host is already in another state to receive this packet!");
                         continue;
                     }
@@ -353,33 +323,20 @@ impl NetManager<Server> {
                     // design is clearer.
                     let host = Host::received_connection_request(source);
 
-                    let id = self.connection.id_tracker;
-                    let state = Queued {
-                        time: self.timer.elapsed(),
-                        destination: host.address,
-                    };
-                    let packet = Packet { id, state };
+                    let packet_id = self.connection.packet_id_tracker;
+                    let packet = Packet::new(packet_id, self.timer.elapsed(), host.address);
                     let connection_accepted = SenderEvent::QueuedConnectionAccepted { packet };
+                    self.event_system.sender.push(connection_accepted);
 
                     self.connection.requesting_connection.push(host);
-                    self.event_system.sender.push(connection_accepted);
-                    self.connection.id_tracker += 1;
+                    self.connection.packet_id_tracker += 1;
                 }
                 ReceiverEvent::AckRemote { .. } => {}
-                ReceiverEvent::DataTransfer { packet } => {
+                ReceiverEvent::DataTransfer { packet, payload } => {
                     debug!("Handling received data transfer for {:#?}", packet);
-                    if self
-                        .connection
-                        .requesting_connection
-                        .iter()
-                        .any(|h| h.address == packet.state.source)
-                    {
-                        error!(
-                            "Host is requesting connection , invalid for data transfer {:#?}!",
-                            packet
-                        );
-                        unreachable!();
-                    }
+
+                    let source = packet.state.source;
+                    debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
 
                     if let Some(host) = self
                         .connection
@@ -387,7 +344,7 @@ impl NetManager<Server> {
                         .drain_filter(|h| {
                             // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
                             // connection accepted sent sequence (1).
-                            h.address == packet.state.source && packet.state.header.info.ack == 1
+                            h.address == source && packet.state.header.info.ack == 1
                         })
                         .next()
                     {
@@ -402,7 +359,7 @@ impl NetManager<Server> {
                         .connection
                         .connected
                         .iter_mut()
-                        .find(|h| h.address == packet.state.source)
+                        .find(|h| h.address == source)
                     {
                         debug!("Updating connected host with data transfer.");
 
@@ -426,18 +383,9 @@ impl NetManager<Server> {
                 }
                 ReceiverEvent::Heartbeat { packet } => {
                     debug!("Handling received heartbeat for {:#?}", packet);
-                    if self
-                        .connection
-                        .requesting_connection
-                        .iter()
-                        .any(|h| h.address == packet.state.source)
-                    {
-                        error!(
-                            "Host is requesting connection, invalid for heartbeat {:#?}!",
-                            packet
-                        );
-                        unreachable!();
-                    }
+
+                    let source = packet.state.source;
+                    debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
 
                     if let Some(host) = self
                         .connection
@@ -445,7 +393,7 @@ impl NetManager<Server> {
                         .drain_filter(|h| {
                             // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
                             // connection accepted sent sequence (1).
-                            h.address == packet.state.source && packet.state.header.info.ack == 1
+                            h.address == source && packet.state.header.info.ack == 1
                         })
                         .next()
                     {
@@ -460,7 +408,7 @@ impl NetManager<Server> {
                         .connection
                         .connected
                         .iter_mut()
-                        .find(|h| h.address == packet.state.source)
+                        .find(|h| h.address == source)
                     {
                         debug!("Updating connected host with heartbeat.");
 
@@ -501,14 +449,13 @@ impl NetManager<Server> {
         Ok(self.retrievable_count)
     }
 
-    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<Vec<u8>>)> {
+    // TODO(alex) [vlow] 2021-06-13: It might be a good idea to return a bit more information than
+    // just `ConnectionId`, such as a sequence, or maybe time received, so that the user may know
+    // which payload is the "freshest".
+    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
         debug!("Retrieve for server.");
         self.retrievable_count = 0;
-        let retrievable = self
-            .retrievable
-            .drain()
-            .map(|(k, v)| (k, v))
-            .collect::<Vec<_>>();
+        let retrievable = self.retrievable.drain(..).collect::<Vec<_>>();
         retrievable
     }
 }

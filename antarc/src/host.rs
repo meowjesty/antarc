@@ -93,14 +93,13 @@ impl Host<Disconnected> {
 impl Host<Connected> {
     pub(crate) fn prepare_data_transfer(
         &self,
-        payload: Payload,
+        payload: &Payload,
     ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
         let sequence = self.sequence_tracker;
         let ack = self.remote_ack_tracker;
         let connection_id = self.state.connection_id;
-        let header = Header::data_transfer(sequence, ack, payload);
-        let (bytes, footer) =
-            Packet::encode(&header.kind.payload, &header.info, Some(connection_id));
+        let header = Header::data_transfer(sequence, ack, payload.len().try_into().unwrap());
+        let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
 
         (header, bytes, footer)
     }
