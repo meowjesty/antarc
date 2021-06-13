@@ -10,6 +10,8 @@ pub(crate) struct Connection {
     pub(crate) packet_id_tracker: PacketId,
     // TODO(alex) [low] 2021-05-25: Why would I need this kind of host?
     // disconnected: Vec<Host<Disconnected>>,
+    // TODO(alex) [mid] 2021-06-08: A `HashMap<SocketAddr, Host<State>>` is probably more
+    // appropriate, as this find address is pertinent.
     pub(crate) requesting_connection: Vec<Host<RequestingConnection>>,
     pub(crate) awaiting_connection_ack: Vec<Host<AwaitingConnectionAck>>,
     pub(crate) connected: Vec<Host<Connected>>,

@@ -282,7 +282,7 @@ impl NetManager<Server> {
                         send!(self, connected, bytes,
                             OnError -> FailureEvent::SendHeartbeat { address });
 
-                        // TODO(alex) [vhigh] 2021-06-13: Don't think I need to keep a list of every
+                        // TODO(alex) [mid] 2021-06-13: Don't think I need to keep a list of every
                         // type of packet, to ack packets that are not data transfers I could just
                         // keep a `not_acked: Vec<HeaderInfo>` just to get access to sequence and
                         // timer values.

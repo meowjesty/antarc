@@ -23,7 +23,7 @@ use crate::{
         ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
         CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
     },
-    MTU_LENGTH,
+    send, MTU_LENGTH,
 };
 
 /// TODO(alex) 2021-02-26: References for ideas about connection:
@@ -370,35 +370,22 @@ impl NetManager<Client> {
                         debug!("Handling QueuedDataTransfer {:#?}.", packet);
 
                         let destination = packet.state.destination;
-                        let (header, bytes, _) = self
-                            .connection
-                            .connected
-                            .get(0)
-                            .unwrap()
-                            .prepare_data_transfer(&payload);
+                        let connected = self.connection.connected.get_mut(0).unwrap();
+                        let (header, bytes, footer) = connected.prepare_data_transfer(&payload);
 
-                        match self.network.udp_socket.send_to(&bytes, destination) {
-                            Ok(num_sent) => {
-                                debug_assert!(num_sent > 0);
-
-                                self.connection.connected.get_mut(0).unwrap().after_send();
-                                self.net_type.last_sent_time = self.timer.elapsed();
+                        send!(
+                            self,
+                            connected,
+                            bytes,
+                            OnError -> FailureEvent::SendDataTransfer {
+                                packet,
+                                payload
                             }
-                            Err(fail) => {
-                                if fail.kind() == io::ErrorKind::WouldBlock {
-                                    warn!("Would block on send_to {:?}", fail);
-                                    self.network.writable = false;
-                                }
+                        );
 
-                                // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
-                                // it could end up being a duplicated packet, sequence and ack are
-                                // only incremented when send is successful.
-                                let failed = FailureEvent::SendDataTransfer { packet, payload };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
-                        }
+                        let sent =
+                            packet.to_sent(header, footer, self.timer.elapsed(), destination);
+                        connected.state.sent_data_transfers.push(sent);
                     }
                     SenderEvent::QueuedConnectionAccepted { .. } => {
                         unreachable!()
@@ -449,36 +436,20 @@ impl NetManager<Client> {
                     SenderEvent::QueuedHeartbeat { address } => {
                         debug!("Handling QueuedHeartbeat {:#?}.", address);
 
-                        let destination = self.connection.connected.get(0).unwrap().address;
-                        let (_, bytes, _) = self
-                            .connection
-                            .connected
-                            .get(0)
-                            .unwrap()
-                            .prepare_heartbeat();
+                        let connected = self.connection.connected.get_mut(0).unwrap();
+                        let (header, bytes, footer) = connected.prepare_heartbeat();
 
-                        match self.network.udp_socket.send_to(&bytes, destination) {
-                            Ok(num_sent) => {
-                                debug_assert!(num_sent > 0);
+                        send!(self, connected, bytes,
+                            OnError -> FailureEvent::SendHeartbeat { address });
 
-                                self.net_type.last_sent_time = self.timer.elapsed();
-                                self.connection.connected.get_mut(0).unwrap().after_send();
-                                self.connection.packet_id_tracker += 1;
-                            }
-                            Err(fail) => {
-                                if fail.kind() == io::ErrorKind::WouldBlock {
-                                    warn!("Would block on send_to {:?}", fail);
-                                    self.network.writable = false;
-                                }
-
-                                let failed = FailureEvent::SendHeartbeat {
-                                    address: destination,
-                                };
-                                self.event_system.failures.push(failed);
-
-                                break;
-                            }
-                        }
+                        let sent = Packet::sent_heartbeat(
+                            self.connection.packet_id_tracker,
+                            header,
+                            footer,
+                            self.timer.elapsed(),
+                            address,
+                        );
+                        connected.state.sent_heartbeats.push(sent);
                     }
                 }
             }
