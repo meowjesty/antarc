@@ -293,6 +293,10 @@ impl NetManager<Client> {
                     // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order packets,
                     // right now we just don't update the ack trackers if they come from a lower
                     // value than what the host has.
+                    //
+                    // TODO(alex) [vhigh] 2021-06-13: Check server ln-344 to see how it's handling
+                    // this mountain of code, it involves finally handling the `ReceiverEvent`s for
+                    // client.
                     self.connection
                         .connected
                         .get_mut(0)
@@ -326,7 +330,9 @@ impl NetManager<Client> {
                         .unwrap_or(self.connection.connected.get(0).unwrap().remote_ack_tracker);
 
                     match packet.state.header.info.status_code {
-                        CONNECTION_REQUEST => {}
+                        CONNECTION_REQUEST => {
+                            unreachable!()
+                        }
                         DATA_TRANSFER => {
                             // TODO(alex) [high] 2021-05-26: Insert payload into list of
                             // retrievable.
@@ -338,6 +344,9 @@ impl NetManager<Client> {
                                     packet: packet.into(),
                                     payload,
                                 });
+                        }
+                        HEARTBEAT => {
+                            todo!()
                         }
                         invalid => {
                             panic!("Status code is {:#?}.", invalid);
