@@ -355,6 +355,9 @@ impl NetManager<Server> {
                         self.connection.connected.push(host);
                     }
 
+                    debug_assert_eq!(self.connection.is_awaiting_connection_ack(&source), false);
+                    debug_assert!(self.connection.is_connected(&source));
+
                     if let Some(host) = self
                         .connection
                         .connected
@@ -403,6 +406,9 @@ impl NetManager<Server> {
 
                         self.connection.connected.push(host);
                     }
+
+                    debug_assert_eq!(self.connection.is_awaiting_connection_ack(&source), false);
+                    debug_assert!(self.connection.is_connected(&source));
 
                     if let Some(host) = self
                         .connection
