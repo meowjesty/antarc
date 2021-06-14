@@ -38,10 +38,30 @@ pub(crate) mod sequence;
 pub(crate) type StatusCode = u16;
 pub(crate) const RESERVED: StatusCode = 0;
 // pub(crate) const FRAGMENTED: StatusCode = 1;
+
+/// NOTE(alex) 2021-06-14:
+/// 1. client initiates the connection by sending a connection request;
+/// 2. server receives connection request, and sends back connection accepted;
+/// 3. client receives connection accepted and sends back a connection ack (this may contain data);
+///
+/// The server at `2` puts the host in AwaitingConnectionAck mode, and doesn't handle data transfer
+/// or heartbeats, until it receives the connection ack from the client, sent at `3`.
+///
+/// Client                                                      Server
+/// sends request       ---->   ()
+/// (awaiting connection accepted) awaiting            -----   receives request
+/// awaiting            <----   sends accepted
+/// receives accepted   -----   awaiting
+/// sends ack           ---->   awaiting
+/// connected           -----   receives ack
+/// connected           -----   connected
 pub(crate) const CONNECTION_REQUEST: StatusCode = 100;
+pub(crate) const CONNECTION_ACCEPTED: StatusCode = 200;
+pub(crate) const CONNECTION_ACK_NO_PAYLOAD: StatusCode = 300;
+pub(crate) const CONNECTION_ACK_WITH_PAYLOAD: StatusCode = 301;
+
 pub(crate) const CHALLENGE_REQUEST: StatusCode = 200;
 pub(crate) const CHALLENGE_RESPONSE: StatusCode = 300;
-pub(crate) const CONNECTION_ACCEPTED: StatusCode = 400;
 pub(crate) const CONNECTION_DENIED: StatusCode = 500;
 pub(crate) const HEARTBEAT: StatusCode = 600;
 pub(crate) const DATA_TRANSFER: StatusCode = 700;
@@ -56,8 +76,7 @@ pub(crate) const ACK: StatusCode = 800;
 /// with packet fragmentation.
 
 /// NOTE(alex): Valid `Packet` state transitions:
-/// - Received -> Retrieved;
-/// - ToSend -> Sent -> Acked;
+/// - Received -> Retrieved; /// - ToSend -> Sent -> Acked;
 pub type ConnectionId = NonZeroU16;
 pub type Ack = u32;
 

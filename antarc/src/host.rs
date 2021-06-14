@@ -52,6 +52,23 @@ pub(crate) struct AwaitingConnectionAck {
     pub(crate) attempts: u32,
 }
 
+// Host in this state will take only CONNECTION_ACK_WITH_PAYLOAD (without) packets.
+#[derive(Debug, Clone)]
+pub(crate) struct PartialConnected {
+    pub(crate) connection_id: ConnectionId,
+    /// TODO(alex) [low] 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
+    /// increasing due to us flooding the network with packets.
+    pub(crate) rtt: Duration,
+    pub(crate) latest_sent_id: PacketId,
+    pub(crate) latest_sent_time: Duration,
+
+    pub(crate) recv_data_transfers: Vec<Packet<Received<DataTransfer>>>,
+    pub(crate) recv_heartbeats: Vec<Packet<Received<Heartbeat>>>,
+
+    pub(crate) sent_data_transfers: Vec<Packet<Sent<DataTransfer>>>,
+    pub(crate) sent_heartbeats: Vec<Packet<Sent<Heartbeat>>>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Connected {
     pub(crate) connection_id: ConnectionId,

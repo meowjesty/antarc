@@ -75,6 +75,13 @@ pub(crate) enum ReceiverEvent {
     ConnectionRequest {
         packet: Packet<Received<ConnectionRequest>>,
     },
+    ConnectionAckDataTransfer {
+        packet: Packet<Received<DataTransfer>>,
+        payload: Payload,
+    },
+    ConnectionAck {
+        packet: Packet<Received<Heartbeat>>,
+    },
     DataTransfer {
         packet: Packet<Received<DataTransfer>>,
         payload: Payload,

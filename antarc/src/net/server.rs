@@ -19,8 +19,9 @@ use crate::{
         queued::Queued,
         received::Received,
         sequence::Sequence,
-        ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
-        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
+        ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_ACK_NO_PAYLOAD,
+        CONNECTION_ACK_WITH_PAYLOAD, CONNECTION_DENIED, CONNECTION_REQUEST, DATA_TRANSFER,
+        HEARTBEAT,
     },
 };
 
@@ -144,6 +145,21 @@ impl NetManager<Server> {
                             self.event_system
                                 .receiver
                                 .push(ReceiverEvent::ConnectionRequest {
+                                    packet: packet.into(),
+                                });
+                        }
+                        CONNECTION_ACK_WITH_PAYLOAD => {
+                            self.event_system.receiver.push(
+                                ReceiverEvent::ConnectionAckDataTransfer {
+                                    packet: packet.into(),
+                                    payload,
+                                },
+                            );
+                        }
+                        CONNECTION_ACK_NO_PAYLOAD => {
+                            self.event_system
+                                .receiver
+                                .push(ReceiverEvent::ConnectionAck {
                                     packet: packet.into(),
                                 });
                         }
@@ -331,9 +347,11 @@ impl NetManager<Server> {
                     self.connection.requesting_connection.push(host);
                     self.connection.packet_id_tracker += 1;
                 }
-                ReceiverEvent::AckRemote { .. } => {}
-                ReceiverEvent::DataTransfer { packet, payload } => {
-                    debug!("Handling received data transfer for {:#?}", packet);
+                ReceiverEvent::ConnectionAckDataTransfer { packet, payload } => {
+                    debug!(
+                        "Handling received connection ack data transfer {:#?}",
+                        packet
+                    );
 
                     let source = packet.state.source;
                     debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
@@ -381,8 +399,8 @@ impl NetManager<Server> {
                         self.retrievable_count += 1;
                     }
                 }
-                ReceiverEvent::Heartbeat { packet } => {
-                    debug!("Handling received heartbeat for {:#?}", packet);
+                ReceiverEvent::ConnectionAck { packet } => {
+                    debug!("Handling received connection ack for {:#?}", packet);
 
                     let source = packet.state.source;
                     debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
@@ -403,6 +421,71 @@ impl NetManager<Server> {
 
                         self.connection.connected.push(host);
                     }
+
+                    if let Some(host) = self
+                        .connection
+                        .connected
+                        .iter_mut()
+                        .find(|h| h.address == source)
+                    {
+                        debug!("Updating connected host with heartbeat.");
+
+                        // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
+                        // packets, right now we just don't update the ack trackers if they come
+                        // from a lower value than what the host has.
+                        host.local_ack_tracker = (packet.state.header.info.ack
+                            > host.local_ack_tracker)
+                            .then(|| packet.state.header.info.ack)
+                            .unwrap_or(host.local_ack_tracker);
+
+                        let remote_sequence = packet.state.header.info.sequence.get();
+                        host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
+                            .then(|| packet.state.header.info.sequence.get())
+                            .unwrap_or(host.remote_ack_tracker);
+
+                        host.state.recv_heartbeats.push(packet);
+                    }
+                }
+                ReceiverEvent::AckRemote { .. } => {}
+                ReceiverEvent::DataTransfer { packet, payload } => {
+                    debug!("Handling received data transfer for {:#?}", packet);
+
+                    let source = packet.state.source;
+                    debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
+                    debug_assert_eq!(self.connection.is_awaiting_connection_ack(&source), false);
+
+                    if let Some(host) = self
+                        .connection
+                        .connected
+                        .iter_mut()
+                        .find(|h| h.address == source)
+                    {
+                        debug!("Updating connected host with data transfer.");
+
+                        // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
+                        // packets, right now we just don't update the ack trackers if they come
+                        // from a lower value than what the host has.
+                        host.local_ack_tracker = (packet.state.header.info.ack
+                            > host.local_ack_tracker)
+                            .then(|| packet.state.header.info.ack)
+                            .unwrap_or(host.local_ack_tracker);
+
+                        let remote_sequence = packet.state.header.info.sequence.get();
+                        host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
+                            .then(|| packet.state.header.info.sequence.get())
+                            .unwrap_or(host.remote_ack_tracker);
+
+                        host.state.recv_data_transfers.push(packet);
+
+                        self.retrievable_count += 1;
+                    }
+                }
+                ReceiverEvent::Heartbeat { packet } => {
+                    debug!("Handling received heartbeat for {:#?}", packet);
+
+                    let source = packet.state.source;
+                    debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
+                    debug_assert_eq!(self.connection.is_awaiting_connection_ack(&source), false);
 
                     if let Some(host) = self
                         .connection
