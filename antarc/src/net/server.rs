@@ -338,6 +338,18 @@ impl NetManager<Server> {
                     let source = packet.state.source;
                     debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
 
+                    // NOTE(alex) 2021-06-14: Thought about multiple ways of removing this check,
+                    // but I can't see any solution. This can be shifted to the client, but that's
+                    // about it.
+                    //
+                    // The issue is that the server won't know if its messages reach the client
+                    // until the client acknowledges at least one, but then, the client won't know
+                    // if the server received this acknowledgment until the server sends back a
+                    // message doing so, which basically shifts this code to the client's side.
+                    //
+                    // In short, because of the unreliable nature of the protocol, this condition
+                    // will always exist, unless some side assumed its message went through.
+                    // Classic chicken-egg.
                     if let Some(host) = self
                         .connection
                         .awaiting_connection_ack
