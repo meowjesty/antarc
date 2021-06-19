@@ -84,6 +84,7 @@ impl NetManager<Client> {
         let (bytes, _) = Packet::encode(&payload, &header.info, None);
         let mut connection_request = Some(bytes.clone());
 
+        // TODO(alex) [vhigh] 2021-06-14: Make this work.
         loop {
             self.network
                 .poll
