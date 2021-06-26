@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct Connection {
+pub struct ConnectionSystem {
     pub packet_id_tracker: PacketId,
     // TODO(alex) [low] 2021-05-25: Why would I need this kind of host?
     // disconnected: Vec<Host<Disconnected>>,
@@ -17,7 +17,7 @@ pub struct Connection {
     pub connected: Vec<Host<Connected>>,
 }
 
-impl Connection {
+impl ConnectionSystem {
     pub fn new() -> Self {
         Self {
             packet_id_tracker: 0,

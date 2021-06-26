@@ -4,14 +4,22 @@
 use core::mem::size_of;
 use std::{
     any::Any,
+    convert::TryInto,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32, NonZeroU8},
     time::{Duration, Instant},
     vec::Drain,
 };
 
+use connection::ConnectionSystem;
 use events::{ProtocolError, SenderEvent};
 use packets::{raw::RawPacket, ConnectionId};
+
+use crate::packets::{
+    header::{ConnectionAccepted, ConnectionRequest, DataTransfer},
+    received::Received,
+    Packet,
+};
 
 pub mod connection;
 pub mod events;
@@ -48,21 +56,85 @@ pub struct Client {
 
 #[derive(Debug)]
 pub struct Protocol<T> {
-    pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub event_system: EventSystem,
     pub retrievable: Vec<(ConnectionId, Vec<u8>)>,
     pub kind: T,
+    pub connection_system: ConnectionSystem,
 }
 
 impl Protocol<Server> {
     pub fn new_server() -> Self {
         todo!()
     }
+
+    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
+        let partial_packet = raw_packet.decode(self.connection_system.packet_id_tracker)?;
+        let source = partial_packet.address;
+
+        if let Some(host) = self
+            .connection_system
+            .requesting_connection
+            .drain_filter(|host| host.address == source)
+            .next()
+        {
+            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+        } else if let Some(host) = self
+            .connection_system
+            .awaiting_connection_ack
+            .drain_filter(|host| host.address == source)
+            .next()
+        {
+            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+        } else if let Some(host) = self
+            .connection_system
+            .connected
+            .drain_filter(|host| host.address == source)
+            .next()
+        {
+            let packet: Packet<Received<DataTransfer>> = partial_packet.try_into()?;
+        } else {
+            let packet: Packet<Received<ConnectionRequest>> = partial_packet.try_into()?;
+        }
+
+        todo!()
+    }
 }
 
 impl Protocol<Client> {
     pub fn new_client() -> Self {
+        todo!()
+    }
+
+    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
+        let partial_packet = raw_packet.decode(self.connection_system.packet_id_tracker)?;
+        let source = partial_packet.address;
+
+        if let Some(host) = self
+            .connection_system
+            .requesting_connection
+            .drain_filter(|host| host.address == source)
+            .next()
+        {
+            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+        } else if let Some(host) = self
+            .connection_system
+            .awaiting_connection_ack
+            .drain_filter(|host| host.address == source)
+            .next()
+        {
+            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+        } else if let Some(host) = self
+            .connection_system
+            .connected
+            .drain_filter(|host| host.address == source)
+            .next()
+        {
+            let packet: Packet<Received<DataTransfer>> = partial_packet.try_into()?;
+        } else {
+            let packet: Packet<Received<ConnectionRequest>> = partial_packet.try_into()?;
+        }
+
         todo!()
     }
 }
@@ -84,12 +156,6 @@ impl<T> Protocol<T> {
             .is_some();
 
         cancelled_packet
-    }
-
-    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
-        let partial_packet = raw_packet.decode(self.packet_id_tracker)?;
-
-        todo!()
     }
 }
 
