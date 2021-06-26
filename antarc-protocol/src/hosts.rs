@@ -8,7 +8,7 @@ use std::{
 use log::{debug, error, warn};
 
 use crate::{
-    packet::{
+    packets::{
         header::{ConnectionAccepted, DataTransfer, Header, Heartbeat},
         payload::Payload,
         received::Received,

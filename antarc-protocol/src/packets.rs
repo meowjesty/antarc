@@ -15,13 +15,15 @@ use self::{
     payload::Payload,
 };
 use crate::{
-    events::ProtocolError, packet::sequence::Sequence, read_buffer_inc, PacketId, ProtocolId,
+    events::ProtocolError, packets::sequence::Sequence, read_buffer_inc, PacketId, ProtocolId,
     PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
 pub mod header;
+pub mod partial;
 pub mod kind;
 pub mod payload;
+pub mod raw;
 pub mod received;
 pub mod scheduled;
 pub mod sequence;
@@ -131,10 +133,4 @@ pub struct Acked<Kind> {
 pub struct Packet<State> {
     pub id: PacketId,
     pub state: State,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RawPacket {
-    pub address: SocketAddr,
-    pub bytes: Vec<u8>,
 }

@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     events::ProtocolError,
-    packet::{
+    packets::{
         header::ENCODED_SIZE, sequence::Sequence, Ack, PacketKind, StatusCode, CONNECTION_REQUEST,
     },
     read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
@@ -34,6 +34,12 @@ impl Packet<Received<Generic>> {
     // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
+    //
+    // TODO(alex) [mid] 2021-06-26: This function returns a `PartialPacket` of some sort, which is
+    // a packet that contain options (well, just the connection id being an option). This partial
+    // is returned (think as a builder object, but not really going that far) and when we know the
+    // host that should receive this packet, then we can check for the packet code and decide which
+    // kind of "real" packet this is.
     pub fn decode(
         id: u64,
         buffer: &[u8],

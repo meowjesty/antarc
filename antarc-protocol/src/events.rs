@@ -7,7 +7,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    packet::{payload::Payload, scheduled::Scheduled, Packet},
+    packets::{payload::Payload, scheduled::Scheduled, Packet},
     ProtocolId,
 };
 #[derive(Debug, Error)]

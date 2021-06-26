@@ -10,13 +10,13 @@ use std::{
     vec::Drain,
 };
 
-use events::SenderEvent;
-use packet::{ConnectionId, RawPacket};
+use events::{ProtocolError, SenderEvent};
+use packets::{raw::RawPacket, ConnectionId};
 
 pub mod connection;
 pub mod events;
 pub mod hosts;
-pub mod packet;
+pub mod packets;
 
 #[macro_export]
 macro_rules! read_buffer_inc {
@@ -37,8 +37,8 @@ pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().t
 
 #[derive(Debug)]
 pub struct Server {
-    last_antarc_schedule_check: Duration,
-    connection_id_tracker: ConnectionId,
+    pub last_antarc_schedule_check: Duration,
+    pub connection_id_tracker: ConnectionId,
 }
 
 #[derive(Debug)]
@@ -48,6 +48,7 @@ pub struct Client {
 
 #[derive(Debug)]
 pub struct Protocol<T> {
+    pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub event_system: EventSystem,
     pub retrievable: Vec<(ConnectionId, Vec<u8>)>,
@@ -83,6 +84,12 @@ impl<T> Protocol<T> {
             .is_some();
 
         cancelled_packet
+    }
+
+    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
+        let partial_packet = raw_packet.decode(self.packet_id_tracker)?;
+
+        todo!()
     }
 }
 

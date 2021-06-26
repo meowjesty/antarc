@@ -8,7 +8,7 @@ use std::{
 use antarc_protocol::{
     events::SenderEvent,
     hosts::Host,
-    packet::{
+    packets::{
         header::Header, payload::Payload, scheduled::Scheduled, ConnectionId, Packet, Sent,
         CONNECTION_ACCEPTED, CONNECTION_DENIED,
     },

@@ -3,11 +3,12 @@ use std::{
     net::{SocketAddr, UdpSocket},
     num::NonZeroU16,
     time::{Duration, Instant},
+    vec::Drain,
 };
 
 use antarc_protocol::{
     events::SenderEvent,
-    packet::{payload::Payload, scheduled::Scheduled, ConnectionId, Packet},
+    packets::{payload::Payload, raw::RawPacket, scheduled::Scheduled, ConnectionId, Packet},
     PacketId, Protocol, Server,
 };
 use log::{debug, error, warn};
@@ -98,67 +99,14 @@ impl NetManager<Server> {
             match self.network.udp_socket.recv_from(&mut self.buffer) {
                 Ok((num_received, source)) => {
                     debug_assert!(num_received > 0);
-
-                    let (packet, payload) = match Packet::decode(
-                        self.connection.packet_id_tracker,
-                        &self.buffer[..num_received],
-                        source,
-                        &self.protocol.timer,
-                    ) {
-                        Ok(decoded) => decoded,
-                        Err(fail) => {
-                            todo!();
-                            continue;
-                        }
-                    };
-
-                    debug!("Received new packet {:#?} {:#?}.", packet, source);
-
-                    self.protocol.
-                    self.event_system.receiver.push(ReceiverEvent::AckRemote {
-                        sequence: packet.state.header.info.sequence,
-                    });
-
-                    match packet.state.header.info.status_code {
-                        CONNECTION_REQUEST => {
-                            self.event_system
-                                .receiver
-                                .push(ReceiverEvent::ConnectionRequest {
-                                    packet: packet.into(),
-                                });
-                        }
-                        DATA_TRANSFER => {
-                            self.event_system
-                                .receiver
-                                .push(ReceiverEvent::DataTransfer {
-                                    packet: packet.into(),
-                                    payload,
-                                });
-                        }
-                        HEARTBEAT => {
-                            self.event_system.receiver.push(ReceiverEvent::Heartbeat {
-                                packet: packet.into(),
-                            });
-                        }
-                        invalid => {
-                            error!("Server received invalid packet type {:#?}.", invalid);
-                            todo!();
-                        }
-                    }
-
-                    self.connection.packet_id_tracker += 1;
+                    let raw_packet = RawPacket::new(source, self.buffer[..num_received].to_vec());
+                    self.protocol.on_received(raw_packet);
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv_from {:?}", fail);
                     self.network.readable = false;
                 }
-                Err(fail) => {
-                    warn!("Failed recv_from with {:?}", fail);
-
-                    self.event_system.failures.push(FailureEvent::IO(fail));
-
-                    self.network.readable = false;
-                }
+                Err(fail) => {}
             }
         }
 
@@ -171,7 +119,8 @@ impl NetManager<Server> {
                     "Time expired, sending host a heartbeat {:#?}.",
                     host.address
                 );
-                self.event_system
+                self.protocol
+                    .event_system
                     .sender
                     .push(SenderEvent::ScheduledHeartbeat {
                         address: host.address,
@@ -181,12 +130,12 @@ impl NetManager<Server> {
 
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         while self.network.writable
-            && self.event_system.sender.is_empty() == false
+            && self.protocol.event_system.sender.is_empty() == false
             && self.connection.is_empty() == false
         {
-            debug_assert!(self.event_system.sender.len() > 0);
+            debug_assert!(self.protocol.event_system.sender.len() > 0);
 
-            for event in self.event_system.sender.drain(..1) {
+            for event in self.protocol.event_system.sender.drain(..1) {
                 match event {
                     SenderEvent::ScheduledDataTransfer { packet, payload } => {
                         debug!("Handling ScheduledDataTransfer {:#?}.", packet);
@@ -290,178 +239,15 @@ impl NetManager<Server> {
         }
 
         // TODO(alex) [low] 2021-05-26: Check `fn _received_connection_request` notes.
-        for event in self.event_system.receiver.drain(..) {
-            match event {
-                ReceiverEvent::ConnectionRequest { packet } => {
-                    debug!("Handling received connection request for {:#?}", packet);
 
-                    let source = packet.state.source;
-
-                    // TODO(alex) [low] 2021-05-25: Is there a way to better handle this case?
-                    if self.connection.is_known(&source) {
-                        error!("Host is already in another state to receive this packet!");
-                        continue;
-                    }
-
-                    debug!("Unknown address, creating new host.");
-
-                    // TODO(alex) [low] 2021-05-26: Always creating a new host here, as I've dropped
-                    // the concept of a `Disconnected` host, this could be revisited later when the
-                    // design is clearer.
-                    let host = Host::received_connection_request(source);
-
-                    let packet_id = self.connection.packet_id_tracker;
-                    let packet =
-                        Packet::new(packet_id, self.protocol.timer.elapsed(), host.address);
-                    let connection_accepted = SenderEvent::ScheduledConnectionAccepted { packet };
-                    self.event_system.sender.push(connection_accepted);
-
-                    self.connection.requesting_connection.push(host);
-                    self.connection.packet_id_tracker += 1;
-                }
-                ReceiverEvent::AckRemote { .. } => {}
-                ReceiverEvent::DataTransfer { packet, payload } => {
-                    debug!("Handling received data transfer for {:#?}", packet);
-
-                    let source = packet.state.source;
-                    debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
-
-                    // NOTE(alex) 2021-06-14: Thought about multiple ways of removing this check,
-                    // but I can't see any solution. This can be shifted to the client, but that's
-                    // about it.
-                    //
-                    // The issue is that the server won't know if its messages reach the client
-                    // until the client acknowledges at least one, but then, the client won't know
-                    // if the server received this acknowledgment until the server sends back a
-                    // message doing so, which basically shifts this code to the client's side.
-                    //
-                    // In short, because of the unreliable nature of the protocol, this condition
-                    // will always exist, unless some side assumed its message went through.
-                    // Classic chicken-egg.
-                    if let Some(host) = self
-                        .connection
-                        .awaiting_connection_ack
-                        .drain_filter(|h| {
-                            // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
-                            // connection accepted sent sequence (1).
-                            h.address == source && packet.state.header.info.ack == 1
-                        })
-                        .next()
-                    {
-                        debug!("Host was awaiting connection ack.");
-                        let connection_id = packet.state.footer.connection_id.unwrap();
-                        let host = host.connection_accepted(connection_id);
-
-                        self.connection.connected.push(host);
-                    }
-
-                    debug_assert_eq!(self.connection.is_awaiting_connection_ack(&source), false);
-                    debug_assert!(self.connection.is_connected(&source));
-
-                    if let Some(host) = self
-                        .connection
-                        .connected
-                        .iter_mut()
-                        .find(|h| h.address == source)
-                    {
-                        debug!("Updating connected host with data transfer.");
-
-                        // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
-                        // packets, right now we just don't update the ack trackers if they come
-                        // from a lower value than what the host has.
-                        host.local_ack_tracker = (packet.state.header.info.ack
-                            > host.local_ack_tracker)
-                            .then(|| packet.state.header.info.ack)
-                            .unwrap_or(host.local_ack_tracker);
-
-                        let remote_sequence = packet.state.header.info.sequence.get();
-                        host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
-                            .then(|| packet.state.header.info.sequence.get())
-                            .unwrap_or(host.remote_ack_tracker);
-
-                        host.state.recv_data_transfers.push(packet);
-
-                        self.retrievable_count += 1;
-                    }
-                }
-                ReceiverEvent::Heartbeat { packet } => {
-                    debug!("Handling received heartbeat for {:#?}", packet);
-
-                    let source = packet.state.source;
-                    debug_assert_eq!(self.connection.is_requesting_connection(&source), false);
-
-                    if let Some(host) = self
-                        .connection
-                        .awaiting_connection_ack
-                        .drain_filter(|h| {
-                            // TODO(alex) [low] 2021-05-27: Change this hardcoded check for the
-                            // connection accepted sent sequence (1).
-                            h.address == source && packet.state.header.info.ack == 1
-                        })
-                        .next()
-                    {
-                        debug!("Host was awaiting connection ack.");
-                        let connection_id = packet.state.footer.connection_id.unwrap();
-                        let host = host.connection_accepted(connection_id);
-
-                        self.connection.connected.push(host);
-                    }
-
-                    debug_assert_eq!(self.connection.is_awaiting_connection_ack(&source), false);
-                    debug_assert!(self.connection.is_connected(&source));
-
-                    if let Some(host) = self
-                        .connection
-                        .connected
-                        .iter_mut()
-                        .find(|h| h.address == source)
-                    {
-                        debug!("Updating connected host with heartbeat.");
-
-                        // TODO(alex) [low] 2021-05-27: Need a mechanism to ack out of order
-                        // packets, right now we just don't update the ack trackers if they come
-                        // from a lower value than what the host has.
-                        host.local_ack_tracker = (packet.state.header.info.ack
-                            > host.local_ack_tracker)
-                            .then(|| packet.state.header.info.ack)
-                            .unwrap_or(host.local_ack_tracker);
-
-                        let remote_sequence = packet.state.header.info.sequence.get();
-                        host.remote_ack_tracker = (remote_sequence > host.remote_ack_tracker)
-                            .then(|| packet.state.header.info.sequence.get())
-                            .unwrap_or(host.remote_ack_tracker);
-
-                        host.state.recv_heartbeats.push(packet);
-                    }
-                }
-            }
-        }
-
-        for error in self.event_system.failures.drain(..) {
-            match error {
-                FailureEvent::AntarcError(fail) => {
-                    error!("Failed internally with {:#?}.", fail);
-                }
-                FailureEvent::IO(fail) => {
-                    error!("Failed with IO error {:#?}.", fail);
-                }
-                FailureEvent::SendDataTransfer { .. } => todo!(),
-                FailureEvent::SendConnectionAccepted { .. } => todo!(),
-                FailureEvent::SendConnectionRequest => unreachable!(),
-                FailureEvent::SendHeartbeat { .. } => todo!(),
-            }
-        }
-
-        Ok(self.retrievable_count)
+        Ok(self.protocol.retrievable.len())
     }
 
     // TODO(alex) [vlow] 2021-06-13: It might be a good idea to return a bit more information than
     // just `ConnectionId`, such as a sequence, or maybe time received, so that the user may know
     // which payload is the "freshest".
-    pub fn retrieve(&mut self) -> Vec<(ConnectionId, Vec<u8>)> {
+    pub fn retrieve(&mut self) -> Drain<(ConnectionId, Vec<u8>)> {
         debug!("Retrieve for server.");
-        self.retrievable_count = 0;
-        let retrievable = self.retrievable.drain(..).collect::<Vec<_>>();
-        retrievable
+        self.protocol.retrieve()
     }
 }
