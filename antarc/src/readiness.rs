@@ -5,13 +5,13 @@ use log::debug;
 use crate::net::{NetManager, NetworkResource};
 
 #[derive(Debug)]
-pub(crate) struct Readable;
+pub struct Readable;
 
 #[derive(Debug)]
-pub(crate) struct Writable;
+pub struct Writable;
 
 impl<T> NetManager<T> {
-    pub(crate) fn check_readiness(&mut self) {
+    pub fn check_readiness(&mut self) {
         let world = &mut self.world;
         let mut readable = None;
         let mut writable = None;

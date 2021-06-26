@@ -10,9 +10,9 @@ struct Footer {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct Queued {}
+struct Scheduled {}
 
-impl Packet<Queued> {
+impl Packet<Scheduled> {
     fn to_encoded(self, crc32: u32) -> Packet<Encoded> {
         let footer = Footer { crc32 };
         let bytes = vec![5; 5];
@@ -86,7 +86,7 @@ enum ConnectionState {
 /// new state). You'll only be able to take `&mut Packet<State>` from the pointer, but this is not
 /// enough to call a function like `to_another_state(self)`.
 ///
-/// If we kept no history of the packets (meaning no `Peer::queued_list`, ...) and use only the
+/// If we kept no history of the packets (meaning no `Peer::scheduled_list`, ...) and use only the
 /// events to keep things flowing, then this whole apparatus wouldn't be neccessary, but the history
 /// is a bit of a requirement.
 #[derive(Debug, PartialEq, Clone)]
@@ -99,7 +99,7 @@ struct Connection {
 enum EventKind {
     ReadyToReceive,
     ReadyToSend,
-    QueuedPacket,
+    ScheduledPacket,
     FailedSendingPacket,
     SentPacket,
     ReceivedPacket,
@@ -109,7 +109,7 @@ enum EventKind {
 enum Event {
     ReadyToReceive,
     ReadyToSend,
-    QueuedPacket { packet: Packet<Queued> },
+    ScheduledPacket { packet: Packet<Scheduled> },
     FailedSendingPacket { packet: Packet<Encoded> },
     SentPacket { packet: Packet<Sent> },
     ReceivedPacket { packet: Packet<Received> },
@@ -120,7 +120,7 @@ impl Event {
         match self {
             Event::ReadyToReceive => EventKind::ReadyToReceive,
             Event::ReadyToSend => EventKind::ReadyToSend,
-            Event::QueuedPacket { .. } => EventKind::QueuedPacket,
+            Event::ScheduledPacket { .. } => EventKind::ScheduledPacket,
             Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
             Event::SentPacket { .. } => EventKind::SentPacket,
             Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,
@@ -179,14 +179,14 @@ fn helper_received(sequence: u32) -> Packet<Received> {
     received_packet
 }
 
-fn helper_queued(sequence: u32) -> Packet<Queued> {
+fn helper_scheduled(sequence: u32) -> Packet<Scheduled> {
     let header = Header { sequence, ack: 0 };
-    let queued = Queued {};
-    let queued_packet = Packet {
+    let scheduled = Scheduled {};
+    let scheduled_packet = Packet {
         header,
-        state: queued,
+        state: scheduled,
     };
-    queued_packet
+    scheduled_packet
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -209,11 +209,11 @@ fn main() {
     };
 
     {
-        network.events.push(Event::QueuedPacket {
-            packet: helper_queued(1),
+        network.events.push(Event::ScheduledPacket {
+            packet: helper_scheduled(1),
         });
-        network.events.push(Event::QueuedPacket {
-            packet: helper_queued(2),
+        network.events.push(Event::ScheduledPacket {
+            packet: helper_scheduled(2),
         });
 
         let mut new_events = Vec::with_capacity(32);
@@ -226,14 +226,14 @@ fn main() {
                 network.socket.count = 0;
             }
 
-            let has_queued = network
+            let has_scheduled = network
                 .events
                 .iter()
-                .any(|event| event.kind() == EventKind::QueuedPacket);
+                .any(|event| event.kind() == EventKind::ScheduledPacket);
             for event in network.events.drain(..) {
                 match event {
-                    Event::QueuedPacket { packet } => {
-                        println!("QueuedPacketEvent {:#?}", packet);
+                    Event::ScheduledPacket { packet } => {
+                        println!("ScheduledPacketEvent {:#?}", packet);
                         let encoded = packet.to_encoded(32);
                         match network.socket.send(&encoded) {
                             Ok(_) => {
@@ -266,10 +266,10 @@ fn main() {
                     }
                     Event::ReadyToSend => {
                         println!("ReadyToSendEvent");
-                        if has_queued == false {
-                            println!("Have no packet queued, send hearbeat to change socket!");
-                            new_events.push(Event::QueuedPacket {
-                                packet: helper_queued(i * 10 + 10),
+                        if has_scheduled == false {
+                            println!("Have no packet scheduled, send hearbeat to change socket!");
+                            new_events.push(Event::ScheduledPacket {
+                                packet: helper_scheduled(i * 10 + 10),
                             });
                         }
                     }

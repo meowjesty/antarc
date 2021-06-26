@@ -7,18 +7,18 @@ use super::{
     payload::Payload,
     ConnectionId, Footer, Packet, Sent,
 };
-use crate::{net::server::PacketId, ProtocolId, PROTOCOL_ID_BYTES};
+use crate::{PacketId, ProtocolId, PROTOCOL_ID_BYTES};
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Queued {
-    pub(crate) time: Duration,
-    pub(crate) destination: SocketAddr,
+pub struct Scheduled {
+    pub time: Duration,
+    pub destination: SocketAddr,
 }
 
-impl Packet<Queued> {
+impl Packet<Scheduled> {
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
-    pub(crate) fn encode(
+    pub fn encode(
         payload: &Payload,
         header_info: &HeaderInfo,
         connection_id: Option<ConnectionId>,
@@ -62,8 +62,8 @@ impl Packet<Queued> {
         (packet_bytes, footer)
     }
 
-    pub(crate) fn new(packet_id: PacketId, time: Duration, destination: SocketAddr) -> Self {
-        let state = Queued { time, destination };
+    pub fn new(packet_id: PacketId, time: Duration, destination: SocketAddr) -> Self {
+        let state = Scheduled { time, destination };
         let packet = Packet {
             id: packet_id,
             state,
@@ -72,7 +72,7 @@ impl Packet<Queued> {
         packet
     }
 
-    pub(crate) fn to_sent<T>(
+    pub fn to_sent<T>(
         self,
         header: Header<T>,
         footer: Footer,

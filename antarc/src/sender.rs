@@ -4,10 +4,10 @@ use hecs::Entity;
 use log::{debug, error, warn};
 
 use crate::{
-    events::{AckRemotePacketEvent, QueuedPacketEvent, SentPacketEvent},
+    events::{AckRemotePacketEvent, ScheduledPacketEvent, SentPacketEvent},
     host::{Address, LatestSent},
     net::{NetManager, NetworkResource},
-    packet::{header::Header, ConnectionId, Footer, Packet, Payload, Queued, Sent, Sequence},
+    packet::{header::Header, ConnectionId, Footer, Packet, Payload, Scheduled, Sent, Sequence},
     readiness::Writable,
     receiver::Source,
 };
@@ -15,8 +15,8 @@ use crate::{
 type PreparedPacket = (Header, Payload, Address, Option<ConnectionId>, Destination);
 
 #[derive(Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Destination {
-    pub(crate) host_id: Entity,
+pub struct Destination {
+    pub host_id: Entity,
 }
 
 impl From<Source> for Destination {
@@ -33,11 +33,11 @@ impl PartialEq<Source> for Destination {
 }
 
 #[derive(PartialEq, PartialOrd)]
-pub(crate) struct RawPacket {
-    pub(crate) packet_id: Entity,
-    pub(crate) destination_id: Entity,
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) address: Address,
+pub struct RawPacket {
+    pub packet_id: Entity,
+    pub destination_id: Entity,
+    pub bytes: Vec<u8>,
+    pub address: Address,
 }
 
 impl fmt::Debug for RawPacket {
@@ -52,14 +52,14 @@ impl fmt::Debug for RawPacket {
 
 impl<T> NetManager<T> {
     /*
-    pub(crate) fn on_queued_packet(&mut self) {
+    pub fn on_scheduled_packet(&mut self) {
         let world = &mut self.world;
 
         let mut handled_events = Vec::with_capacity(8);
-        let mut queued_packets = Vec::with_capacity(8);
+        let mut scheduled_packets = Vec::with_capacity(8);
 
         // TODO(alex) 2021-04-24: Steps to do here:
-        // 1. Loop through the enqueued packets event `PreparePacketToSend` and grab the
+        // 1. Loop through the enscheduled packets event `PreparePacketToSend` and grab the
         // `Payload + Destination`;
         //
         // 2. Look for the `LatestSent` packet to this `Destination`;
@@ -70,9 +70,9 @@ impl<T> NetManager<T> {
         //
         // 4. Generate a `Header` based on these packets;
         //
-        // 5. Only move this packet into `SendPacket` event if it's time enqueued is greater than
-        // the `LatestSent` time enqueued?
-        for (event_id, event) in world.query::<&QueuedPacketEvent>().iter() {
+        // 5. Only move this packet into `SendPacket` event if it's time enscheduled is greater than
+        // the `LatestSent` time enscheduled?
+        for (event_id, event) in world.query::<&ScheduledPacketEvent>().iter() {
             debug!("prepare_packet_to_send -> handle PreparePacketToSend");
 
             // TODO(alex) 2021-04-24: This needs to loop through every packet that must be acked in
@@ -82,10 +82,10 @@ impl<T> NetManager<T> {
             // TODO(alex) 2021-05-05: How do we avoid a stale sequence? The sequence for this
             // specific packet is incremented here, and the tracker is only incremented after the
             // latest packet is actually sent, but the way it works right now, if the user were to
-            // enqueue multiple packets, before the previous one was sent, then duplicated sequences
+            // enschedule multiple packets, before the previous one was sent, then duplicated sequences
             // become possible.
             //
-            // This applies not only to the user enqueue case, but also if the systems enqueue too
+            // This applies not only to the user enschedule case, but also if the systems enschedule too
             // many packets at almost the same time.
 
             let (payload, status_code, address) = (
@@ -112,7 +112,7 @@ impl<T> NetManager<T> {
                 "prepare_packet_to_send -> data {:?} {:?}",
                 address, destination_id
             );
-            queued_packets.push((payload, address, status_code, connection_id, destination_id));
+            scheduled_packets.push((payload, address, status_code, connection_id, destination_id));
             handled_events.push(event_id);
         }
 
@@ -125,20 +125,20 @@ impl<T> NetManager<T> {
         }
 
         while let Some((payload, address, status_code, connection_id, destination_id)) =
-            queued_packets.pop()
+            scheduled_packets.pop()
         {
             let destination = Destination {
                 host_id: destination_id,
             };
             let prepared_packet = (payload, address.clone(), destination);
-            let queued_packet_id = world.spawn(prepared_packet);
+            let scheduled_packet_id = world.spawn(prepared_packet);
             debug!(
                 "prepare_packet_to_send -> spawning prepared packet {:?} ",
-                queued_packet_id
+                scheduled_packet_id
             );
 
-            let event_id = world.spawn((QueuedPacketEvent {
-                queued_packet_id,
+            let event_id = world.spawn((ScheduledPacketEvent {
+                scheduled_packet_id,
                 status_code,
                 connection_id,
             },));
@@ -153,19 +153,25 @@ impl<T> NetManager<T> {
     // TODO(alex): Idea, estabilish connection + reliable packets with a TCP socket, use a secondary
     // UDP socket to send unreliable packets fast.
 
-    pub(crate) fn sender(&self) -> (Vec<(Sequence, Header, Entity, Destination)>, Vec<Entity>) {
-        let (world, timer, socket) = (&self.world, &self.timer, &self.network_resource.socket);
+    pub fn sender(&self) -> (Vec<(Sequence, Header, Entity, Destination)>, Vec<Entity>) {
+        let (world, timer, socket) = (
+            &self.world,
+            &self.protocol.timer,
+            &self.network_resource.socket,
+        );
 
         let mut sent_packets = Vec::with_capacity(8);
         let mut handled_events = Vec::with_capacity(8);
 
-        if let Some((queued_event_id, event)) = world.query::<&QueuedPacketEvent>().iter().next() {
+        if let Some((scheduled_event_id, event)) =
+            world.query::<&ScheduledPacketEvent>().iter().next()
+        {
             debug!(
-                "{} {}:{} -> handling QueuedPacketEvent {:#?}",
+                "{} {}:{} -> handling ScheduledPacketEvent {:#?}",
                 file!(),
                 line!(),
                 column!(),
-                queued_event_id
+                scheduled_event_id
             );
 
             let mut packet_query = world
@@ -203,7 +209,7 @@ impl<T> NetManager<T> {
                     debug_assert!(num_sent > 0);
 
                     sent_packets.push((sequence, header, event.packet_id, destination.clone()));
-                    handled_events.push(queued_event_id);
+                    handled_events.push(scheduled_event_id);
                 }
                 Err(would_block) if would_block.kind() == io::ErrorKind::WouldBlock => {
                     warn!(
@@ -301,7 +307,7 @@ impl<T> NetManager<T> {
     // Calculate rtt, ack packet, calculate past_acks.
 }
 
-pub(crate) fn get_sequence(world: &hecs::World, destination: &Destination) -> Sequence {
+pub fn get_sequence(world: &hecs::World, destination: &Destination) -> Sequence {
     let mut latest_query = world
         .query_one::<(&LatestSent,)>(destination.host_id)
         .unwrap();
@@ -319,7 +325,7 @@ pub(crate) fn get_sequence(world: &hecs::World, destination: &Destination) -> Se
     sequence
 }
 
-pub(crate) fn get_ack(world: &hecs::World, destination: &Destination) -> u32 {
+pub fn get_ack(world: &hecs::World, destination: &Destination) -> u32 {
     let ack = match world
         .query::<&AckRemotePacketEvent>()
         .iter()

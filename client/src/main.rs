@@ -25,10 +25,10 @@ fn client_main() {
     let mut d_counter: i32 = 0;
     loop {
         if d_counter % 8 == 0 {
-            // TODO(alex) 2021-05-18: Should we allow packets to be enqueued before the connection
-            // is properly estabilished?
-            let packet_id = client.enqueue((&d_counter.to_be_bytes()).to_vec());
-            debug!("Enqueue test packet {:#?}", packet_id);
+            // TODO(alex) 2021-05-18: Should we allow packets to be enscheduled before the
+            // connection is properly estabilished?
+            let packet_id = client.enschedule((&d_counter.to_be_bytes()).to_vec());
+            debug!("Enschedule test packet {:#?}", packet_id);
 
             if d_counter % 16 == 0 {
                 debug!("Cancel test packet {:#?}", packet_id);

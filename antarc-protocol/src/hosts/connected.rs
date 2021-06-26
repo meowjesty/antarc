@@ -12,8 +12,8 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct Connected {
-    pub(crate) connection_id: ConnectionId,
+pub struct Connected {
+    pub connection_id: ConnectionId,
 }
 
 impl Host<Connected> {
@@ -26,7 +26,7 @@ impl Host<Connected> {
     /// TODO(alex) 2021-03-03: I'm thinking that every `Host::receive` will be the same, or at least
     /// they are for now, so migrating it into the more generic `impl<State> Host<State>` might be
     /// fine.
-    pub(crate) fn on_receive(&mut self, buffer: &[u8]) -> AntarcResult<()> {
+    pub fn on_receive(&mut self, buffer: &[u8]) -> AntarcResult<()> {
         let packet = Packet::decode(buffer, self.timer.elapsed())?;
         self.on_receive_ack(&packet);
 
@@ -36,11 +36,11 @@ impl Host<Connected> {
 
     /// TODO(alex) 2021-03-03: In contrast, `Host::send` looks perfectly doable, as the protocol
     /// only wants to send packets to hosts it knows of.
-    pub(crate) fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
+    pub fn send(&mut self, socket: &UdpSocket) -> AntarcResult<usize> {
         if let Some(payload) = self
-            .priority_queue
+            .priority_schedule
             .pop_front()
-            .or(self.send_queue.pop_front())
+            .or(self.send_schedule.pop_front())
         {
             let Connected { connection_id } = self.connection;
             let header_info = HeaderInfo {

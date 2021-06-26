@@ -7,7 +7,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Copy)]
-pub(crate) enum PacketKind {
+pub enum PacketKind {
     ConnectionRequest,
     ConnectionAccepted,
     ConnectionDenied,

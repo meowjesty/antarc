@@ -1,24 +1,13 @@
 use core::fmt;
 use std::{collections::HashMap, net::SocketAddr, time::Instant};
 
+use antarc_protocol::{connection::Connection, PacketId, Protocol};
 use mio::{
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
     Events, Interest, Poll, Token,
 };
 
-use self::server::PacketId;
-use crate::{
-    connection::Connection,
-    events::{FailureEvent, ReceiverEvent, SenderEvent},
-    host::{AwaitingConnectionAck, Connected, Host, RequestingConnection},
-    packet::{
-        payload::{self, Payload},
-        queued::Queued,
-        received::Received,
-        ConnectionId, Packet, Sent,
-    },
-    MTU_LENGTH,
-};
+use crate::MTU_LENGTH;
 
 pub mod client;
 pub mod server;
@@ -51,51 +40,25 @@ pub enum SendTo {
 }
 
 pub struct NetManager<ClientOrServer> {
-    pub(crate) timer: Instant,
-    /// TODO(alex) 2021-02-26: Each `Host` will probably have it's own `buffer`, like the `timer.
-    pub(crate) buffer: Vec<u8>,
-    pub(crate) net_type: ClientOrServer,
-    pub(crate) network: NetworkResource,
-    pub(crate) connection: Connection,
-    pub(crate) retrievable: Vec<(ConnectionId, Vec<u8>)>,
-    pub(crate) retrievable_count: usize,
-    pub(crate) event_system: EventSystem,
+    pub buffer: Vec<u8>,
+    pub protocol: Protocol<ClientOrServer>,
+    pub network: NetworkResource,
+    pub connection: Connection,
 }
 
 #[derive(Debug)]
-pub(crate) struct NetworkResource {
-    pub(crate) udp_socket: UdpSocket,
-    pub(crate) writable: bool,
-    pub(crate) readable: bool,
-    pub(crate) poll: Poll,
-    pub(crate) events: Events,
-}
-
-#[derive(Debug)]
-pub(crate) struct EventSystem {
-    pub(crate) sender: Vec<SenderEvent>,
-    pub(crate) receiver: Vec<ReceiverEvent>,
-    pub(crate) failures: Vec<FailureEvent>,
-}
-
-impl EventSystem {
-    pub(crate) fn new() -> Self {
-        let sender = Vec::with_capacity(1024);
-        let receiver = Vec::with_capacity(1024);
-        let failures = Vec::with_capacity(1024);
-
-        Self {
-            sender,
-            receiver,
-            failures,
-        }
-    }
+pub struct NetworkResource {
+    pub udp_socket: UdpSocket,
+    pub writable: bool,
+    pub readable: bool,
+    pub poll: Poll,
+    pub events: Events,
 }
 
 impl NetworkResource {
-    pub(crate) const TOKEN: Token = Token(0xdad);
+    pub const TOKEN: Token = Token(0xdad);
 
-    pub(crate) fn new(address: &SocketAddr) -> Self {
+    pub fn new(address: &SocketAddr) -> Self {
         let mut udp_socket = UdpSocket::bind(*address).unwrap();
         let poll = Poll::new().unwrap();
         let events = Events::with_capacity(1024);
@@ -119,51 +82,29 @@ impl NetworkResource {
 }
 
 impl<ClientOrServer> NetManager<ClientOrServer> {
-    pub(crate) fn new(address: &SocketAddr, kind: ClientOrServer) -> Self {
-        let timer = Instant::now();
+    pub fn new(address: &SocketAddr, protocol: Protocol<ClientOrServer>) -> Self {
         let buffer = vec![0x0; MTU_LENGTH];
-
-        let retrievable = Vec::with_capacity(128);
         let network = NetworkResource::new(address);
         let connection = Connection::new();
-        let retrievable_count = 0;
-
-        let event_system = EventSystem::new();
 
         Self {
-            timer,
             buffer,
-            net_type: kind,
+            protocol,
             network,
             connection,
-            retrievable_count,
-            event_system,
-            retrievable,
         }
     }
 
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
-        let cancelled_packet = self
-            .event_system
-            .sender
-            .drain_filter(|event| match event {
-                SenderEvent::QueuedDataTransfer { packet, .. } => packet.id == packet_id,
-                _ => false,
-            })
-            .next()
-            .is_some();
-
-        cancelled_packet
+        self.protocol.cancel_packet(packet_id)
     }
 }
 
 impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NetManager")
-            .field("timer", &self.timer)
             .field("buffer", &self.buffer.len())
-            .field("events", &self.event_system)
-            .field("client_or_server", &self.net_type)
+            .field("client_or_server", &self.protocol.kind)
             .field("connection", &self.connection)
             .finish()
     }

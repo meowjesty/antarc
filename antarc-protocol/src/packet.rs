@@ -15,16 +15,16 @@ use self::{
     payload::Payload,
 };
 use crate::{
-    events::AntarcError, net::server::PacketId, packet::sequence::Sequence, read_buffer_inc,
-    ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
+    events::ProtocolError, packet::sequence::Sequence, read_buffer_inc, PacketId, ProtocolId,
+    PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
-pub(crate) mod header;
-pub(crate) mod kind;
-pub(crate) mod payload;
-pub(crate) mod queued;
-pub(crate) mod received;
-pub(crate) mod sequence;
+pub mod header;
+pub mod kind;
+pub mod payload;
+pub mod received;
+pub mod scheduled;
+pub mod sequence;
 
 /// Packets might be either:
 /// - FRAGMENTED or NON_FRAGMENTED;
@@ -35,17 +35,17 @@ pub(crate) mod sequence;
 ///
 /// but this is NOT:
 /// - `FRAGMENTED | DATA_TRANSFER | CHALLENGE`
-pub(crate) type StatusCode = u16;
-pub(crate) const RESERVED: StatusCode = 0;
-// pub(crate) const FRAGMENTED: StatusCode = 1;
-pub(crate) const CONNECTION_REQUEST: StatusCode = 100;
-pub(crate) const CHALLENGE_REQUEST: StatusCode = 200;
-pub(crate) const CHALLENGE_RESPONSE: StatusCode = 300;
-pub(crate) const CONNECTION_ACCEPTED: StatusCode = 400;
-pub(crate) const CONNECTION_DENIED: StatusCode = 500;
-pub(crate) const HEARTBEAT: StatusCode = 600;
-pub(crate) const DATA_TRANSFER: StatusCode = 700;
-pub(crate) const ACK: StatusCode = 800;
+pub type StatusCode = u16;
+pub const RESERVED: StatusCode = 0;
+// pub const FRAGMENTED: StatusCode = 1;
+pub const CONNECTION_REQUEST: StatusCode = 100;
+pub const CHALLENGE_REQUEST: StatusCode = 200;
+pub const CHALLENGE_RESPONSE: StatusCode = 300;
+pub const CONNECTION_ACCEPTED: StatusCode = 400;
+pub const CONNECTION_DENIED: StatusCode = 500;
+pub const HEARTBEAT: StatusCode = 600;
+pub const DATA_TRANSFER: StatusCode = 700;
+pub const ACK: StatusCode = 800;
 
 /// TODO(alex) 2021-02-09: Improve terminology:
 /// http://www.tcpipguide.com/free/t_MessagesPacketsFramesDatagramsandCells-2.htm
@@ -62,9 +62,9 @@ pub type ConnectionId = NonZeroU16;
 pub type Ack = u32;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct Footer {
-    pub(crate) connection_id: Option<ConnectionId>,
-    pub(crate) crc32: NonZeroU32,
+pub struct Footer {
+    pub connection_id: Option<ConnectionId>,
+    pub crc32: NonZeroU32,
 }
 
 /// TODO(alex) 2021-02-09: There must be a way to mark a packet as `Reliable` and/or `Priority`.
@@ -80,15 +80,15 @@ pub(crate) struct Footer {
 /// the packet 10, but missed some (9, 8, 7).
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Sent<Kind> {
-    pub(crate) header: Header<Kind>,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-    pub(crate) destination: SocketAddr,
+pub struct Sent<Kind> {
+    pub header: Header<Kind>,
+    pub footer: Footer,
+    pub time: Duration,
+    pub destination: SocketAddr,
 }
 
 impl Packet<Sent<Heartbeat>> {
-    pub(crate) fn sent_heartbeat(
+    pub fn sent_heartbeat(
         id: PacketId,
         header: Header<Heartbeat>,
         footer: Footer,
@@ -108,27 +108,33 @@ impl Packet<Sent<Heartbeat>> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Acked<Kind> {
-    pub(crate) header: Header<Kind>,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
+pub struct Acked<Kind> {
+    pub header: Header<Kind>,
+    pub footer: Footer,
+    pub time: Duration,
 }
 
 // TODO(alex) 2021-05-21: Take out payload from everything related to packet, this will become a
 // dynamic-ish thing that moves with the events and/or packets as neccessary. The idea is:
-// - user calls enqueue, gives the bytes to us;
-// - give back an id to user related to the queued state + these bytes (now payload);
+// - user calls enschedule, gives the bytes to us;
+// - give back an id to user related to the scheduled state + these bytes (now payload);
 // - when trying to send, we encode these bytes in the middle of a new vector, which contain packet
 // meta information (sequence, ack, ...);
 // - on success, the packet changes state, the payload is taken out and discarded;
-// - on error, the packet stays as queued, and the payload moves along with the error event;
+// - on error, the packet stays as scheduled, and the payload moves along with the error event;
 // - when trying to receive, we store the payload in a tuple with the packet, this way, when the
 // user calls retrieve, we just move the payload to them, and the packet changes state;
 // This will get rid of ownership issues regarding the payload, avoiding Arc/Weak altogether.
 
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Packet<State> {
-    pub(crate) id: PacketId,
-    pub(crate) state: State,
+pub struct Packet<State> {
+    pub id: PacketId,
+    pub state: State,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawPacket {
+    pub address: SocketAddr,
+    pub bytes: Vec<u8>,
 }

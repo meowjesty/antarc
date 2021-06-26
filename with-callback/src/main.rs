@@ -36,9 +36,9 @@ struct Footer {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct Queued {}
+struct Scheduled {}
 
-impl Packet<Queued> {
+impl Packet<Scheduled> {
     fn to_encoded(self, crc32: u32) -> Packet<Encoded> {
         let footer = Footer { crc32 };
         let bytes = vec![5; 5];
@@ -111,7 +111,7 @@ enum ConnectionState {
 /// new state). You'll only be able to take `&mut Packet<State>` from the pointer, but this is not
 /// enough to call a function like `to_another_state(self)`.
 ///
-/// If we kept no history of the packets (meaning no `Peer::queued_list`, ...) and use only the
+/// If we kept no history of the packets (meaning no `Peer::scheduled_list`, ...) and use only the
 /// events to keep things flowing, then this whole apparatus wouldn't be neccessary, but the history
 /// is a bit of a requirement.
 #[derive(Debug, PartialEq, Clone)]
@@ -124,7 +124,7 @@ struct Connection {
 enum EventKind {
     ReadyToReceive,
     ReadyToSend,
-    QueuedPacket,
+    ScheduledPacket,
     FailedSendingPacket,
     SentPacket,
     ReceivedPacket,
@@ -136,12 +136,12 @@ enum Event<'x> {
         notifier: &'x mut Notifier<Self>,
     },
     ReadyToSend {
-        has_queued: bool,
+        has_scheduled: bool,
         socket: &'x Socket,
         notifier: &'x mut Notifier<Self>,
     },
-    QueuedPacket {
-        packet: Packet<Queued>,
+    ScheduledPacket {
+        packet: Packet<Scheduled>,
         socket: &'x Socket,
         notifier: &'x mut Notifier<Self>,
     },
@@ -162,7 +162,7 @@ impl<'x> Event<'x> {
         match self {
             Event::ReadyToReceive { .. } => EventKind::ReadyToReceive,
             Event::ReadyToSend { .. } => EventKind::ReadyToSend,
-            Event::QueuedPacket { .. } => EventKind::QueuedPacket,
+            Event::ScheduledPacket { .. } => EventKind::ScheduledPacket,
             Event::FailedSendingPacket { .. } => EventKind::FailedSendingPacket,
             Event::SentPacket { .. } => EventKind::SentPacket,
             Event::ReceivedPacket { .. } => EventKind::ReceivedPacket,
@@ -220,14 +220,14 @@ fn helper_received(sequence: u32) -> Packet<Received> {
     received_packet
 }
 
-fn helper_queued(sequence: u32) -> Packet<Queued> {
+fn helper_scheduled(sequence: u32) -> Packet<Scheduled> {
     let header = Header { sequence, ack: 0 };
-    let queued = Queued {};
-    let queued_packet = Packet {
+    let scheduled = Scheduled {};
+    let scheduled_packet = Packet {
         header,
-        state: queued,
+        state: scheduled,
     };
-    queued_packet
+    scheduled_packet
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -238,12 +238,12 @@ struct StateError<State> {
 
 fn event_handler(event: &Event) {
     match event {
-        Event::QueuedPacket {
+        Event::ScheduledPacket {
             packet,
             socket,
             notifier,
         } => {
-            println!("QueuedPacketEvent {:#?}", packet);
+            println!("ScheduledPacketEvent {:#?}", packet);
             let encoded = packet.to_encoded(32);
             match socket.send(&encoded) {
                 Ok(_) => {
@@ -278,15 +278,15 @@ fn event_handler(event: &Event) {
             }
         }
         Event::ReadyToSend {
-            has_queued,
+            has_scheduled,
             socket,
             notifier,
         } => {
             println!("ReadyToSendEvent");
-            if has_queued == false {
-                println!("Have no packet queued, send hearbeat to change socket!");
-                let packet = helper_queued(15);
-                notifier.notify(Event::QueuedPacket {
+            if has_scheduled == false {
+                println!("Have no packet scheduled, send hearbeat to change socket!");
+                let packet = helper_scheduled(15);
+                notifier.notify(Event::ScheduledPacket {
                     packet,
                     socket,
                     notifier,
@@ -310,13 +310,13 @@ fn main() {
 
     {
         for i in 0..12 {
-            let has_queued = i % 3 == 0;
+            let has_scheduled = i % 3 == 0;
 
             if i % 2 == 0 && network.socket.is_good() {
                 notifier.notify(Event::ReadyToReceive);
             } else if network.socket.is_good() {
                 notifier.notify(Event::ReadyToSend {
-                    has_queued,
+                    has_scheduled,
                     socket: network.socket,
                     notifier,
                 });

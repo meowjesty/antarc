@@ -5,7 +5,7 @@ use super::{
     payload::Payload, Ack, Sequence, StatusCode, CONNECTION_ACCEPTED, CONNECTION_REQUEST,
     DATA_TRANSFER,
 };
-use crate::{AntarcResult, ProtocolId};
+use crate::ProtocolId;
 
 /// ### Network Component
 /// --> `Packet` entity.
@@ -40,19 +40,19 @@ use crate::{AntarcResult, ProtocolId};
 /// `CONNECTION_DENIED`, it should represent `Success`, `Failed`, `Refused`, ...
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct HeaderInfo {
-    pub(crate) sequence: Sequence,
-    pub(crate) ack: Ack,
-    pub(crate) past_acks: u16,
-    pub(crate) status_code: StatusCode,
-    pub(crate) payload_length: u16,
+pub struct HeaderInfo {
+    pub sequence: Sequence,
+    pub ack: Ack,
+    pub past_acks: u16,
+    pub status_code: StatusCode,
+    pub payload_length: u16,
 }
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct ConnectionRequest;
+pub struct ConnectionRequest;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct ConnectionAccepted;
+pub struct ConnectionAccepted;
 
 // TODO(alex) 2021-06-13 [high]: Is there any reason to keep the list of all payloads received/sent?
 // When the user schedules a packet, we keep the payload as part of the event, so we ping-pong the
@@ -61,18 +61,18 @@ pub(crate) struct ConnectionAccepted;
 // hold it until the user retrieves all payloads and that's it.
 // Think dropping it from here makes perfect sense.
 #[derive(Debug, PartialEq, Clone, PartialOrd)]
-pub(crate) struct DataTransfer;
+pub struct DataTransfer;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct Heartbeat;
+pub struct Heartbeat;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct Generic;
+pub struct Generic;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, PartialOrd)]
-pub(crate) struct Header<Kind> {
-    pub(crate) info: HeaderInfo,
-    pub(crate) marker: PhantomData<Kind>,
+pub struct Header<Kind> {
+    pub info: HeaderInfo,
+    pub marker: PhantomData<Kind>,
 }
 
 /// TODO(alex) 2021-01-31: I don't want methods in the `Header`, the `kind` will be defined by the
@@ -84,7 +84,7 @@ pub(crate) struct Header<Kind> {
 /// just have an `impl` block for the relevant meta-state part of each struct that feeds the
 /// `Header.kind` field during encoding / decoding.
 impl Header<ConnectionRequest> {
-    pub(crate) fn connection_request() -> Header<ConnectionRequest> {
+    pub fn connection_request() -> Header<ConnectionRequest> {
         let info = HeaderInfo {
             sequence: unsafe { Sequence::new_unchecked(1) },
             ack: 0,
@@ -101,7 +101,7 @@ impl Header<ConnectionRequest> {
 }
 
 impl Header<ConnectionAccepted> {
-    pub(crate) fn connection_accepted(ack: u32) -> Header<ConnectionAccepted> {
+    pub fn connection_accepted(ack: u32) -> Header<ConnectionAccepted> {
         let info = HeaderInfo {
             sequence: unsafe { Sequence::new_unchecked(1) },
             ack,
@@ -118,7 +118,7 @@ impl Header<ConnectionAccepted> {
 }
 
 impl Header<DataTransfer> {
-    pub(crate) fn data_transfer(
+    pub fn data_transfer(
         sequence: Sequence,
         ack: u32,
         payload_length: u16,
@@ -139,7 +139,7 @@ impl Header<DataTransfer> {
 }
 
 impl Header<Heartbeat> {
-    pub(crate) fn heartbeat(sequence: Sequence, ack: u32) -> Header<Heartbeat> {
+    pub fn heartbeat(sequence: Sequence, ack: u32) -> Header<Heartbeat> {
         let info = HeaderInfo {
             sequence,
             ack,
@@ -155,33 +155,9 @@ impl Header<Heartbeat> {
     }
 }
 
-pub(crate) const ENCODED_SIZE: usize = mem::size_of::<Sequence>()
+pub const ENCODED_SIZE: usize = mem::size_of::<Sequence>()
     + mem::size_of::<Ack>()
     + mem::size_of::<u16>()
     + mem::size_of::<StatusCode>()
     + mem::size_of::<u16>()
     + mem::size_of::<ProtocolId>();
-
-impl<T> Header<T> {
-    // pub(crate) const PROTOCOL_ID: ProtocolId = crate::PROTOCOL_ID;
-
-    /// NOTE(alex): This is the size of the `Header` for the fields that are **encoded** and
-    /// transmitted via the network, `Self + ProtocolId`, even though the crc32 substitutes it.
-    ///
-    /// WARNING(alex): `size_of::<Self>` is a no-no, as it changes based on struct alignment, so
-    /// these values must be calculated separately. Tuples also change alignment, so these must be
-    /// added individually.
-
-    /// public APIs that call this function, like we have for the `Host<State>`. `Header::encode`
-    /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
-    fn encode(&self) -> AntarcResult<Vec<u8>> {
-        todo!()
-    }
-
-    /// TODO(alex) 2021-02-26: This will decode based on the `Header<Kind>` so we need different
-    /// public APIs that call this function, like we have for the `Host<State>`. `Header::decode`
-    /// is private, meanwhile `Header::connection_request` is `pub(crate)`, for example.
-    fn decode(cursor: &mut Cursor<&[u8]>) -> AntarcResult<Self> {
-        todo!()
-    }
-}

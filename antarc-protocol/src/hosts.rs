@@ -6,19 +6,16 @@ use std::{
 };
 
 use log::{debug, error, warn};
-use mio::net::UdpSocket;
 
 use crate::{
-    events::{AntarcError, FailureEvent},
-    net::server::PacketId,
     packet::{
         header::{ConnectionAccepted, DataTransfer, Header, Heartbeat},
-        payload::{self, Payload},
-        queued::Queued,
+        payload::Payload,
         received::Received,
         sequence::Sequence,
         Ack, ConnectionId, Footer, Packet, Sent,
     },
+    PacketId,
 };
 
 /// TODO(alex) 2021-01-29: Think of `Sessions / Channels` when wondering about connections, it helps
@@ -40,45 +37,45 @@ use crate::{
 /// This is why writing some client and server APIs right now makes more sense, even if it's just
 /// littered with `todo!()`, as I need to get a better understanding on what states belong where.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Disconnected;
+pub struct Disconnected;
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct RequestingConnection {
-    pub(crate) attempts: u32,
+pub struct RequestingConnection {
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub(crate) struct AwaitingConnectionAck {
-    pub(crate) attempts: u32,
+pub struct AwaitingConnectionAck {
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Connected {
-    pub(crate) connection_id: ConnectionId,
+pub struct Connected {
+    pub connection_id: ConnectionId,
     /// TODO(alex) [low] 2021-02-13: Do not flood the network, find a way to check if the `rtt` is
     /// increasing due to us flooding the network with packets.
-    pub(crate) rtt: Duration,
-    pub(crate) latest_sent_id: PacketId,
-    pub(crate) latest_sent_time: Duration,
+    pub rtt: Duration,
+    pub latest_sent_id: PacketId,
+    pub latest_sent_time: Duration,
 
-    pub(crate) recv_data_transfers: Vec<Packet<Received<DataTransfer>>>,
-    pub(crate) recv_heartbeats: Vec<Packet<Received<Heartbeat>>>,
+    pub recv_data_transfers: Vec<Packet<Received<DataTransfer>>>,
+    pub recv_heartbeats: Vec<Packet<Received<Heartbeat>>>,
 
-    pub(crate) sent_data_transfers: Vec<Packet<Sent<DataTransfer>>>,
-    pub(crate) sent_heartbeats: Vec<Packet<Sent<Heartbeat>>>,
+    pub sent_data_transfers: Vec<Packet<Sent<DataTransfer>>>,
+    pub sent_heartbeats: Vec<Packet<Sent<Heartbeat>>>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Host<State> {
-    pub(crate) sequence_tracker: Sequence,
-    pub(crate) remote_ack_tracker: Ack,
-    pub(crate) local_ack_tracker: Ack,
-    pub(crate) address: SocketAddr,
-    pub(crate) state: State,
+pub struct Host<State> {
+    pub sequence_tracker: Sequence,
+    pub remote_ack_tracker: Ack,
+    pub local_ack_tracker: Ack,
+    pub address: SocketAddr,
+    pub state: State,
 }
 
 impl Host<Disconnected> {
-    pub(crate) fn new_disconnected(address: SocketAddr) -> Self {
+    pub fn new_disconnected(address: SocketAddr) -> Self {
         let state = Disconnected;
         Self {
             sequence_tracker: Sequence::default(),
@@ -91,7 +88,7 @@ impl Host<Disconnected> {
 }
 
 impl Host<Connected> {
-    pub(crate) fn prepare_data_transfer(
+    pub fn prepare_data_transfer(
         &self,
         payload: &Payload,
     ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
@@ -104,7 +101,7 @@ impl Host<Connected> {
         (header, bytes, footer)
     }
 
-    pub(crate) fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
+    pub fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
         let sequence = self.sequence_tracker;
         let ack = self.remote_ack_tracker;
         let connection_id = self.state.connection_id;
@@ -115,14 +112,14 @@ impl Host<Connected> {
         (header, bytes, footer)
     }
 
-    pub(crate) fn after_send(&mut self) {
+    pub fn after_send(&mut self) {
         debug!("{:#?} after send.", self);
         self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
     }
 }
 
 impl Host<RequestingConnection> {
-    pub(crate) fn starting_connection_request(address: SocketAddr) -> Self {
+    pub fn starting_connection_request(address: SocketAddr) -> Self {
         let state = RequestingConnection { attempts: 0 };
         Self {
             sequence_tracker: Sequence::default(),
@@ -133,7 +130,7 @@ impl Host<RequestingConnection> {
         }
     }
 
-    pub(crate) fn received_connection_request(address: SocketAddr) -> Self {
+    pub fn received_connection_request(address: SocketAddr) -> Self {
         let state = RequestingConnection { attempts: 0 };
         Self {
             sequence_tracker: Sequence::default(),
@@ -144,7 +141,7 @@ impl Host<RequestingConnection> {
         }
     }
 
-    pub(crate) fn prepare_connection_accepted(
+    pub fn prepare_connection_accepted(
         &self,
         connection_id: ConnectionId,
     ) -> (Header<ConnectionAccepted>, Vec<u8>, Footer) {
@@ -160,12 +157,12 @@ impl Host<RequestingConnection> {
         (header, bytes, footer)
     }
 
-    pub(crate) fn after_send(&mut self) {
+    pub fn after_send(&mut self) {
         debug!("{:#?} after send.", self);
         self.sequence_tracker = Sequence::new(self.sequence_tracker.get() + 1).unwrap();
     }
 
-    pub(crate) fn await_connection(self) -> Host<AwaitingConnectionAck> {
+    pub fn await_connection(self) -> Host<AwaitingConnectionAck> {
         let state = AwaitingConnectionAck { attempts: 0 };
         let host = Host {
             sequence_tracker: unsafe { Sequence::new_unchecked(self.sequence_tracker.get() + 1) },
@@ -180,7 +177,7 @@ impl Host<RequestingConnection> {
 }
 
 impl Host<AwaitingConnectionAck> {
-    pub(crate) fn connection_accepted(self, connection_id: ConnectionId) -> Host<Connected> {
+    pub fn connection_accepted(self, connection_id: ConnectionId) -> Host<Connected> {
         let recv_data_transfers = Vec::with_capacity(32);
         let recv_heartbeats = Vec::with_capacity(32);
         let sent_data_transfers = Vec::with_capacity(32);
@@ -209,7 +206,7 @@ impl Host<AwaitingConnectionAck> {
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
-pub(crate) struct Address(pub(crate) SocketAddr);
+pub struct Address(pub SocketAddr);
 
-pub(crate) const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
-pub(crate) const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
+pub const RESEND_TIMEOUT_THRESHOLD: Duration = Duration::from_millis(500);
+pub const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);

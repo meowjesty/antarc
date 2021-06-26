@@ -32,8 +32,8 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Source {
-    pub(crate) host_id: Entity,
+pub struct Source {
+    pub host_id: Entity,
 }
 
 impl From<Destination> for Source {
@@ -53,11 +53,15 @@ impl PartialEq<Destination> for Source {
 impl<T> NetManager<T> {
     ///
     /// - Raises the `ReceivedNewPacket` event.
-    pub(crate) fn receiver(
+    pub fn receiver(
         &self,
         buffer: &mut Vec<u8>,
     ) -> Option<(Sequence, Header, Payload, Footer, Address, Received)> {
-        let (world, timer, socket) = (&self.world, &self.timer, &self.network_resource.socket);
+        let (world, timer, socket) = (
+            &self.world,
+            &self.protocol.timer,
+            &self.network_resource.socket,
+        );
 
         let mut received_new_packet = None;
 
@@ -115,8 +119,8 @@ impl<T> NetManager<T> {
 
     /// NOTE(alex): System that acks packets sent by the local host to a remote host (acks `Sent`).
     // TODO(alex): 2021-04-21: Handle this event properly, with the updated way.
-    pub(crate) fn system_on_received_ack_sent_packet(&mut self) {
-        let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.timer);
+    pub fn system_on_received_ack_sent_packet(&mut self) {
+        let (buffer, world, timer) = (&mut self.buffer, &mut self.world, &self.protocol.timer);
 
         let mut handled_events = Vec::with_capacity(8);
         let mut sent_to_ack_list = Vec::with_capacity(8);

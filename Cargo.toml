@@ -2,8 +2,8 @@
 
 members = [
     "antarc",
-    "server",
-    "client",
+    # "server",
+    # "client",
     "with-state",
     "with-state-no-event",
     "with-callback",

@@ -10,9 +10,9 @@ struct Footer {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct Queued {}
+struct Scheduled {}
 
-impl Packet<Queued> {
+impl Packet<Scheduled> {
     fn to_sent(self, footer: Footer) -> Packet<Sent> {
         let sent = Sent { footer };
         Packet {
@@ -40,7 +40,7 @@ struct Packet<State> {
 
 #[derive(Debug, PartialEq, Clone)]
 struct Peer {
-    queued: Vec<Packet<Queued>>,
+    scheduled: Vec<Packet<Scheduled>>,
     sent: Vec<Packet<Sent>>,
     received: Vec<Packet<Received>>,
 }
@@ -65,14 +65,14 @@ fn helper_received() -> Packet<Received> {
     received_packet
 }
 
-fn helper_queued(sequence: u32) -> Packet<Queued> {
+fn helper_scheduled(sequence: u32) -> Packet<Scheduled> {
     let header = Header { sequence, ack: 0 };
-    let queued = Queued {};
-    let queued_packet = Packet {
+    let scheduled = Scheduled {};
+    let scheduled_packet = Packet {
         header,
-        state: queued,
+        state: scheduled,
     };
-    queued_packet
+    scheduled_packet
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -81,7 +81,7 @@ struct StateError<State> {
     previous_state: Packet<State>,
 }
 
-fn send_packet(packet: Packet<Queued>) -> Result<Packet<Sent>, StateError<Queued>> {
+fn send_packet(packet: Packet<Scheduled>) -> Result<Packet<Sent>, StateError<Scheduled>> {
     if packet.header.sequence >= 1 {
         Ok(packet.to_sent(Footer { crc32: 10 }))
     } else {
@@ -94,7 +94,7 @@ fn send_packet(packet: Packet<Queued>) -> Result<Packet<Sent>, StateError<Queued
 
 fn main() {
     let peer = Peer {
-        queued: Vec::with_capacity(32),
+        scheduled: Vec::with_capacity(32),
         sent: Vec::with_capacity(32),
         received: Vec::with_capacity(32),
     };
@@ -112,19 +112,19 @@ fn main() {
     }
 
     {
-        let queued_packet = helper_queued(1);
-        network.peer.queued.push(queued_packet);
+        let scheduled_packet = helper_scheduled(1);
+        network.peer.scheduled.push(scheduled_packet);
 
-        let queued_packet = helper_queued(0);
-        network.peer.queued.push(queued_packet);
+        let scheduled_packet = helper_scheduled(0);
+        network.peer.scheduled.push(scheduled_packet);
     }
 
     {
         let failed = {
-            let mut queued_iter = network.peer.queued.into_iter();
-            let failed: Option<StateError<Queued>> = loop {
-                if let Some(queued) = queued_iter.next() {
-                    match send_packet(queued) {
+            let mut scheduled_iter = network.peer.scheduled.into_iter();
+            let failed: Option<StateError<Scheduled>> = loop {
+                if let Some(scheduled) = scheduled_iter.next() {
+                    match send_packet(scheduled) {
                         Ok(sent) => {
                             println!("Sent packet {:#?}", sent);
                             network.peer.sent.push(sent);
@@ -143,11 +143,11 @@ fn main() {
 
         if let Some(fail) = failed {
             // NOTE(alex) 2021-05-14: Another failure, `into_iter` will take the values like I want,
-            // but then the `queued` list is moved out completely. To make this work, it would need
+            // but then the `scheduled` list is moved out completely. To make this work, it would need
             // a `iter_mut` at most, but this isn't good enough to take the packet and move it into
             // the next state. This makes total sense, I was testing it out to see if there was a
             // way to make this work.
-            // network.peer.queued.push(fail.previous_state);
+            // network.peer.scheduled.push(fail.previous_state);
         }
     }
 }

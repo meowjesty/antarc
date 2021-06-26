@@ -1,74 +1,100 @@
+#![feature(duration_consts_2)]
+#![feature(drain_filter)]
+
+use core::mem::size_of;
 use std::{
-    convert::TryInto,
+    any::Any,
     net::SocketAddr,
-    num::NonZeroU32,
-    ops::{Deref, DerefMut},
+    num::{NonZeroU16, NonZeroU32, NonZeroU8},
+    time::{Duration, Instant},
+    vec::Drain,
 };
 
-type PacketCode = u16;
+use events::SenderEvent;
+use packet::{ConnectionId, RawPacket};
 
-struct Sequence(NonZeroU32);
+pub mod connection;
+pub mod events;
+pub mod hosts;
+pub mod packet;
 
-type PayloadLength = u16;
-struct Payload(Vec<u8>);
+#[macro_export]
+macro_rules! read_buffer_inc {
+    ({ $buffer: expr, $start: expr } : $kind: ident) => {{
+        let end = $start + size_of::<$kind>();
+        let bytes_arr: &[u8; size_of::<$kind>()] = $buffer[$start..end].try_into().unwrap();
+        let val = $kind::from_be_bytes(*bytes_arr);
+        $start = end;
+        val
+    }};
+}
 
-impl Payload {
-    fn len(&self) -> PayloadLength {
-        self.0.len().try_into().unwrap()
+pub type PacketId = u64;
+pub type ProtocolId = NonZeroU32;
+
+pub const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
+pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
+
+#[derive(Debug)]
+pub struct Server {
+    last_antarc_schedule_check: Duration,
+    connection_id_tracker: ConnectionId,
+}
+
+#[derive(Debug)]
+pub struct Client {
+    pub last_sent_time: Duration,
+}
+
+#[derive(Debug)]
+pub struct Protocol<T> {
+    pub timer: Instant,
+    pub event_system: EventSystem,
+    pub retrievable: Vec<(ConnectionId, Vec<u8>)>,
+    pub kind: T,
+}
+
+impl Protocol<Server> {
+    pub fn new_server() -> Self {
+        todo!()
     }
 }
 
-impl Deref for Payload {
-    type Target = Vec<u8>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl Protocol<Client> {
+    pub fn new_client() -> Self {
+        todo!()
     }
 }
 
-impl DerefMut for Payload {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl<T> Protocol<T> {
+    pub fn retrieve(&mut self) -> Drain<(ConnectionId, Vec<u8>)> {
+        self.retrievable.drain(..)
+    }
+
+    pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
+        let cancelled_packet = self
+            .event_system
+            .sender
+            .drain_filter(|event| match event {
+                SenderEvent::ScheduledDataTransfer { packet, .. } => packet.id == packet_id,
+                _ => false,
+            })
+            .next()
+            .is_some();
+
+        cancelled_packet
     }
 }
 
-struct CommonInfo {
-    sequence: Sequence,
-    code: PacketCode,
+#[derive(Debug)]
+pub struct EventSystem {
+    pub sender: Vec<SenderEvent>,
 }
 
-enum Packet {
-    Scheduled {
-        payload: Payload,
-    },
-    ConnectionRequest {
-        info: CommonInfo,
-    },
-    ConnectionAccepted {
-        info: CommonInfo,
-        ack: u32,
-    },
-    DataTransfer {
-        info: CommonInfo,
-        ack: u32,
-        payload: Payload,
-    },
-    Heartbeat {
-        info: CommonInfo,
-        ack: u32,
-    },
-}
+impl EventSystem {
+    pub fn new() -> Self {
+        let sender = Vec::with_capacity(1024);
 
-struct Host {
-    address: SocketAddr,
-    scheduled: Vec<Packet>,
-    sent: Vec<Packet>,
-    received: Vec<Packet>,
-}
-
-enum Connection {
-    Disconnected { host: Host },
-    Requesting { host: Host },
-    Awaiting { host: Host },
-    Connected { host: Host },
+        Self { sender }
+    }
 }

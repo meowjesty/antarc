@@ -5,26 +5,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use antarc_protocol::{
+    events::SenderEvent,
+    packet::{payload::Payload, scheduled::Scheduled, ConnectionId, Packet},
+    PacketId, Protocol, Server,
+};
 use log::{debug, error, warn};
 
 use super::SendTo;
-use crate::{
-    events::{AntarcError, FailureEvent, ReceiverEvent, SenderEvent},
-    host::{AwaitingConnectionAck, Connected, Disconnected, Host, RequestingConnection},
-    net::{NetManager, NetworkResource},
-    packet::{
-        header::{ConnectionRequest, DataTransfer, Header, Heartbeat},
-        kind::PacketKind,
-        payload::{self, Payload},
-        queued::Queued,
-        received::Received,
-        sequence::Sequence,
-        ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
-        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
-    },
-};
-
-pub type PacketId = u64;
+use crate::net::{NetManager, NetworkResource};
 
 const CHECK_ANTARC_QUEUE: Duration = Duration::from_millis(250);
 
@@ -46,7 +35,7 @@ macro_rules! send {
                 // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
                 // it could end up being a duplicated packet, sequence and ack are
                 // only incremented when send is successful.
-                $self.event_system.failures.push($failed);
+                // $self.event_system.failures.push($failed);
 
                 break;
             }
@@ -54,37 +43,29 @@ macro_rules! send {
     }};
 }
 
-#[derive(Debug)]
-pub struct Server {
-    last_antarc_queue_check: Duration,
-    connection_id_tracker: ConnectionId,
-}
-
 impl NetManager<Server> {
     pub fn new_server(address: &SocketAddr) -> Self {
-        let server = Server {
-            last_antarc_queue_check: Duration::default(),
-            connection_id_tracker: unsafe { ConnectionId::new_unchecked(1) },
-        };
-        let net_manager = NetManager::new(address, server);
+        let protocol = Protocol::new_server();
+        let net_manager = NetManager::new(address, protocol);
         net_manager
     }
 
     // TODO(alex) 2021-05-23: Allow the user to specify the destination of these messages, we then
-    // check if they're in the `connected` list, and queue the packets as normal.
-    pub fn enqueue(&mut self, message: Vec<u8>) -> PacketId {
+    // check if they're in the `connected` list, and schedule the packets as normal.
+    pub fn schedule(&mut self, message: Vec<u8>) -> PacketId {
         let id = self.connection.packet_id_tracker;
 
         for host in self.connection.connected.iter() {
-            let state = Queued {
-                time: self.timer.elapsed(),
+            let state = Scheduled {
+                time: self.protocol.timer.elapsed(),
                 destination: host.address,
             };
             let packet = Packet { id, state };
 
-            self.event_system
+            self.protocol
+                .event_system
                 .sender
-                .push(SenderEvent::QueuedDataTransfer {
+                .push(SenderEvent::ScheduledDataTransfer {
                     packet,
                     payload: Payload(message.clone()),
                 });
@@ -122,19 +103,18 @@ impl NetManager<Server> {
                         self.connection.packet_id_tracker,
                         &self.buffer[..num_received],
                         source,
-                        &self.timer,
+                        &self.protocol.timer,
                     ) {
                         Ok(decoded) => decoded,
                         Err(fail) => {
-                            self.event_system
-                                .failures
-                                .push(FailureEvent::AntarcError(fail));
+                            todo!();
                             continue;
                         }
                     };
 
                     debug!("Received new packet {:#?} {:#?}.", packet, source);
 
+                    self.protocol.
                     self.event_system.receiver.push(ReceiverEvent::AckRemote {
                         sequence: packet.state.header.info.sequence,
                     });
@@ -185,15 +165,17 @@ impl NetManager<Server> {
         // TODO(alex) [mid] 2021-05-27: Send a heartbeat, look at the connected hosts only.
         for host in self.connection.connected.iter() {
             let threshold = host.state.latest_sent_time + Duration::from_millis(1500);
-            let time_expired = threshold < self.timer.elapsed();
+            let time_expired = threshold < self.protocol.timer.elapsed();
             if time_expired {
                 debug!(
                     "Time expired, sending host a heartbeat {:#?}.",
                     host.address
                 );
-                self.event_system.sender.push(SenderEvent::QueuedHeartbeat {
-                    address: host.address,
-                });
+                self.event_system
+                    .sender
+                    .push(SenderEvent::ScheduledHeartbeat {
+                        address: host.address,
+                    });
             }
         }
 
@@ -206,8 +188,8 @@ impl NetManager<Server> {
 
             for event in self.event_system.sender.drain(..1) {
                 match event {
-                    SenderEvent::QueuedDataTransfer { packet, payload } => {
-                        debug!("Handling QueuedDataTransfer {:#?}.", packet);
+                    SenderEvent::ScheduledDataTransfer { packet, payload } => {
+                        debug!("Handling ScheduledDataTransfer {:#?}.", packet);
 
                         let destination = packet.state.destination;
                         let connected = self
@@ -228,12 +210,16 @@ impl NetManager<Server> {
                             }
                         );
 
-                        let sent =
-                            packet.to_sent(header, footer, self.timer.elapsed(), destination);
+                        let sent = packet.to_sent(
+                            header,
+                            footer,
+                            self.protocol.timer.elapsed(),
+                            destination,
+                        );
                         connected.state.sent_data_transfers.push(sent);
                     }
-                    SenderEvent::QueuedConnectionAccepted { packet } => {
-                        debug!("Handling QueuedConnectionAccepted {:#?}.", packet);
+                    SenderEvent::ScheduledConnectionAccepted { packet } => {
+                        debug!("Handling ScheduledConnectionAccepted {:#?}.", packet);
 
                         // TODO(alex) [mid] 2021-06-08: A `HashMap<SocketAddr, Host<State>>` is
                         // probably more appropriate, as this find address is pertinent.
@@ -247,7 +233,7 @@ impl NetManager<Server> {
                             .find(|(_, host)| host.address == packet.state.destination)
                             .unwrap();
 
-                        let connection_id = self.net_type.connection_id_tracker;
+                        let connection_id = self.protocol.kind.connection_id_tracker;
                         let (_, bytes, _) =
                             requesting_connection.prepare_connection_accepted(connection_id);
 
@@ -259,15 +245,16 @@ impl NetManager<Server> {
                         let host = requesting_connection.await_connection();
                         self.connection.awaiting_connection_ack.push(host);
 
-                        self.net_type.connection_id_tracker =
-                            NonZeroU16::new(self.net_type.connection_id_tracker.get() + 1).unwrap();
+                        self.protocol.kind.connection_id_tracker =
+                            NonZeroU16::new(self.protocol.kind.connection_id_tracker.get() + 1)
+                                .unwrap();
                     }
-                    SenderEvent::QueuedConnectionRequest { .. } => {
+                    SenderEvent::ScheduledConnectionRequest { .. } => {
                         error!("Server cannot handle SendConnectionRequest!");
                         unreachable!();
                     }
-                    SenderEvent::QueuedHeartbeat { address } => {
-                        debug!("Handling QueuedHeartbeat to {:#?}.", address);
+                    SenderEvent::ScheduledHeartbeat { address } => {
+                        debug!("Handling ScheduledHeartbeat to {:#?}.", address);
 
                         let connected = self
                             .connection
@@ -293,7 +280,7 @@ impl NetManager<Server> {
                             self.connection.packet_id_tracker,
                             header,
                             footer,
-                            self.timer.elapsed(),
+                            self.protocol.timer.elapsed(),
                             address,
                         );
                         connected.state.sent_heartbeats.push(sent);
@@ -324,8 +311,9 @@ impl NetManager<Server> {
                     let host = Host::received_connection_request(source);
 
                     let packet_id = self.connection.packet_id_tracker;
-                    let packet = Packet::new(packet_id, self.timer.elapsed(), host.address);
-                    let connection_accepted = SenderEvent::QueuedConnectionAccepted { packet };
+                    let packet =
+                        Packet::new(packet_id, self.protocol.timer.elapsed(), host.address);
+                    let connection_accepted = SenderEvent::ScheduledConnectionAccepted { packet };
                     self.event_system.sender.push(connection_accepted);
 
                     self.connection.requesting_connection.push(host);

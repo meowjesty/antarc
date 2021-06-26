@@ -5,24 +5,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+use antarc_protocol::{
+    events::SenderEvent,
+    hosts::Host,
+    packet::{
+        header::Header, payload::Payload, scheduled::Scheduled, ConnectionId, Packet, Sent,
+        CONNECTION_ACCEPTED, CONNECTION_DENIED,
+    },
+    Client, Protocol,
+};
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
 use super::SendTo;
 use crate::{
-    events::{FailureEvent, ReceiverEvent, SenderEvent},
-    host::{Connected, Disconnected, Host, RequestingConnection},
     net::{NetManager, NetworkResource},
-    packet::{
-        header::{DataTransfer, Header},
-        kind::PacketKind,
-        payload::{self, Payload},
-        queued::Queued,
-        received::Received,
-        sequence::Sequence,
-        ConnectionId, Footer, Packet, Sent, CONNECTION_ACCEPTED, CONNECTION_DENIED,
-        CONNECTION_REQUEST, DATA_TRANSFER, HEARTBEAT,
-    },
     send, MTU_LENGTH,
 };
 
@@ -37,17 +34,10 @@ use crate::{
 ///
 /// ADD(alex) [low] 2021-05-27: Piling on this idea, we could just have the user create a network
 /// with both a `Client` and a `Server`, this isn't a very good idea, and needs more thought.
-#[derive(Debug)]
-pub struct Client {
-    pub(crate) last_sent_time: Duration,
-}
-
 impl NetManager<Client> {
     pub fn new_client(address: &SocketAddr) -> Self {
-        let client = Client {
-            last_sent_time: Duration::default(),
-        };
-        let net_manager = NetManager::new(address, client);
+        let protocol = Protocol::new_client();
+        let net_manager = NetManager::new(address, protocol);
         net_manager
     }
 
@@ -75,7 +65,7 @@ impl NetManager<Client> {
         let server = Host::starting_connection_request(server_addr.clone());
         self.connection.requesting_connection.insert(0, server);
 
-        let mut time_sent = self.timer.elapsed();
+        let mut time_sent = self.protocol.timer.elapsed();
 
         let payload = Payload::default();
         let destination = server_addr.clone();
@@ -112,7 +102,7 @@ impl NetManager<Client> {
                             self.connection.packet_id_tracker,
                             &self.buffer[..num_received],
                             source,
-                            &self.timer,
+                            &self.protocol.timer,
                         )
                         .unwrap();
                         debug!("Received new packet {:#?} {:#?}.", packet, source);
@@ -124,7 +114,7 @@ impl NetManager<Client> {
                             let mut connected = server.connection_accepted(connection_id);
                             let connection_id = packet.state.footer.connection_id.unwrap();
                             self.connection.packet_id_tracker += 1;
-                            self.net_type.last_sent_time = time_sent;
+                            self.protocol.kind.last_sent_time = time_sent;
                             connected.local_ack_tracker = packet.state.header.info.ack;
                             connected.remote_ack_tracker = packet.state.header.info.sequence.get();
 
@@ -156,7 +146,7 @@ impl NetManager<Client> {
                 continue;
             }
 
-            if time_sent + Duration::from_millis(2000) < self.timer.elapsed() {
+            if time_sent + Duration::from_millis(2000) < self.protocol.timer.elapsed() {
                 debug!("Wait time for connection response expired.");
                 connection_request = Some(bytes.clone());
             }
@@ -171,7 +161,7 @@ impl NetManager<Client> {
                             header, destination
                         );
                         debug_assert!(num_sent > 0);
-                        time_sent = self.timer.elapsed();
+                        time_sent = self.protocol.timer.elapsed();
 
                         // TODO(alex) [high] 2021-06-09: This breaks the whole client-side, we need
                         // a way to convert `RequestingConnection->???` into something that is
@@ -199,9 +189,6 @@ impl NetManager<Client> {
                         // to send, the encoding is performed again,
                         // even though we could cache it here as a `Packet<Encoded>` and
                         // insert it into the Host.
-                        self.event_system
-                            .failures
-                            .push(FailureEvent::SendConnectionRequest);
                         self.network.writable = false;
                     }
                     Err(fail) => {
@@ -216,18 +203,19 @@ impl NetManager<Client> {
         }
     }
 
-    pub fn enqueue(&mut self, message: Vec<u8>) -> u64 {
+    pub fn enschedule(&mut self, message: Vec<u8>) -> u64 {
         let id = self.connection.packet_id_tracker;
         let destination = self.connection.connected.get(0).unwrap().address;
-        let state = Queued {
-            time: self.timer.elapsed(),
+        let state = Scheduled {
+            time: self.protocol.timer.elapsed(),
             destination,
         };
         let packet = Packet { id, state };
 
-        self.event_system
+        self.protocol
+            .event_system
             .sender
-            .push(SenderEvent::QueuedDataTransfer {
+            .push(SenderEvent::ScheduledDataTransfer {
                 packet,
                 payload: Payload(message),
             });
@@ -287,7 +275,7 @@ impl NetManager<Client> {
                         self.connection.packet_id_tracker,
                         &self.buffer[..num_received],
                         source,
-                        &self.timer,
+                        &self.protocol.timer,
                     )
                     .unwrap();
 
@@ -339,12 +327,6 @@ impl NetManager<Client> {
                             // retrievable.
                             //
                             // ADD(alex) [high] 2021-06-06: Handle these kinds of events!
-                            self.event_system
-                                .receiver
-                                .push(ReceiverEvent::DataTransfer {
-                                    packet: packet.into(),
-                                    payload,
-                                });
                         }
                         HEARTBEAT => {
                             todo!()
@@ -373,11 +355,11 @@ impl NetManager<Client> {
         //
         // ADD(alex) [high] 2021-06-08: Trimmed down some of the duplicated code, but this function
         // is still quite big and repetitive.
-        while self.network.writable && self.event_system.sender.len() > 0 {
-            for event in self.event_system.sender.drain(..1) {
+        while self.network.writable && self.protocol.event_system.sender.len() > 0 {
+            for event in self.protocol.event_system.sender.drain(..1) {
                 match event {
-                    SenderEvent::QueuedDataTransfer { packet, payload } => {
-                        debug!("Handling QueuedDataTransfer {:#?}.", packet);
+                    SenderEvent::ScheduledDataTransfer { packet, payload } => {
+                        debug!("Handling ScheduledDataTransfer {:#?}.", packet);
 
                         let destination = packet.state.destination;
                         let connected = self.connection.connected.get_mut(0).unwrap();
@@ -387,21 +369,22 @@ impl NetManager<Client> {
                             self,
                             connected,
                             bytes,
-                            OnError -> FailureEvent::SendDataTransfer {
-                                packet,
-                                payload
-                            }
+                            OnError -> todo!()
                         );
 
-                        let sent =
-                            packet.to_sent(header, footer, self.timer.elapsed(), destination);
+                        let sent = packet.to_sent(
+                            header,
+                            footer,
+                            self.protocol.timer.elapsed(),
+                            destination,
+                        );
                         connected.state.sent_data_transfers.push(sent);
                     }
-                    SenderEvent::QueuedConnectionAccepted { .. } => {
+                    SenderEvent::ScheduledConnectionAccepted { .. } => {
                         unreachable!()
                     }
-                    SenderEvent::QueuedConnectionRequest { packet } => {
-                        debug!("Handling QueuedConnectionRequest to {:#?}.", packet);
+                    SenderEvent::ScheduledConnectionRequest { packet } => {
+                        debug!("Handling ScheduledConnectionRequest to {:#?}.", packet);
 
                         let payload = Payload::default();
                         let destination = packet.state.destination;
@@ -417,7 +400,7 @@ impl NetManager<Client> {
                                     header,
                                     footer,
                                     destination,
-                                    time: self.timer.elapsed(),
+                                    time: self.protocol.timer.elapsed(),
                                 };
                                 let packet = Packet {
                                     id: packet.id,
@@ -425,7 +408,7 @@ impl NetManager<Client> {
                                 };
 
                                 debug!("Client sent packet {:#?} to {:#?}.", packet, destination);
-                                self.net_type.last_sent_time = self.timer.elapsed();
+                                self.protocol.kind.last_sent_time = self.protocol.timer.elapsed();
                             }
                             Err(fail) => {
                                 if fail.kind() == io::ErrorKind::WouldBlock {
@@ -436,27 +419,25 @@ impl NetManager<Client> {
                                 // NOTE(alex): Cannot use `bytes` here (or in any failure event), as
                                 // it could end up being a duplicated packet, sequence and ack are
                                 // only incremented when send is successful.
-                                let failed = FailureEvent::SendConnectionRequest;
-                                self.event_system.failures.push(failed);
-
+                                todo!();
                                 break;
                             }
                         }
                     }
-                    SenderEvent::QueuedHeartbeat { address } => {
-                        debug!("Handling QueuedHeartbeat {:#?}.", address);
+                    SenderEvent::ScheduledHeartbeat { address } => {
+                        debug!("Handling ScheduledHeartbeat {:#?}.", address);
 
                         let connected = self.connection.connected.get_mut(0).unwrap();
                         let (header, bytes, footer) = connected.prepare_heartbeat();
 
                         send!(self, connected, bytes,
-                            OnError -> FailureEvent::SendHeartbeat { address });
+                            OnError -> todo!());
 
                         let sent = Packet::sent_heartbeat(
                             self.connection.packet_id_tracker,
                             header,
                             footer,
-                            self.timer.elapsed(),
+                            self.protocol.timer.elapsed(),
                             address,
                         );
                         connected.state.sent_heartbeats.push(sent);

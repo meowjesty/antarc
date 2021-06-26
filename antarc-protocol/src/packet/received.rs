@@ -15,7 +15,7 @@ use super::{
     ConnectionId, Footer, Packet, Sent,
 };
 use crate::{
-    events::AntarcError,
+    events::ProtocolError,
     packet::{
         header::ENCODED_SIZE, sequence::Sequence, Ack, PacketKind, StatusCode, CONNECTION_REQUEST,
     },
@@ -23,23 +23,23 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Received<Kind> {
-    pub(crate) header: Header<Kind>,
-    pub(crate) footer: Footer,
-    pub(crate) time: Duration,
-    pub(crate) source: SocketAddr,
+pub struct Received<Kind> {
+    pub header: Header<Kind>,
+    pub footer: Footer,
+    pub time: Duration,
+    pub source: SocketAddr,
 }
 
 impl Packet<Received<Generic>> {
     // TODO(alex) 2021-05-17: Check that this code is working by comparing it with the ECS branch,
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
-    pub(crate) fn decode(
+    pub fn decode(
         id: u64,
         buffer: &[u8],
         address: SocketAddr,
         timer: &Instant,
-    ) -> Result<(Packet<Received<Generic>>, Payload), AntarcError> {
+    ) -> Result<(Packet<Received<Generic>>, Payload), ProtocolError> {
         let mut hasher = Hasher::new();
 
         let buffer_length = buffer.len();
@@ -65,7 +65,7 @@ impl Packet<Received<Generic>> {
 
             let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
             if PROTOCOL_ID.get() != read_protocol_id {
-                return Err(AntarcError::InvalidProtocolId {
+                return Err(ProtocolError::InvalidProtocolId {
                     got: read_protocol_id,
                     expected: PROTOCOL_ID,
                 });
@@ -128,7 +128,7 @@ impl Packet<Received<Generic>> {
 
             Ok((packet, payload))
         } else {
-            Err(AntarcError::InvalidCrc32 {
+            Err(ProtocolError::InvalidCrc32 {
                 got: crc32_received,
                 expected: unsafe { NonZeroU32::new_unchecked(crc32) },
             })

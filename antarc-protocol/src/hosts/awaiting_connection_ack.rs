@@ -6,12 +6,12 @@ use super::{
 use crate::packet::{received::Received, Packet};
 
 #[derive(Debug)]
-pub(crate) struct AwaitingConnectionAck {
-    pub(crate) attempts: u32,
+pub struct AwaitingConnectionAck {
+    pub attempts: u32,
 }
 
 #[derive(Debug)]
-pub(crate) struct FailedAwaitingConnectionAck {
+pub struct FailedAwaitingConnectionAck {
     attempts: u32,
     error: String,
 }
@@ -23,13 +23,13 @@ enum ConnectionWentWrong {
 }
 
 #[derive(Debug)]
-pub(crate) struct FailedConnectionWentWrong {
+pub struct FailedConnectionWentWrong {
     attempts: u32,
     reason: ConnectionWentWrong,
 }
 
 impl Host<AwaitingConnectionAck> {
-    pub(crate) fn poll(self) -> Result<Self, Host<FailedAwaitingConnectionAck>> {
+    pub fn poll(self) -> Result<Self, Host<FailedAwaitingConnectionAck>> {
         let connection_request = self.sent_list.last().unwrap();
         if connection_request.state.time_sent < RESEND_TIMEOUT_THRESHOLD {
             Ok(self)
@@ -43,7 +43,7 @@ impl Host<AwaitingConnectionAck> {
         }
     }
 
-    pub(crate) fn on_received_connection_ack(
+    pub fn on_received_connection_ack(
         self,
         packet: Packet<Received>,
     ) -> Result<Host<Connected>, Host<FailedConnectionWentWrong>> {
@@ -87,7 +87,7 @@ impl Host<AwaitingConnectionAck> {
 }
 
 impl Host<FailedConnectionWentWrong> {
-    pub(crate) fn done(self) -> Host<Disconnected> {
+    pub fn done(self) -> Host<Disconnected> {
         match self.connection.reason {
             ConnectionWentWrong::Denied => {
                 let disconnected = self.into_new_state(Disconnected);
@@ -102,7 +102,7 @@ impl Host<FailedConnectionWentWrong> {
 }
 
 impl Host<FailedAwaitingConnectionAck> {
-    pub(crate) fn retry(self) -> Result<Host<SendingConnectionRequest>, Host<Disconnected>> {
+    pub fn retry(self) -> Result<Host<SendingConnectionRequest>, Host<Disconnected>> {
         let connection_request = self.sent_list.last().unwrap();
         // TODO(alex) 2021-03-20: We won't ever enter this, as the `time_sent` will be overwritten
         // when the retry request is sent. It's lacking a way of keeping track of the first time the

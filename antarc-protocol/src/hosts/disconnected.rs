@@ -8,7 +8,7 @@ use super::sending_connection_request::SendingConnectionRequest;
 use crate::{host::Host, packet::Sequence};
 
 #[derive(Debug)]
-pub(crate) struct Disconnected;
+pub struct Disconnected;
 
 impl Default for Host<Disconnected> {
     fn default() -> Self {
@@ -26,8 +26,8 @@ impl Default for Host<Disconnected> {
             received_list: Vec::with_capacity(32),
             retrieved: Vec::with_capacity(32),
             internals: Vec::with_capacity(32),
-            send_queue: VecDeque::with_capacity(32),
-            priority_queue: VecDeque::with_capacity(32),
+            send_schedule: VecDeque::with_capacity(32),
+            priority_schedule: VecDeque::with_capacity(32),
             sent_list: Vec::with_capacity(32),
             acked_list: Vec::with_capacity(32),
             connection,
@@ -40,7 +40,7 @@ impl Default for Host<Disconnected> {
 impl Host<Disconnected> {
     /// TODO(alex) 2021-02-07: Is it possible to create a `Host` in any other state? Or should it
     /// always start in disconnected mode?
-    pub(crate) fn new(address: SocketAddr) -> Host<Disconnected> {
+    pub fn new(address: SocketAddr) -> Host<Disconnected> {
         let timer = Instant::now();
 
         let host = Host {
@@ -60,12 +60,12 @@ impl Host<Disconnected> {
     /// own grave, when I think about what the higher level code will have to do to handle these
     /// moves. It begs some serious consideration on whether this FSM pattern is usable, or if I
     /// should drop it in favor of enums.
-    pub(crate) fn request_connection(self) -> Host<SendingConnectionRequest> {
+    pub fn request_connection(self) -> Host<SendingConnectionRequest> {
         self.into_new_state(SendingConnectionRequest { attempts: 0 })
     }
 }
 
-// pub(crate) fn on_received_connection_request(
+// pub fn on_received_connection_request(
 //     mut self,
 //     buffer: &[u8],
 //     connetion_id: ConnectionId,

@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Default, PartialOrd)]
-pub(crate) struct Payload(pub(crate) Vec<u8>);
+pub struct Payload(pub Vec<u8>);
 
 impl std::ops::Deref for Payload {
     type Target = Vec<u8>;
