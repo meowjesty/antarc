@@ -1,12 +1,7 @@
 use std::{convert::TryFrom, net::SocketAddr, num::NonZeroU32};
 
-use super::{
-    header::{ConnectionAccepted, ConnectionRequest, DataTransfer, Header, HeaderInfo},
-    payload::Payload,
-    received::Received,
-    ConnectionId, Footer, Packet,
-};
-use crate::{events::ProtocolError, PacketId};
+use super::{received::Received, ConnectionId, Handshake, Packet, Transfer};
+use crate::{events::ProtocolError, header::HeaderInfo, payload::Payload, PacketId};
 
 pub struct PartialPacket {
     pub(crate) id: PacketId,
@@ -17,7 +12,7 @@ pub struct PartialPacket {
     pub(crate) address: SocketAddr,
 }
 
-impl TryFrom<PartialPacket> for Packet<Received<ConnectionRequest>> {
+impl TryFrom<PartialPacket> for Packet<Received, Handshake> {
     type Error = ProtocolError;
 
     fn try_from(partial: PartialPacket) -> Result<Self, Self::Error> {
@@ -25,15 +20,7 @@ impl TryFrom<PartialPacket> for Packet<Received<ConnectionRequest>> {
     }
 }
 
-impl TryFrom<PartialPacket> for Packet<Received<ConnectionAccepted>> {
-    type Error = ProtocolError;
-
-    fn try_from(partial: PartialPacket) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
-impl TryFrom<PartialPacket> for Packet<Received<DataTransfer>> {
+impl TryFrom<PartialPacket> for Packet<Received, Transfer> {
     type Error = ProtocolError;
 
     fn try_from(partial: PartialPacket) -> Result<Self, Self::Error> {

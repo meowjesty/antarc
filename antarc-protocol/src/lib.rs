@@ -3,10 +3,8 @@
 
 use core::mem::size_of;
 use std::{
-    any::Any,
     convert::TryInto,
-    net::SocketAddr,
-    num::{NonZeroU16, NonZeroU32, NonZeroU8},
+    num::NonZeroU32,
     time::{Duration, Instant},
     vec::Drain,
 };
@@ -15,16 +13,19 @@ use connection::ConnectionSystem;
 use events::{ProtocolError, SenderEvent};
 use packets::{raw::RawPacket, ConnectionId};
 
-use crate::packets::{
-    header::{ConnectionAccepted, ConnectionRequest, DataTransfer},
-    received::Received,
-    Packet,
+use crate::{
+    controls::{connection_request::ConnectionRequest, data_transfer::DataTransfer},
+    packets::{received::Received, Packet},
 };
 
 pub mod connection;
+pub mod controls;
 pub mod events;
+pub mod header;
 pub mod hosts;
 pub mod packets;
+pub mod payload;
+pub mod sequence;
 
 #[macro_export]
 macro_rules! read_buffer_inc {
@@ -78,23 +79,23 @@ impl Protocol<Server> {
             .drain_filter(|host| host.address == source)
             .next()
         {
-            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         } else if let Some(host) = self
             .connection_system
             .awaiting_connection_ack
             .drain_filter(|host| host.address == source)
             .next()
         {
-            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         } else if let Some(host) = self
             .connection_system
             .connected
             .drain_filter(|host| host.address == source)
             .next()
         {
-            let packet: Packet<Received<DataTransfer>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         } else {
-            let packet: Packet<Received<ConnectionRequest>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         }
 
         todo!()
@@ -116,23 +117,23 @@ impl Protocol<Client> {
             .drain_filter(|host| host.address == source)
             .next()
         {
-            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+            return Err(todo!());
         } else if let Some(host) = self
             .connection_system
             .awaiting_connection_ack
             .drain_filter(|host| host.address == source)
             .next()
         {
-            let packet: Packet<Received<ConnectionAccepted>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         } else if let Some(host) = self
             .connection_system
             .connected
             .drain_filter(|host| host.address == source)
             .next()
         {
-            let packet: Packet<Received<DataTransfer>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         } else {
-            let packet: Packet<Received<ConnectionRequest>> = partial_packet.try_into()?;
+            match partial_packet.try_into()? {}
         }
 
         todo!()

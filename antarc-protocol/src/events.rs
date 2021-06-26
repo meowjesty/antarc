@@ -1,13 +1,16 @@
 use std::{
     array::TryFromSliceError,
-    net::SocketAddr,
     num::{NonZeroU32, TryFromIntError},
 };
 
 use thiserror::Error;
 
 use crate::{
-    packets::{payload::Payload, scheduled::Scheduled, Packet},
+    controls::{
+        connection_accepted::ConnectionAccepted, connection_request::ConnectionRequest,
+        data_transfer::DataTransfer, heartbeat::Heartbeat,
+    },
+    packets::{scheduled::Scheduled, Packet},
     ProtocolId,
 };
 #[derive(Debug, Error)]
@@ -28,17 +31,16 @@ pub enum ProtocolError {
 #[derive(Debug, PartialEq, Clone)]
 pub enum SenderEvent {
     ScheduledDataTransfer {
-        packet: Packet<Scheduled>,
-        payload: Payload,
+        packet: Packet<Scheduled, DataTransfer>,
     },
     ScheduledConnectionAccepted {
-        packet: Packet<Scheduled>,
+        packet: Packet<Scheduled, ConnectionAccepted>,
     },
     ScheduledConnectionRequest {
-        packet: Packet<Scheduled>,
+        packet: Packet<Scheduled, ConnectionRequest>,
     },
     ScheduledHeartbeat {
-        address: SocketAddr,
+        packet: Packet<Scheduled, Heartbeat>,
     },
 }
 

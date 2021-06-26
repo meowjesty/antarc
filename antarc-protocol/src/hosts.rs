@@ -1,20 +1,11 @@
-use std::{
-    convert::TryInto,
-    io,
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{convert::TryInto, net::SocketAddr, time::Duration};
 
-use log::{debug, error, warn};
+use log::debug;
 
 use crate::{
-    packets::{
-        header::{ConnectionAccepted, DataTransfer, Header, Heartbeat},
-        payload::Payload,
-        received::Received,
-        sequence::Sequence,
-        Ack, ConnectionId, Footer, Packet, Sent,
-    },
+    controls::{data_transfer::DataTransfer, heartbeat::Heartbeat},
+    packets::{received::Received, sent::Sent, Ack, ConnectionId, Footer, Packet},
+    sequence::Sequence,
     PacketId,
 };
 
@@ -58,11 +49,11 @@ pub struct Connected {
     pub latest_sent_id: PacketId,
     pub latest_sent_time: Duration,
 
-    pub recv_data_transfers: Vec<Packet<Received<DataTransfer>>>,
-    pub recv_heartbeats: Vec<Packet<Received<Heartbeat>>>,
+    pub recv_data_transfers: Vec<Packet<Received, DataTransfer>>,
+    pub recv_heartbeats: Vec<Packet<Received, Heartbeat>>,
 
-    pub sent_data_transfers: Vec<Packet<Sent<DataTransfer>>>,
-    pub sent_heartbeats: Vec<Packet<Sent<Heartbeat>>>,
+    pub sent_data_transfers: Vec<Packet<Sent, DataTransfer>>,
+    pub sent_heartbeats: Vec<Packet<Sent, Heartbeat>>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,29 +79,29 @@ impl Host<Disconnected> {
 }
 
 impl Host<Connected> {
-    pub fn prepare_data_transfer(
-        &self,
-        payload: &Payload,
-    ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
-        let sequence = self.sequence_tracker;
-        let ack = self.remote_ack_tracker;
-        let connection_id = self.state.connection_id;
-        let header = Header::data_transfer(sequence, ack, payload.len().try_into().unwrap());
-        let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
+    // pub fn prepare_data_transfer(
+    //     &self,
+    //     payload: &Payload,
+    // ) -> (Header<DataTransfer>, Vec<u8>, Footer) {
+    //     let sequence = self.sequence_tracker;
+    //     let ack = self.remote_ack_tracker;
+    //     let connection_id = self.state.connection_id;
+    //     let header = Header::data_transfer(sequence, ack, payload.len().try_into().unwrap());
+    //     let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
 
-        (header, bytes, footer)
-    }
+    //     (header, bytes, footer)
+    // }
 
-    pub fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
-        let sequence = self.sequence_tracker;
-        let ack = self.remote_ack_tracker;
-        let connection_id = self.state.connection_id;
-        let header = Header::heartbeat(sequence, ack);
-        let payload = Payload::default();
-        let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
+    // pub fn prepare_heartbeat(&self) -> (Header<Heartbeat>, Vec<u8>, Footer) {
+    //     let sequence = self.sequence_tracker;
+    //     let ack = self.remote_ack_tracker;
+    //     let connection_id = self.state.connection_id;
+    //     let header = Header::heartbeat(sequence, ack);
+    //     let payload = Payload::default();
+    //     let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
 
-        (header, bytes, footer)
-    }
+    //     (header, bytes, footer)
+    // }
 
     pub fn after_send(&mut self) {
         debug!("{:#?} after send.", self);
@@ -141,21 +132,21 @@ impl Host<RequestingConnection> {
         }
     }
 
-    pub fn prepare_connection_accepted(
-        &self,
-        connection_id: ConnectionId,
-    ) -> (Header<ConnectionAccepted>, Vec<u8>, Footer) {
-        let ack = 1;
-        let connection_id = connection_id;
-        let header = Header::connection_accepted(ack);
-        let payload = Payload::default();
+    // pub fn prepare_connection_accepted(
+    //     &self,
+    //     connection_id: ConnectionId,
+    // ) -> (Header<ConnectionAccepted>, Vec<u8>, Footer) {
+    //     let ack = 1;
+    //     let connection_id = connection_id;
+    //     let header = Header::connection_accepted(ack);
+    //     let payload = Payload::default();
 
-        // NOTE(alex) 2021-05-30: These cannot be cached, as they may become invalid
-        // when the time to re-send comes (id, sequence may have increased, causing
-        // possible packet duplication).
-        let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
-        (header, bytes, footer)
-    }
+    //     // NOTE(alex) 2021-05-30: These cannot be cached, as they may become invalid
+    //     // when the time to re-send comes (id, sequence may have increased, causing
+    //     // possible packet duplication).
+    //     let (bytes, footer) = Packet::encode(&payload, &header.info, Some(connection_id));
+    //     (header, bytes, footer)
+    // }
 
     pub fn after_send(&mut self) {
         debug!("{:#?} after send.", self);

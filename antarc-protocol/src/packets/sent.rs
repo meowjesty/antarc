@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Received {
+pub struct Sent {
     pub time: Duration,
-    pub source: SocketAddr,
+    pub destination: SocketAddr,
 }

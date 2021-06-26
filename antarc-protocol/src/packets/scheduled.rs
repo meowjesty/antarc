@@ -2,12 +2,12 @@ use std::{mem::size_of, net::SocketAddr, num::NonZeroU32, time::Duration};
 
 use crc32fast::Hasher;
 
-use super::{
+use super::{sent::Sent, ConnectionId, Footer, Packet};
+use crate::{
     header::{Header, HeaderInfo},
     payload::Payload,
-    ConnectionId, Footer, Packet, Sent,
+    PacketId, ProtocolId, PROTOCOL_ID_BYTES,
 };
-use crate::{PacketId, ProtocolId, PROTOCOL_ID_BYTES};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheduled {
@@ -15,7 +15,7 @@ pub struct Scheduled {
     pub destination: SocketAddr,
 }
 
-impl Packet<Scheduled> {
+impl<CarrierType> Packet<Scheduled, CarrierType> {
     // I don't remember if this encode was in a proper working state when the `restart` branch was
     // created.
     pub fn encode(
@@ -63,13 +63,7 @@ impl Packet<Scheduled> {
     }
 
     pub fn new(packet_id: PacketId, time: Duration, destination: SocketAddr) -> Self {
-        let state = Scheduled { time, destination };
-        let packet = Packet {
-            id: packet_id,
-            state,
-        };
-
-        packet
+        todo!()
     }
 
     pub fn to_sent<T>(
@@ -78,15 +72,7 @@ impl Packet<Scheduled> {
         footer: Footer,
         time: Duration,
         destination: SocketAddr,
-    ) -> Packet<Sent<T>> {
-        let state = Sent {
-            header,
-            footer,
-            time,
-            destination,
-        };
-        let packet = Packet { id: self.id, state };
-
-        packet
+    ) -> Packet<Sent, CarrierType> {
+        todo!()
     }
 }

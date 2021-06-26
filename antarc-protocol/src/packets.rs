@@ -1,32 +1,21 @@
-use core::mem::size_of;
-use std::{
-    convert::{TryFrom, TryInto},
-    net::SocketAddr,
-    num::{NonZeroU16, NonZeroU32},
-    time::{Duration, Instant},
-};
+use std::num::{NonZeroU16, NonZeroU32};
 
-use crc32fast::Hasher;
-use log::{debug, error};
-
-use self::{
-    header::{Header, Heartbeat},
-    kind::PacketKind,
-    payload::Payload,
-};
 use crate::{
-    events::ProtocolError, packets::sequence::Sequence, read_buffer_inc, PacketId, ProtocolId,
-    PROTOCOL_ID, PROTOCOL_ID_BYTES,
+    controls::{
+        connection_accepted::ConnectionAccepted, connection_denied::ConnectionDenied,
+        connection_request::ConnectionRequest, connection_terminate::ConnectionTerminate,
+        data_transfer::DataTransfer, heartbeat::Heartbeat,
+    },
+    header::HeaderInfo,
+    PacketId,
 };
 
-pub mod header;
+pub mod acked;
 pub mod partial;
-pub mod kind;
-pub mod payload;
 pub mod raw;
 pub mod received;
 pub mod scheduled;
-pub mod sequence;
+pub mod sent;
 
 /// Packets might be either:
 /// - FRAGMENTED or NON_FRAGMENTED;
@@ -81,41 +70,6 @@ pub struct Footer {
 /// `ack: 10, past_ack: (10, 6, 5, 4, 3,...)`, then the client would know that the server is acking
 /// the packet 10, but missed some (9, 8, 7).
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sent<Kind> {
-    pub header: Header<Kind>,
-    pub footer: Footer,
-    pub time: Duration,
-    pub destination: SocketAddr,
-}
-
-impl Packet<Sent<Heartbeat>> {
-    pub fn sent_heartbeat(
-        id: PacketId,
-        header: Header<Heartbeat>,
-        footer: Footer,
-        time: Duration,
-        destination: SocketAddr,
-    ) -> Self {
-        let state = Sent {
-            header,
-            footer,
-            time,
-            destination,
-        };
-        let packet = Packet { id, state };
-
-        packet
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Acked<Kind> {
-    pub header: Header<Kind>,
-    pub footer: Footer,
-    pub time: Duration,
-}
-
 // TODO(alex) 2021-05-21: Take out payload from everything related to packet, this will become a
 // dynamic-ish thing that moves with the events and/or packets as neccessary. The idea is:
 // - user calls enschedule, gives the bytes to us;
@@ -128,9 +82,32 @@ pub struct Acked<Kind> {
 // user calls retrieve, we just move the payload to them, and the packet changes state;
 // This will get rid of ownership issues regarding the payload, avoiding Arc/Weak altogether.
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Control {
+    pub info: HeaderInfo,
+    pub footer: Footer,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Handshake {
+    ConnectionRequest(ConnectionRequest),
+    ConnectionAccepted(ConnectionAccepted),
+    ConnectionDenied(ConnectionDenied),
+    ConnectionTerminate(ConnectionTerminate),
+}
+
+// TODO(alex) [low] 2021-06-26: This name sucks, heartbeat doesn't transfer anything.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Transfer {
+    DataTransfer(DataTransfer),
+    Heartbeat(Heartbeat),
+}
+
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Packet<State> {
+pub struct Packet<State, CarrierType> {
     pub id: PacketId,
+    pub control: Control,
     pub state: State,
+    pub carrier: CarrierType,
 }

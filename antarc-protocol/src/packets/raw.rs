@@ -1,26 +1,16 @@
-use std::{
-    convert::TryInto,
-    marker::PhantomData,
-    mem::size_of,
-    net::SocketAddr,
-    num::NonZeroU32,
-    time::{Duration, Instant},
-};
+use std::{convert::TryInto, mem::size_of, net::SocketAddr, num::NonZeroU32};
 
 use crc32fast::Hasher;
 
-use super::{
-    header::{ConnectionRequest, DataTransfer, Generic, Header, HeaderInfo, Heartbeat},
-    partial::PartialPacket,
-    payload::Payload,
-    ConnectionId, Footer, Packet, Sent,
-};
+use super::{partial::PartialPacket, ConnectionId};
 use crate::{
     events::ProtocolError,
-    packets::{
-        header::ENCODED_SIZE, sequence::Sequence, Ack, PacketKind, StatusCode, CONNECTION_REQUEST,
-    },
-    read_buffer_inc, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
+    header::{HeaderInfo, ENCODED_SIZE},
+    packets::{Ack, StatusCode, CONNECTION_REQUEST},
+    payload::Payload,
+    read_buffer_inc,
+    sequence::Sequence,
+    PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq)]
