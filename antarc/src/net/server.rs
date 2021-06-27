@@ -9,7 +9,8 @@ use std::{
 use antarc_protocol::{
     events::SenderEvent,
     packets::{raw::RawPacket, scheduled::Scheduled, ConnectionId, Packet},
-    PacketId, Protocol, Server,
+    server::Server,
+    PacketId, Protocol,
 };
 use log::{debug, error, warn};
 

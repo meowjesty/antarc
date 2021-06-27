@@ -14,7 +14,7 @@ use antarc_protocol::{
         CONNECTION_DENIED,
     },
     payload::Payload,
-    Client, PacketId, Protocol,
+    client::Client, PacketId, Protocol,
 };
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
