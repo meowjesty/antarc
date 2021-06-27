@@ -22,9 +22,6 @@ impl Protocol<Server> {
         let source = partial_packet.address;
         let connection_id = partial_packet.connection_id;
 
-        // TODO(alex) [vhigh] 2021-06-26: Must match on whatever type is contained in
-        // the partial packet.
-
         if let Some(connection_id) = connection_id {
             let data_packet: Packet<Received, Transfer> = partial_packet.try_into()?;
 
@@ -36,11 +33,13 @@ impl Protocol<Server> {
                 match data_packet.carrier {
                     Transfer::DataTransfer(_) => todo!(),
                     Transfer::Heartbeat(_) => todo!(),
+                    Transfer::ConnectionTerminate(_) => todo!(),
                 }
-            } else if let Some(host) = self.connection_system.connected.get_mut(&&connection_id) {
+            } else if let Some(host) = self.connection_system.connected.get_mut(&connection_id) {
                 match data_packet.carrier {
                     Transfer::DataTransfer(_) => todo!(),
                     Transfer::Heartbeat(_) => todo!(),
+                    Transfer::ConnectionTerminate(_) => todo!(),
                 }
             }
         } else {

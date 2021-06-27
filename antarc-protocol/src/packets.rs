@@ -102,6 +102,13 @@ pub enum Handshake {
 pub enum Transfer {
     DataTransfer(DataTransfer),
     Heartbeat(Heartbeat),
+    ConnectionTerminate(ConnectionTerminate),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericPacket {
+    Handshake(Handshake),
+    Transfer(Transfer),
 }
 
 // TODO(alex) 2021-05-15: Finish refactoring this.
