@@ -1,7 +1,8 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 use crate::{
     hosts::{AwaitingConnectionAck, Connected, Host, RequestingConnection},
+    packets::ConnectionId,
     PacketId,
 };
 
@@ -13,8 +14,8 @@ pub struct ConnectionSystem {
     // TODO(alex) [mid] 2021-06-08: A `HashMap<SocketAddr, Host<State>>` is probably more
     // appropriate, as this find address is pertinent.
     pub requesting_connection: Vec<Host<RequestingConnection>>,
-    pub awaiting_connection_ack: Vec<Host<AwaitingConnectionAck>>,
-    pub connected: Vec<Host<Connected>>,
+    pub awaiting_connection_ack: HashMap<ConnectionId, Host<AwaitingConnectionAck>>,
+    pub connected: HashMap<ConnectionId, Host<Connected>>,
 }
 
 impl ConnectionSystem {
@@ -22,8 +23,8 @@ impl ConnectionSystem {
         Self {
             packet_id_tracker: 0,
             requesting_connection: Vec::with_capacity(32),
-            awaiting_connection_ack: Vec::with_capacity(32),
-            connected: Vec::with_capacity(32),
+            awaiting_connection_ack: HashMap::with_capacity(32),
+            connected: HashMap::with_capacity(32),
         }
     }
 
@@ -31,27 +32,5 @@ impl ConnectionSystem {
         self.requesting_connection.is_empty()
             || self.awaiting_connection_ack.is_empty()
             || self.connected.is_empty()
-    }
-
-    pub fn is_requesting_connection(&self, address: &SocketAddr) -> bool {
-        self.requesting_connection
-            .iter()
-            .any(|h| h.address == *address)
-    }
-
-    pub fn is_awaiting_connection_ack(&self, address: &SocketAddr) -> bool {
-        self.awaiting_connection_ack
-            .iter()
-            .any(|h| h.address == *address)
-    }
-
-    pub fn is_connected(&self, address: &SocketAddr) -> bool {
-        self.connected.iter().any(|h| h.address == *address)
-    }
-
-    pub fn is_known(&self, address: &SocketAddr) -> bool {
-        self.is_requesting_connection(address)
-            || self.is_awaiting_connection_ack(address)
-            || self.is_connected(address)
     }
 }

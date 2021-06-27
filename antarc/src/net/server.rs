@@ -8,7 +8,7 @@ use std::{
 
 use antarc_protocol::{
     events::SenderEvent,
-    packets::{payload::Payload, raw::RawPacket, scheduled::Scheduled, ConnectionId, Packet},
+    packets::{raw::RawPacket, scheduled::Scheduled, ConnectionId, Packet},
     PacketId, Protocol, Server,
 };
 use log::{debug, error, warn};
@@ -54,27 +54,7 @@ impl NetManager<Server> {
     // TODO(alex) 2021-05-23: Allow the user to specify the destination of these messages, we then
     // check if they're in the `connected` list, and schedule the packets as normal.
     pub fn schedule(&mut self, message: Vec<u8>) -> PacketId {
-        let id = self.connection.packet_id_tracker;
-
-        for host in self.connection.connected.iter() {
-            let state = Scheduled {
-                time: self.protocol.timer.elapsed(),
-                destination: host.address,
-            };
-            let packet = Packet { id, state };
-
-            self.protocol
-                .event_system
-                .sender
-                .push(SenderEvent::ScheduledDataTransfer {
-                    packet,
-                    payload: Payload(message.clone()),
-                });
-        }
-
-        self.connection.packet_id_tracker += 1;
-
-        id
+        todo!()
     }
 
     // TODO(alex) 2021-05-17: It's probably a good idea to start working on this before going
@@ -110,133 +90,11 @@ impl NetManager<Server> {
             }
         }
 
-        // TODO(alex) [mid] 2021-05-27: Send a heartbeat, look at the connected hosts only.
-        for host in self.connection.connected.iter() {
-            let threshold = host.state.latest_sent_time + Duration::from_millis(1500);
-            let time_expired = threshold < self.protocol.timer.elapsed();
-            if time_expired {
-                debug!(
-                    "Time expired, sending host a heartbeat {:#?}.",
-                    host.address
-                );
-                self.protocol
-                    .event_system
-                    .sender
-                    .push(SenderEvent::ScheduledHeartbeat {
-                        address: host.address,
-                    });
-            }
-        }
-
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         while self.network.writable
             && self.protocol.event_system.sender.is_empty() == false
             && self.connection.is_empty() == false
-        {
-            debug_assert!(self.protocol.event_system.sender.len() > 0);
-
-            for event in self.protocol.event_system.sender.drain(..1) {
-                match event {
-                    SenderEvent::ScheduledDataTransfer { packet, payload } => {
-                        debug!("Handling ScheduledDataTransfer {:#?}.", packet);
-
-                        let destination = packet.state.destination;
-                        let connected = self
-                            .connection
-                            .connected
-                            .iter_mut()
-                            .find(|host| host.address == destination)
-                            .unwrap();
-
-                        let (header, bytes, footer) = connected.prepare_data_transfer(&payload);
-                        send!(
-                            self,
-                            connected,
-                            bytes,
-                            OnError -> FailureEvent::SendDataTransfer {
-                                packet,
-                                payload
-                            }
-                        );
-
-                        let sent = packet.to_sent(
-                            header,
-                            footer,
-                            self.protocol.timer.elapsed(),
-                            destination,
-                        );
-                        connected.state.sent_data_transfers.push(sent);
-                    }
-                    SenderEvent::ScheduledConnectionAccepted { packet } => {
-                        debug!("Handling ScheduledConnectionAccepted {:#?}.", packet);
-
-                        // TODO(alex) [mid] 2021-06-08: A `HashMap<SocketAddr, Host<State>>` is
-                        // probably more appropriate, as this find address is pertinent.
-                        // NOTE(alex): If `DrainIter` is used here, then `send!` would require a way
-                        // of putting the host back into the proper list.
-                        let (index, requesting_connection) = self
-                            .connection
-                            .requesting_connection
-                            .iter_mut()
-                            .enumerate()
-                            .find(|(_, host)| host.address == packet.state.destination)
-                            .unwrap();
-
-                        let connection_id = self.protocol.kind.connection_id_tracker;
-                        let (_, bytes, _) =
-                            requesting_connection.prepare_connection_accepted(connection_id);
-
-                        send!(self, requesting_connection, bytes,
-                            OnError -> FailureEvent::SendConnectionAccepted { packet });
-
-                        let requesting_connection =
-                            self.connection.requesting_connection.remove(index);
-                        let host = requesting_connection.await_connection();
-                        self.connection.awaiting_connection_ack.push(host);
-
-                        self.protocol.kind.connection_id_tracker =
-                            NonZeroU16::new(self.protocol.kind.connection_id_tracker.get() + 1)
-                                .unwrap();
-                    }
-                    SenderEvent::ScheduledConnectionRequest { .. } => {
-                        error!("Server cannot handle SendConnectionRequest!");
-                        unreachable!();
-                    }
-                    SenderEvent::ScheduledHeartbeat { address } => {
-                        debug!("Handling ScheduledHeartbeat to {:#?}.", address);
-
-                        let connected = self
-                            .connection
-                            .connected
-                            .iter_mut()
-                            .find(|host| host.address == address)
-                            .unwrap();
-
-                        let address = connected.address;
-                        let (header, bytes, footer) = connected.prepare_heartbeat();
-
-                        send!(self, connected, bytes,
-                            OnError -> FailureEvent::SendHeartbeat { address });
-
-                        // TODO(alex) [mid] 2021-06-13: Don't think I need to keep a list of every
-                        // type of packet, to ack packets that are not data transfers I could just
-                        // keep a `not_acked: Vec<HeaderInfo>` just to get access to sequence and
-                        // timer values.
-                        //
-                        // Hmm, as it stands, it would be something pretty similar to what I'm doing
-                        // already, so maybe I'm trying to solve a non-problem.
-                        let sent = Packet::sent_heartbeat(
-                            self.connection.packet_id_tracker,
-                            header,
-                            footer,
-                            self.protocol.timer.elapsed(),
-                            address,
-                        );
-                        connected.state.sent_heartbeats.push(sent);
-                    }
-                }
-            }
-        }
+        {}
 
         // TODO(alex) [low] 2021-05-26: Check `fn _received_connection_request` notes.
 

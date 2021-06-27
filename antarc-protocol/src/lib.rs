@@ -1,5 +1,6 @@
 #![feature(duration_consts_2)]
 #![feature(drain_filter)]
+#![feature(hash_drain_filter)]
 
 use core::mem::size_of;
 use std::{
@@ -15,7 +16,7 @@ use packets::{raw::RawPacket, ConnectionId};
 
 use crate::{
     controls::{connection_request::ConnectionRequest, data_transfer::DataTransfer},
-    packets::{received::Received, Packet},
+    packets::{received::Received, Handshake, Packet, Transfer},
 };
 
 pub mod connection;
@@ -72,30 +73,39 @@ impl Protocol<Server> {
     pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
         let partial_packet = raw_packet.decode(self.connection_system.packet_id_tracker)?;
         let source = partial_packet.address;
+        let connection_id = partial_packet.connection_id;
 
-        if let Some(host) = self
-            .connection_system
-            .requesting_connection
-            .drain_filter(|host| host.address == source)
-            .next()
-        {
-            match partial_packet.try_into()? {}
-        } else if let Some(host) = self
-            .connection_system
-            .awaiting_connection_ack
-            .drain_filter(|host| host.address == source)
-            .next()
-        {
-            match partial_packet.try_into()? {}
-        } else if let Some(host) = self
-            .connection_system
-            .connected
-            .drain_filter(|host| host.address == source)
-            .next()
-        {
-            match partial_packet.try_into()? {}
+        // TODO(alex) [vhigh] 2021-06-26: Must match on whatever type is contained in
+        // the partial packet.
+
+        if let Some(connection_id) = connection_id {
+            let data_packet: Packet<Received, Transfer> = partial_packet.try_into()?;
+
+            if let Some(host) = self
+                .connection_system
+                .awaiting_connection_ack
+                .remove(&connection_id)
+            {
+                match data_packet.carrier {
+                    Transfer::DataTransfer(_) => todo!(),
+                    Transfer::Heartbeat(_) => todo!(),
+                }
+            } else if let Some(host) = self.connection_system.connected.get_mut(&&connection_id) {
+                match data_packet.carrier {
+                    Transfer::DataTransfer(_) => todo!(),
+                    Transfer::Heartbeat(_) => todo!(),
+                }
+            }
         } else {
-            match partial_packet.try_into()? {}
+            if let Some(host) = self
+                .connection_system
+                .requesting_connection
+                .iter()
+                .find(|host| host.address == source)
+            {
+                let handshake_packet: Packet<Received, Handshake> = partial_packet.try_into()?;
+            } else {
+            }
         }
 
         todo!()
@@ -110,30 +120,39 @@ impl Protocol<Client> {
     pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
         let partial_packet = raw_packet.decode(self.connection_system.packet_id_tracker)?;
         let source = partial_packet.address;
+        let connection_id = partial_packet.connection_id;
 
-        if let Some(host) = self
-            .connection_system
-            .requesting_connection
-            .drain_filter(|host| host.address == source)
-            .next()
-        {
-            return Err(todo!());
-        } else if let Some(host) = self
-            .connection_system
-            .awaiting_connection_ack
-            .drain_filter(|host| host.address == source)
-            .next()
-        {
-            match partial_packet.try_into()? {}
-        } else if let Some(host) = self
-            .connection_system
-            .connected
-            .drain_filter(|host| host.address == source)
-            .next()
-        {
-            match partial_packet.try_into()? {}
+        // TODO(alex) [vhigh] 2021-06-26: Must match on whatever type is contained in
+        // the partial packet.
+
+        if let Some(connection_id) = connection_id {
+            let data_packet: Packet<Received, Transfer> = partial_packet.try_into()?;
+
+            if let Some(host) = self
+                .connection_system
+                .awaiting_connection_ack
+                .remove(&connection_id)
+            {
+                match data_packet.carrier {
+                    Transfer::DataTransfer(_) => todo!(),
+                    Transfer::Heartbeat(_) => todo!(),
+                }
+            } else if let Some(host) = self.connection_system.connected.get_mut(&&connection_id) {
+                match data_packet.carrier {
+                    Transfer::DataTransfer(_) => todo!(),
+                    Transfer::Heartbeat(_) => todo!(),
+                }
+            }
         } else {
-            match partial_packet.try_into()? {}
+            if let Some(host) = self
+                .connection_system
+                .requesting_connection
+                .iter()
+                .find(|host| host.address == source)
+            {
+                let handshake_packet: Packet<Received, Handshake> = partial_packet.try_into()?;
+            } else {
+            }
         }
 
         todo!()
