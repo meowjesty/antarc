@@ -83,39 +83,11 @@ pub struct Footer {
 // user calls retrieve, we just move the payload to them, and the packet changes state;
 // This will get rid of ownership issues regarding the payload, avoiding Arc/Weak altogether.
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Control {
-    pub info: HeaderInfo,
-    pub footer: Footer,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Handshake {
-    ConnectionRequest(ConnectionRequest),
-    ConnectionAccepted(ConnectionAccepted),
-    ConnectionDenied(ConnectionDenied),
-    ConnectionTerminate(ConnectionTerminate),
-}
-
-// TODO(alex) [low] 2021-06-26: This name sucks, heartbeat doesn't transfer anything.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Transfer {
-    DataTransfer(DataTransfer),
-    Heartbeat(Heartbeat),
-    ConnectionTerminate(ConnectionTerminate),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum GenericPacket {
-    Handshake(Handshake),
-    Transfer(Transfer),
-}
-
 // TODO(alex) 2021-05-15: Finish refactoring this.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Packet<State, CarrierType> {
+pub struct Packet<State, MessageType> {
     pub id: PacketId,
-    pub control: Control,
+    pub header_info: HeaderInfo,
     pub state: State,
-    pub carrier: CarrierType,
+    pub message: MessageType,
 }

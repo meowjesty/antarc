@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{collections::HashMap, net::SocketAddr, time::Instant};
 
-use antarc_protocol::{connection::ConnectionSystem, PacketId, Protocol};
+use antarc_protocol_old::{connection::ConnectionSystem, PacketId, Protocol};
 use mio::{
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
     Events, Interest, Poll, Token,
@@ -85,7 +85,7 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
     pub fn new(address: &SocketAddr, protocol: Protocol<ClientOrServer>) -> Self {
         let buffer = vec![0x0; MTU_LENGTH];
         let network = NetworkResource::new(address);
-        let connection = ConnectionSystem::new();
+        let connection = ConnectionSystem::new(32);
 
         Self {
             buffer,

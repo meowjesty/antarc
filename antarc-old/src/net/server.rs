@@ -6,7 +6,7 @@ use std::{
     vec::Drain,
 };
 
-use antarc_protocol::{
+use antarc_protocol_old::{
     events::SenderEvent,
     packets::{raw::RawPacket, scheduled::Scheduled, ConnectionId, Packet},
     server::Server,
@@ -93,7 +93,7 @@ impl NetManager<Server> {
 
         // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
         while self.network.writable
-            && self.protocol.event_system.sender.is_empty() == false
+            && self.protocol.event_pipe.sender.is_empty() == false
             && self.connection.is_empty() == false
         {}
 

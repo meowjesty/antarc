@@ -10,11 +10,8 @@ fn main() {
 }
 
 fn client_main() {
-    debug!("Starting client application...");
     let server_addr = "127.0.0.1:7777".parse().unwrap();
     let client_addr = "127.0.0.1:8888".parse().unwrap();
-    let mut client = NetManager::new_client(&client_addr);
-    debug!("Created {:#?}.", client);
 
     debug!("Attempting connection to {:#?}", server_addr);
     // TODO(alex) 2021-05-18: Possible API if `connect` is async-like.

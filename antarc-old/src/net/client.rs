@@ -5,7 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use antarc_protocol::{
+use antarc_protocol_old::{
+    client::Client,
     events::SenderEvent,
     header::Header,
     hosts::Host,
@@ -14,7 +15,7 @@ use antarc_protocol::{
         CONNECTION_DENIED,
     },
     payload::Payload,
-    client::Client, PacketId, Protocol,
+    PacketId, Protocol,
 };
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
@@ -63,60 +64,7 @@ impl NetManager<Client> {
     /// a separate function in the API, that passes the errors to the user, I don't like this
     /// approach very much.
     pub fn connect(&mut self, server_addr: &SocketAddr) -> Result<ConnectionId, String> {
-        debug!("Connecting to {:#?}.", server_addr);
-        let server = Host::starting_connection_request(server_addr.clone());
-        self.connection.requesting_connection.insert(0, server);
-
-        let mut time_sent = self.protocol.timer.elapsed();
-
-        let payload = Payload::default();
-        let destination = server_addr.clone();
-        let header = todo!();
-
-        // let (bytes, footer) = Packet::encode(&payload, &header.info, None);
-        // let mut connection_request = Some(bytes.clone());
-
-        // TODO(alex) [vhigh] 2021-06-14: Make this work.
-        loop {
-            self.network
-                .poll
-                .poll(&mut self.network.events, Some(Duration::from_millis(150)))
-                .unwrap();
-
-            for event in self.network.events.iter() {
-                if event.token() == NetworkResource::TOKEN {
-                    if event.is_readable() {
-                        self.network.readable = true;
-                    }
-
-                    if event.is_writable() {
-                        self.network.writable = true;
-                    }
-                }
-            }
-
-            'receive: while self.network.readable {
-                match self.network.udp_socket.recv_from(&mut self.buffer) {
-                    Ok((num_received, source)) => {
-                        debug_assert!(num_received > 0);
-                    }
-                    Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                        warn!("Would block on recv {:?}", fail);
-                        self.network.readable = false;
-                        break 'receive;
-                    }
-                    Err(fail) => {
-                        warn!("Failed recv with {:?}", fail);
-                        self.network.readable = false;
-                        break 'receive;
-                    }
-                }
-            }
-
-            if self.network.writable == false {
-                continue;
-            }
-        }
+        unimplemented!()
     }
 
     pub fn schedule(&mut self, message: Vec<u8>) -> PacketId {
@@ -175,8 +123,8 @@ impl NetManager<Client> {
         //
         // ADD(alex) [high] 2021-06-08: Trimmed down some of the duplicated code, but this function
         // is still quite big and repetitive.
-        while self.network.writable && self.protocol.event_system.sender.len() > 0 {
-            for event in self.protocol.event_system.sender.drain(..1) {}
+        while self.network.writable && self.protocol.event_pipe.sender.len() > 0 {
+            for event in self.protocol.event_pipe.sender.drain(..1) {}
         }
 
         todo!()

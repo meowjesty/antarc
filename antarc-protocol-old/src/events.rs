@@ -5,14 +5,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{
-    controls::{
+use crate::{ProtocolId, controls::{
         connection_accepted::ConnectionAccepted, connection_request::ConnectionRequest,
         data_transfer::DataTransfer, heartbeat::Heartbeat,
-    },
-    packets::{scheduled::Scheduled, Packet},
-    ProtocolId,
-};
+    }, packets::{ConnectionId, Packet, partial::PartialPacket, received::Received, scheduled::Scheduled}, payload::Payload};
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     #[error("Protocol id got {:#?}, expected {:#?}", got, expected)]
@@ -41,6 +37,31 @@ pub enum SenderEvent {
     },
     ScheduledHeartbeat {
         packet: Packet<Scheduled, Heartbeat>,
+    },
+}
+
+#[derive(Debug)]
+pub enum ReceiverEvent {
+    ConnectionRequest {
+        packet: Packet<Received, ConnectionRequest>,
+    },
+    ConnectionAccepted {
+        packet: Packet<Received, ConnectionAccepted>,
+    },
+    DataTransfer {
+        packet: Packet<Received, DataTransfer>,
+    },
+    Heartbeat {
+        packet: Packet<Received, Heartbeat>,
+    },
+}
+
+#[derive(Debug)]
+pub enum AntarcEvent {
+    Fail(ProtocolError),
+    DataTransfer {
+        connection_id: ConnectionId,
+        payload: Payload,
     },
 }
 

@@ -1,91 +1,76 @@
-#![feature(duration_consts_2)]
-#![feature(drain_filter)]
-#![feature(hash_drain_filter)]
-
-use core::mem::size_of;
-use std::{
-    convert::TryInto,
-    num::NonZeroU32,
-    time::{Duration, Instant},
-    vec::Drain,
+use core::{
+    num::{NonZeroU16, NonZeroU32},
+    time::Duration,
 };
+use std::{collections::HashMap, net::SocketAddr};
 
-use connection::ConnectionSystem;
-use events::{ProtocolError, SenderEvent};
-use packets::{raw::RawPacket, ConnectionId};
+pub type Sequence = NonZeroU32;
+pub type ConnectionId = NonZeroU16;
+pub type Payload = Vec<u8>;
 
-use crate::{
-    controls::{connection_request::ConnectionRequest, data_transfer::DataTransfer},
-    packets::{received::Received, Handshake, Packet, Transfer},
-};
-
-pub mod client;
-pub mod connection;
-pub mod controls;
-pub mod events;
-pub mod header;
-pub mod hosts;
-pub mod packets;
-pub mod payload;
-pub mod sequence;
-pub mod server;
-
-#[macro_export]
-macro_rules! read_buffer_inc {
-    ({ $buffer: expr, $start: expr } : $kind: ident) => {{
-        let end = $start + size_of::<$kind>();
-        let bytes_arr: &[u8; size_of::<$kind>()] = $buffer[$start..end].try_into().unwrap();
-        let val = $kind::from_be_bytes(*bytes_arr);
-        $start = end;
-        val
-    }};
+pub enum Header {
+    ConnectionRequest {
+        info: HeaderInfo,
+        meta: MetaInfo,
+    },
+    ConnectionAccepted {
+        info: HeaderInfo,
+        connection_id: ConnectionId,
+        meta: MetaInfo,
+    },
+    DataTransfer {
+        info: HeaderInfo,
+        connection_id: ConnectionId,
+        payload_length: u32,
+        meta: MetaInfo,
+    },
+    Fragment {
+        info: HeaderInfo,
+        fragment_part: u32,
+        connection_id: ConnectionId,
+        payload_length: u32,
+        meta: MetaInfo,
+    },
+    Heartbeat {
+        info: HeaderInfo,
+        connection_id: ConnectionId,
+        meta: MetaInfo,
+    },
 }
 
-pub type PacketId = u64;
-pub type ProtocolId = NonZeroU32;
-
-pub const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
-pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
-
-#[derive(Debug)]
-pub struct Protocol<T> {
-    pub timer: Instant,
-    pub event_system: EventSystem,
-    pub retrievable: Vec<(ConnectionId, Vec<u8>)>,
-    pub kind: T,
-    pub connection_system: ConnectionSystem,
+pub struct HeaderInfo {
+    pub sequence: Sequence,
+    pub ack: u32,
+    pub code: u16,
+    pub payload_length: u32,
 }
 
-
-impl<T> Protocol<T> {
-    pub fn retrieve(&mut self) -> Drain<(ConnectionId, Vec<u8>)> {
-        self.retrievable.drain(..)
-    }
-
-    pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
-        let cancelled_packet = self
-            .event_system
-            .sender
-            .drain_filter(|event| match event {
-                SenderEvent::ScheduledDataTransfer { packet, .. } => packet.id == packet_id,
-                _ => false,
-            })
-            .next()
-            .is_some();
-
-        cancelled_packet
-    }
+pub struct MetaInfo {
+    pub time: Duration,
 }
 
-#[derive(Debug)]
-pub struct EventSystem {
-    pub sender: Vec<SenderEvent>,
+pub enum Packet {
+    Reliable {
+        attempts: u32,
+        header: Header,
+        payload: Payload,
+    },
+    Unreliable {
+        header: Header,
+        payload: Payload,
+    },
 }
 
-impl EventSystem {
-    pub fn new() -> Self {
-        let sender = Vec::with_capacity(1024);
-
-        Self { sender }
-    }
+pub enum Host {
+    RequestingConnection {},
+    AwaitingConnectionAck {},
+    Connected {},
+    Disconnected {},
 }
+
+pub enum Antarc {
+    Server { remotes: HashMap<SocketAddr, Host> },
+    Client { remote: Host },
+}
+
+// TODO(alex) [vhigh] 2021-07-27: Implement decode / encode, will it require a PartialPacket?
