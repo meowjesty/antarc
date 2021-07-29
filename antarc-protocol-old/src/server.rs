@@ -5,9 +5,14 @@ use std::{convert::TryInto, time::Duration};
 use log::{debug, warn};
 
 use crate::{
-    events::{AntarcEvent, ProtocolError, ReceiverEvent},
+    controls::data_transfer::DataTransfer,
+    events::{AntarcEvent, ProtocolError, ReceiverEvent, SenderEvent},
     hosts::Host,
-    packets::{partial::PartialPacket, raw::RawPacket, received::Received, ConnectionId, Packet},
+    packets::{
+        partial::PartialPacket, raw::RawPacket, received::Received, scheduled::Scheduled,
+        ConnectionId, Packet,
+    },
+    payload::{Fragment, Payload},
     EventSystem, Protocol,
 };
 
@@ -22,6 +27,7 @@ impl Protocol<Server> {
         todo!()
     }
 
+    /// NOTE(alex): API function that feeds the internal* event pipe, it's called from the outside.
     pub fn received(&mut self, raw_packet: RawPacket) {
         match raw_packet.decode(self.connection_system.packet_id_tracker) {
             Ok(partial_packet) => self.receiver_pipe.push(partial_packet),
@@ -71,8 +77,64 @@ impl Protocol<Server> {
         }
     }
 
+    // TODO(alex) [mid] 2021-07-28: Handle packet fragmentation.
     pub fn received_fragment(event_system: &mut EventSystem, partial_packet: PartialPacket) {
         todo!()
+    }
+
+    pub fn schedule(&mut self, payload: Payload, destinations: &[ConnectionId]) {
+        let fragment = payload.clone().fragment();
+
+        let mut scheduled_list = destinations
+            .iter()
+            .flat_map(|destination| {
+                // TODO(alex) [high] 2021-07-29: We hit yet another barrier due to generic state
+                // handling here. There are 2 types of possible packets, fragmented or not, but
+                // there is no "dependent type" way of handling this. `packets` has to be a specific
+                // type of packet, and I'm just creating it as `<Scheduled, DataTransfer>`, with no
+                // indication of fragmentation.
+                //
+                // The ordeal could be passed forward, but it would be just moving a problem to some
+                // other place, there is no stateful way of handling this.
+                let mut packets = match fragment.clone() {
+                    Fragment::Single(payload) => {
+                        let packet = Packet::<Scheduled, DataTransfer>::new(
+                            self.connection_system.packet_id_tracker,
+                            payload,
+                            self.timer.elapsed(),
+                            destination.clone(),
+                        );
+
+                        vec![packet]
+                    }
+                    Fragment::Multiple(payloads) => {
+                        let packets = payloads
+                            .into_iter()
+                            .map(|payload| {
+                                let packet = Packet::<Scheduled, DataTransfer>::new(
+                                    self.connection_system.packet_id_tracker,
+                                    payload,
+                                    self.timer.elapsed(),
+                                    destination.clone(),
+                                );
+
+                                packet
+                            })
+                            .collect::<Vec<_>>();
+
+                        packets
+                    }
+                };
+
+                let events = packets
+                    .drain(..)
+                    .map(|packet| SenderEvent::ScheduledDataTransfer { packet })
+                    .collect::<Vec<_>>();
+                events
+            })
+            .collect::<Vec<_>>();
+
+        self.event_pipe.sender.append(&mut scheduled_list);
     }
 
     pub fn poll(&mut self) -> Vec<AntarcEvent> {
@@ -87,6 +149,8 @@ impl Protocol<Server> {
             }
         }
 
+        // TODO(alex) [high] 2021-07-28: Create a function that feeds the event pipe for sending
+        // packets, then handle these send events.
         for received in self.event_pipe.receiver.drain(..) {
             match received {
                 ReceiverEvent::ConnectionRequest { packet } => {

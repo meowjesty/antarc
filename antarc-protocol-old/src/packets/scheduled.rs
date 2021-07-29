@@ -62,7 +62,12 @@ impl<CarrierType> Packet<Scheduled, CarrierType> {
         (packet_bytes, footer)
     }
 
-    pub fn new(packet_id: PacketId, time: Duration, destination: SocketAddr) -> Self {
+    pub fn new(
+        packet_id: PacketId,
+        payload: Payload,
+        time: Duration,
+        destination: ConnectionId,
+    ) -> Self {
         todo!()
     }
 
