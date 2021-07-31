@@ -14,7 +14,7 @@ pub struct Server {
     pub packet_id_tracker: PacketId,
     pub last_antarc_schedule_check: Duration,
     pub connection_id_tracker: ConnectionId,
-    pub requesting_connection: HashMap<SocketAddr, Peer<RequestingConnection>>,
+    pub requesting_connection: HashMap<ConnectionId, Peer<RequestingConnection>>,
     pub awaiting_connection_ack: HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
     pub connected: HashMap<ConnectionId, Peer<Connected>>,
 }
@@ -29,21 +29,51 @@ impl Protocol<Server> {
         raw_packet.decode(&mut self.events);
     }
 
+    /// NOTE(alex): API function for scheduling connection accepted packets, called by the user.
+    // TODO(alex) [high] 2021-07-31: The existence of this function means that the user must handle
+    // an event of connection request of sorts. When the protocol receives a connection request, it
+    // will create (or update) the peer, and put it into the correct HashMap, then an API event
+    // must be generated, so that the user may accept or deny this peer's connection.
+    pub fn accept_connection(&mut self, connection_id: ConnectionId) {
+        if let Some(peer) = self.service.requesting_connection.get(&connection_id) {
+            debug!("server: Accepting connection for {:#?}.", connection_id);
+            // TODO(alex) [high] 2021-07-31: After the connection accepted packet is scheduled here,
+            // when the packet is sent by the network manager, there must be a handler event for
+            // some sort of `SentEvent`, where we take the `Peer` out of requesting connection, and
+            // put it into the next state.
+            //
+            // This can't be done here, as we have no means of guaranteeing the packet will be sent.
+            //
+            // The big question here is: who should keep retrying to send the connection accepted
+            // packet, the `RequestingConnection` or the `AwaitingConnectionAck`? If it's the latter
+            // (`AwaitingConnectionAck`), then we can change state here.
+            let message = ConnectionAccepted {
+                meta: MetaMessage {
+                    packet_type: CONNECTION_ACCEPTED,
+                },
+                connection_id,
+            };
+            let scheduled = Scheduled {
+                packet_id: self.service.packet_id_tracker,
+                address: peer.address,
+                time: self.timer.elapsed(),
+                reliability: Reliable {},
+                message,
+            };
+
+            self.scheduler_pipe.push(scheduled.into());
+            self.service.packet_id_tracker += 1;
+        } else {
+            self.events
+                .api
+                .push(ProtocolError::NotFound(connection_id).into());
+        }
+    }
+
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
+    /// TODO(alex) [mid] 2021-07-31: This function is duplication-city, most of the code inside the
+    /// `if should_fragment else` is a copy of each other.
     pub fn schedule(&mut self, reliable: bool, send_to: SendTo, payload: Payload) {
-        // TODO(alex) [high] 2021-07-30: Steps to do here:
-        // 1. check payload length and fragment it;
-        // 2. create the correct type of scheduled event (fragmented or full):
-        // 3. any errors possible here?
-        // 4. handle reliable and unreliable scheduling;
-        //
-        // Does this mean we need a scheduled event for:
-        // - reliable + fragmented;
-        // - unreliable + fragmented;
-        // - reliable + complete;
-        // - unreliable + complete;
-        //
-        // Is there a better way?
         let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;
 
         match send_to {
@@ -69,7 +99,7 @@ impl Protocol<Server> {
                         let mut scheduling = fragments
                             .into_iter()
                             .map(|(fragment_index, payload)| {
-                                let meta = MessageMeta {
+                                let meta = MetaMessage {
                                     packet_type: DATA_TRANSFER_FRAGMENTED,
                                 };
                                 let message = Fragment {
@@ -82,7 +112,7 @@ impl Protocol<Server> {
 
                                 let scheduling = if reliable {
                                     let scheduled = Scheduled {
-                                        id: packet_id,
+                                        packet_id,
                                         time: self.timer.elapsed(),
                                         address: peer.address.clone(),
                                         reliability: Reliable {},
@@ -92,7 +122,7 @@ impl Protocol<Server> {
                                     scheduled.into()
                                 } else {
                                     let scheduled = Scheduled {
-                                        id: packet_id,
+                                        packet_id,
                                         time: self.timer.elapsed(),
                                         address: peer.address.clone(),
                                         reliability: Unreliable {},
@@ -110,7 +140,7 @@ impl Protocol<Server> {
                     } else {
                         debug!("server: schedule non-fragment.");
 
-                        let meta = MessageMeta {
+                        let meta = MetaMessage {
                             packet_type: DATA_TRANSFER_FRAGMENTED,
                         };
                         let message = DataTransfer {
@@ -121,7 +151,7 @@ impl Protocol<Server> {
 
                         let scheduling = if reliable {
                             let scheduled = Scheduled {
-                                id: packet_id,
+                                packet_id,
                                 time: self.timer.elapsed(),
                                 address: peer.address.clone(),
                                 reliability: Reliable {},
@@ -131,7 +161,7 @@ impl Protocol<Server> {
                             scheduled.into()
                         } else {
                             let scheduled = Scheduled {
-                                id: packet_id,
+                                packet_id,
                                 time: self.timer.elapsed(),
                                 address: peer.address.clone(),
                                 reliability: Unreliable {},
@@ -176,7 +206,7 @@ impl Protocol<Server> {
                             let mut scheduling = fragments
                                 .into_iter()
                                 .map(|(fragment_index, payload)| {
-                                    let meta = MessageMeta {
+                                    let meta = MetaMessage {
                                         packet_type: DATA_TRANSFER_FRAGMENTED,
                                     };
                                     let message = Fragment {
@@ -189,7 +219,7 @@ impl Protocol<Server> {
 
                                     let scheduling = if reliable {
                                         let scheduled = Scheduled {
-                                            id: packet_id,
+                                            packet_id,
                                             time: self.timer.elapsed(),
                                             address: peer.address.clone(),
                                             reliability: Reliable {},
@@ -199,7 +229,7 @@ impl Protocol<Server> {
                                         scheduled.into()
                                     } else {
                                         let scheduled = Scheduled {
-                                            id: packet_id,
+                                            packet_id,
                                             time: self.timer.elapsed(),
                                             address: peer.address.clone(),
                                             reliability: Unreliable {},
@@ -217,7 +247,7 @@ impl Protocol<Server> {
                         } else {
                             debug!("server: schedule non-fragment.");
 
-                            let meta = MessageMeta {
+                            let meta = MetaMessage {
                                 packet_type: DATA_TRANSFER_FRAGMENTED,
                             };
                             let message = DataTransfer {
@@ -228,7 +258,7 @@ impl Protocol<Server> {
 
                             let scheduling = if reliable {
                                 let scheduled = Scheduled {
-                                    id: packet_id,
+                                    packet_id,
                                     time: self.timer.elapsed(),
                                     address: peer.address.clone(),
                                     reliability: Reliable {},
@@ -238,7 +268,7 @@ impl Protocol<Server> {
                                 scheduled.into()
                             } else {
                                 let scheduled = Scheduled {
-                                    id: packet_id,
+                                    packet_id,
                                     time: self.timer.elapsed(),
                                     address: peer.address.clone(),
                                     reliability: Unreliable {},
@@ -283,7 +313,7 @@ impl Protocol<Server> {
                         let mut scheduling = fragments
                             .into_iter()
                             .map(|(fragment_index, payload)| {
-                                let meta = MessageMeta {
+                                let meta = MetaMessage {
                                     packet_type: DATA_TRANSFER_FRAGMENTED,
                                 };
                                 let message = Fragment {
@@ -296,7 +326,7 @@ impl Protocol<Server> {
 
                                 let scheduling = if reliable {
                                     let scheduled = Scheduled {
-                                        id: packet_id,
+                                        packet_id,
                                         time: self.timer.elapsed(),
                                         address: peer.address.clone(),
                                         reliability: Reliable {},
@@ -306,7 +336,7 @@ impl Protocol<Server> {
                                     scheduled.into()
                                 } else {
                                     let scheduled = Scheduled {
-                                        id: packet_id,
+                                        packet_id,
                                         time: self.timer.elapsed(),
                                         address: peer.address.clone(),
                                         reliability: Unreliable {},
@@ -324,7 +354,7 @@ impl Protocol<Server> {
                     } else {
                         debug!("server: schedule non-fragment.");
 
-                        let meta = MessageMeta {
+                        let meta = MetaMessage {
                             packet_type: DATA_TRANSFER_FRAGMENTED,
                         };
                         let message = DataTransfer {
@@ -335,7 +365,7 @@ impl Protocol<Server> {
 
                         let scheduling = if reliable {
                             let scheduled = Scheduled {
-                                id: packet_id,
+                                packet_id,
                                 time: self.timer.elapsed(),
                                 address: peer.address.clone(),
                                 reliability: Reliable {},
@@ -345,7 +375,7 @@ impl Protocol<Server> {
                             scheduled.into()
                         } else {
                             let scheduled = Scheduled {
-                                id: packet_id,
+                                packet_id,
                                 time: self.timer.elapsed(),
                                 address: peer.address.clone(),
                                 reliability: Unreliable {},
@@ -366,7 +396,7 @@ impl Protocol<Server> {
         }
     }
 
-    pub fn connection_request_valid_state(
+    pub fn connection_request_another_state(
         awaiting_connection_ack: &HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
         connected: &HashMap<ConnectionId, Peer<Connected>>,
         packet: &Packet<Received, ConnectionRequest>,
@@ -385,7 +415,7 @@ impl Protocol<Server> {
                     debug!("server: received connection request {:#?}.", packet);
                     // NOTE(alex): A host only changes RequestingConnection -> AwaitingConnectionAck
                     // after a connection accepted/denied packet is sent.
-                    if Protocol::connection_request_valid_state(
+                    if Protocol::connection_request_another_state(
                         &self.service.awaiting_connection_ack,
                         &self.service.connected,
                         &packet,
@@ -400,7 +430,8 @@ impl Protocol<Server> {
                     if let Some(peer) = self
                         .service
                         .requesting_connection
-                        .get_mut(&packet.delivery.meta.remote)
+                        .values_mut()
+                        .find(|peer| peer.address == packet.delivery.meta.remote)
                     {
                         peer.connection.attempts += 1;
                     } else {
@@ -415,9 +446,12 @@ impl Protocol<Server> {
                             },
                         };
 
+                        let connection_id = self.service.connection_id_tracker;
                         self.service
                             .requesting_connection
-                            .insert(new_peer.address, new_peer);
+                            .insert(connection_id, new_peer);
+                        self.service.connection_id_tracker =
+                            ConnectionId::new(connection_id.get() + 1).unwrap();
                     }
                 }
                 ReceiverEvent::ConnectionAccepted { packet } => {

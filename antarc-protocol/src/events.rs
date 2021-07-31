@@ -23,6 +23,9 @@ pub enum ProtocolError {
 
     #[error("Tried to schedule a packet for Peer {0} which is not connected!")]
     ScheduleInvalidPeer(ConnectionId),
+
+    #[error("Could not find a peer with {0}!")]
+    NotFound(ConnectionId),
 }
 
 impl Into<AntarcEvent> for ProtocolError {
@@ -30,22 +33,6 @@ impl Into<AntarcEvent> for ProtocolError {
         AntarcEvent::Fail(self)
     }
 }
-
-// #[derive(Debug, PartialEq, Clone)]
-// pub enum SenderEvent {
-//     ScheduledDataTransfer {
-//         packet: Packet<Scheduled, DataTransfer>,
-//     },
-//     ScheduledConnectionAccepted {
-//         packet: Packet<Scheduled, ConnectionAccepted>,
-//     },
-//     ScheduledConnectionRequest {
-//         packet: Packet<Scheduled, ConnectionRequest>,
-//     },
-//     ScheduledHeartbeat {
-//         packet: Packet<Scheduled, Heartbeat>,
-//     },
-// }
 
 #[derive(Debug)]
 pub enum ReceiverEvent {
@@ -63,8 +50,13 @@ pub enum ReceiverEvent {
     },
 }
 
+/// TODO(alex) [low] 2021-07-31: Write a macro to derive the proper `Into`, as it's basically just
+/// the same thing over and over.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScheduleEvent {
+    ConnectionAccepted {
+        scheduled: Scheduled<Reliable, ConnectionAccepted>,
+    },
     ReliableDataTransfer {
         scheduled: Scheduled<Reliable, DataTransfer>,
     },
@@ -100,6 +92,11 @@ impl Into<ScheduleEvent> for Scheduled<Unreliable, DataTransfer> {
 impl Into<ScheduleEvent> for Scheduled<Unreliable, Fragment> {
     fn into(self) -> ScheduleEvent {
         ScheduleEvent::UnreliableFragment { scheduled: self }
+    }
+}
+impl Into<ScheduleEvent> for Scheduled<Reliable, ConnectionAccepted> {
+    fn into(self) -> ScheduleEvent {
+        ScheduleEvent::ConnectionAccepted { scheduled: self }
     }
 }
 

@@ -49,29 +49,29 @@ pub struct Packet<Delivery, Message> {
 
 // REGION(alex): Packet `Delivery` types:
 #[derive(Debug, Clone, PartialEq)]
-pub struct DeliveryMeta {
+pub struct MetaDelivery {
     pub time: Duration,
     pub remote: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sent {
-    pub meta: DeliveryMeta,
+    pub meta: MetaDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Received {
-    pub meta: DeliveryMeta,
+    pub meta: MetaDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Acked {
-    pub meta: DeliveryMeta,
+    pub meta: MetaDelivery,
 }
 
 // REGION(alex): Packet `Message` types:
 #[derive(Debug, Clone, PartialEq)]
-pub struct MessageMeta {
+pub struct MetaMessage {
     pub packet_type: PacketType,
 }
 
@@ -79,27 +79,27 @@ pub struct MessageMeta {
 // `Packet<Delivery, ConnectionRequest>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionRequest {
-    pub meta: MessageMeta,
+    pub meta: MetaMessage,
 }
 
 // TODO(alex) [mid] 2021-07-30: Add `impl` with associated consts for
 // `Packet<Delivery, ConnectionAccepted>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionAccepted {
-    pub meta: MessageMeta,
+    pub meta: MetaMessage,
     pub connection_id: ConnectionId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataTransfer {
-    pub meta: MessageMeta,
+    pub meta: MetaMessage,
     pub connection_id: ConnectionId,
     pub payload: Payload,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fragment {
-    pub meta: MessageMeta,
+    pub meta: MetaMessage,
     pub connection_id: ConnectionId,
     pub index: u8,
     pub total: u8,
@@ -108,7 +108,7 @@ pub struct Fragment {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heartbeat {
-    pub meta: MessageMeta,
+    pub meta: MetaMessage,
     pub connection_id: ConnectionId,
 }
 
@@ -117,7 +117,7 @@ pub struct Heartbeat {
 // enum of such types.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheduled<Reliability, Message> {
-    pub id: PacketId,
+    pub packet_id: PacketId,
     pub address: SocketAddr,
     pub time: Duration,
     pub reliability: Reliability,
