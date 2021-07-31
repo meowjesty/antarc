@@ -1,12 +1,6 @@
-use std::{convert::TryInto, time::Duration};
+use std::time::Duration;
 
-use log::{error, warn};
-
-use crate::{
-    events::ProtocolError,
-    packets::{raw::RawPacket, received::Received, Packet},
-    Protocol,
-};
+use crate::{events::ProtocolError, packets::*, Protocol};
 
 #[derive(Debug)]
 pub struct Client {

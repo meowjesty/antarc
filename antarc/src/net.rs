@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{collections::HashMap, net::SocketAddr, time::Instant};
 
-use antarc_protocol_old::{connection::ConnectionSystem, PacketId, Protocol};
+use antarc_protocol::*;
 use mio::{
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
     Events, Interest, Poll, Token,
@@ -39,11 +39,10 @@ pub enum SendTo {
     Single(SocketAddr),
 }
 
-pub struct NetManager<ClientOrServer> {
+pub struct NetManager<Service> {
     pub buffer: Vec<u8>,
-    pub protocol: Protocol<ClientOrServer>,
+    pub protocol: Protocol<Service>,
     pub network: NetworkResource,
-    pub connection: ConnectionSystem,
 }
 
 #[derive(Debug)]
@@ -85,17 +84,15 @@ impl<ClientOrServer> NetManager<ClientOrServer> {
     pub fn new(address: &SocketAddr, protocol: Protocol<ClientOrServer>) -> Self {
         let buffer = vec![0x0; MTU_LENGTH];
         let network = NetworkResource::new(address);
-        let connection = ConnectionSystem::new(32);
 
         Self {
             buffer,
             protocol,
             network,
-            connection,
         }
     }
 
-    pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
+    pub fn cancel_packet(&mut self, packet_id: packets::PacketId) -> bool {
         self.protocol.cancel_packet(packet_id)
     }
 }
@@ -104,8 +101,7 @@ impl<T: fmt::Debug> fmt::Debug for NetManager<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NetManager")
             .field("buffer", &self.buffer.len())
-            .field("client_or_server", &self.protocol.kind)
-            .field("connection", &self.connection)
+            .field("service", &self.protocol.service)
             .finish()
     }
 }

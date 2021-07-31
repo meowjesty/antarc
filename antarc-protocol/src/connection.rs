@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use crate::{
-    hosts::{AwaitingConnectionAck, Connected, Host, RequestingConnection},
+    peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection},
     packets::ConnectionId,
     PacketId,
 };
@@ -9,9 +9,9 @@ use crate::{
 #[derive(Debug)]
 pub struct ConnectionSystem {
     pub packet_id_tracker: PacketId,
-    pub requesting_connection: HashMap<SocketAddr, Host<RequestingConnection>>,
-    pub awaiting_connection_ack: HashMap<ConnectionId, Host<AwaitingConnectionAck>>,
-    pub connected: HashMap<ConnectionId, Host<Connected>>,
+    pub requesting_connection: HashMap<SocketAddr, Peer<RequestingConnection>>,
+    pub awaiting_connection_ack: HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
+    pub connected: HashMap<ConnectionId, Peer<Connected>>,
 }
 
 impl Default for ConnectionSystem {

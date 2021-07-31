@@ -6,12 +6,7 @@ use std::{
     vec::Drain,
 };
 
-use antarc_protocol_old::{
-    events::SenderEvent,
-    packets::{raw::RawPacket, scheduled::Scheduled, ConnectionId, Packet},
-    server::Server,
-    PacketId, Protocol,
-};
+use antarc_protocol::{events::SenderEvent, packets::*, server::Server, Protocol};
 use log::{debug, error, warn};
 
 use super::SendTo;
@@ -81,7 +76,7 @@ impl NetManager<Server> {
                 Ok((num_received, source)) => {
                     debug_assert!(num_received > 0);
                     let raw_packet = RawPacket::new(source, self.buffer[..num_received].to_vec());
-                    self.protocol.on_received(raw_packet);
+                    self.protocol.received(raw_packet);
                 }
                 Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
                     warn!("Would block on recv_from {:?}", fail);
@@ -90,14 +85,6 @@ impl NetManager<Server> {
                 Err(fail) => {}
             }
         }
-
-        // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
-        while self.network.writable
-            && self.protocol.event_pipe.sender.is_empty() == false
-            && self.connection.is_empty() == false
-        {}
-
-        // TODO(alex) [low] 2021-05-26: Check `fn _received_connection_request` notes.
 
         Ok(self.protocol.retrievable.len())
     }

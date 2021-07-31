@@ -1,13 +1,8 @@
 [workspace]
 
 members = [
-    "antarc-old",
+    "antarc",
+    "antarc-protocol",
     # "server",
     # "client",
-    "with-state",
-    "with-state-no-event",
-    "with-callback",
-    "host-state",
-    "antarc-protocol-old",
-    "antarc-protocol",
 ]

@@ -5,10 +5,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{ProtocolId, controls::{
-        connection_accepted::ConnectionAccepted, connection_request::ConnectionRequest,
-        data_transfer::DataTransfer, heartbeat::Heartbeat,
-    }, packets::{ConnectionId, Packet, partial::PartialPacket, received::Received, scheduled::Scheduled}, payload::Payload};
+use crate::{
+    packets::{ConnectionId, Packet, *},
+    ProtocolId,
+};
+
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     #[error("Protocol id got {:#?}, expected {:#?}", got, expected)]
