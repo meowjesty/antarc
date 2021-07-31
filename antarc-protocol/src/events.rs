@@ -5,10 +5,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{
-    packets::{ConnectionId, Packet, *},
-    ProtocolId,
-};
+use crate::{packets::*, *};
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -23,23 +20,32 @@ pub enum ProtocolError {
 
     #[error("{0}")]
     IntConversion(#[from] TryFromIntError),
+
+    #[error("Tried to schedule a packet for Peer {0} which is not connected!")]
+    ScheduleInvalidPeer(ConnectionId),
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum SenderEvent {
-    ScheduledDataTransfer {
-        packet: Packet<Scheduled, DataTransfer>,
-    },
-    ScheduledConnectionAccepted {
-        packet: Packet<Scheduled, ConnectionAccepted>,
-    },
-    ScheduledConnectionRequest {
-        packet: Packet<Scheduled, ConnectionRequest>,
-    },
-    ScheduledHeartbeat {
-        packet: Packet<Scheduled, Heartbeat>,
-    },
+impl Into<AntarcEvent> for ProtocolError {
+    fn into(self) -> AntarcEvent {
+        AntarcEvent::Fail(self)
+    }
 }
+
+// #[derive(Debug, PartialEq, Clone)]
+// pub enum SenderEvent {
+//     ScheduledDataTransfer {
+//         packet: Packet<Scheduled, DataTransfer>,
+//     },
+//     ScheduledConnectionAccepted {
+//         packet: Packet<Scheduled, ConnectionAccepted>,
+//     },
+//     ScheduledConnectionRequest {
+//         packet: Packet<Scheduled, ConnectionRequest>,
+//     },
+//     ScheduledHeartbeat {
+//         packet: Packet<Scheduled, Heartbeat>,
+//     },
+// }
 
 #[derive(Debug)]
 pub enum ReceiverEvent {
@@ -55,6 +61,46 @@ pub enum ReceiverEvent {
     Heartbeat {
         packet: Packet<Received, Heartbeat>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScheduleEvent {
+    ReliableDataTransfer {
+        scheduled: Scheduled<Reliable, DataTransfer>,
+    },
+    ReliableFragment {
+        scheduled: Scheduled<Reliable, Fragment>,
+    },
+    UnreliableDataTransfer {
+        scheduled: Scheduled<Unreliable, DataTransfer>,
+    },
+    UnreliableFragment {
+        scheduled: Scheduled<Unreliable, Fragment>,
+    },
+}
+
+impl Into<ScheduleEvent> for Scheduled<Reliable, DataTransfer> {
+    fn into(self) -> ScheduleEvent {
+        ScheduleEvent::ReliableDataTransfer { scheduled: self }
+    }
+}
+
+impl Into<ScheduleEvent> for Scheduled<Reliable, Fragment> {
+    fn into(self) -> ScheduleEvent {
+        ScheduleEvent::ReliableFragment { scheduled: self }
+    }
+}
+
+impl Into<ScheduleEvent> for Scheduled<Unreliable, DataTransfer> {
+    fn into(self) -> ScheduleEvent {
+        ScheduleEvent::UnreliableDataTransfer { scheduled: self }
+    }
+}
+
+impl Into<ScheduleEvent> for Scheduled<Unreliable, Fragment> {
+    fn into(self) -> ScheduleEvent {
+        ScheduleEvent::UnreliableFragment { scheduled: self }
+    }
 }
 
 #[derive(Debug)]

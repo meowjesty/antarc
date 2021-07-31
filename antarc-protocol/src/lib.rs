@@ -5,7 +5,7 @@
 use core::mem::size_of;
 use std::{num::NonZeroU32, time::Instant, vec::Drain};
 
-use events::{AntarcEvent, ReceiverEvent, SenderEvent};
+use events::*;
 use packets::*;
 
 pub mod client;
@@ -37,7 +37,7 @@ pub struct Protocol<Service> {
     pub retrievable: Vec<(ConnectionId, Vec<u8>)>,
     pub service: Service,
     pub events: EventSystem,
-    pub scheduler_pipe: Vec<Scheduled>,
+    pub scheduler_pipe: Vec<ScheduleEvent>,
     pub receiver_pipe: Vec<RawPacket>,
 }
 
@@ -47,37 +47,21 @@ impl<Service> Protocol<Service> {
     }
 
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
-        let cancelled_packet = self
-            .events
-            .sender
-            .drain_filter(|event| match event {
-                SenderEvent::ScheduledDataTransfer { packet, .. } => packet.id == packet_id,
-                _ => false,
-            })
-            .next()
-            .is_some();
-
-        cancelled_packet
+        todo!()
     }
 }
 
 #[derive(Debug)]
 pub struct EventSystem {
-    pub sender: Vec<SenderEvent>,
     pub receiver: Vec<ReceiverEvent>,
     pub api: Vec<AntarcEvent>,
 }
 
 impl EventSystem {
     pub fn new() -> Self {
-        let sender = Vec::with_capacity(1024);
         let receiver = Vec::with_capacity(1024);
         let api = Vec::with_capacity(1024);
 
-        Self {
-            sender,
-            receiver,
-            api,
-        }
+        Self { receiver, api }
     }
 }

@@ -6,7 +6,7 @@ use std::{
     vec::Drain,
 };
 
-use antarc_protocol::{events::SenderEvent, packets::*, server::Server, Protocol};
+use antarc_protocol::{packets::*, server::Server, Protocol};
 use log::{debug, error, warn};
 
 use super::SendTo;

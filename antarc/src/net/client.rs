@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use antarc_protocol::{client::Client, events::SenderEvent, packets::*, Protocol};
+use antarc_protocol::{client::Client, packets::*, Protocol};
 use log::{debug, error, warn};
 use mio::net::UdpSocket;
 
@@ -112,9 +112,9 @@ impl NetManager<Client> {
         //
         // ADD(alex) [high] 2021-06-08: Trimmed down some of the duplicated code, but this function
         // is still quite big and repetitive.
-        while self.network.writable && self.protocol.events.sender.len() > 0 {
-            for event in self.protocol.events.sender.drain(..1) {}
-        }
+        // while self.network.writable && self.protocol.events.sender.len() > 0 {
+        //     for event in self.protocol.events.sender.drain(..1) {}
+        // }
 
         todo!()
     }

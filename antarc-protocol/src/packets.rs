@@ -20,6 +20,8 @@ pub const HEARTBEAT: PacketType = 4;
 pub const DATA_TRANSFER_FULL: PacketType = 5;
 pub const DATA_TRANSFER_FRAGMENTED: PacketType = 6;
 
+pub const MAX_FRAGMENT_SIZE: usize = 1500;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawPacket {
     pub address: SocketAddr,
@@ -40,6 +42,8 @@ impl RawPacket {
 pub struct Packet<Delivery, Message> {
     pub id: PacketId,
     pub delivery: Delivery,
+    pub sequence: Sequence,
+    pub ack: Ack,
     pub message: Message,
 }
 
@@ -65,15 +69,10 @@ pub struct Acked {
     pub meta: DeliveryMeta,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Scheduled {
-    pub meta: DeliveryMeta,
-}
-
 // REGION(alex): Packet `Message` types:
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageMeta {
-    packet_type: PacketType,
+    pub packet_type: PacketType,
 }
 
 // TODO(alex) [mid] 2021-07-30: Add `impl` with associated consts for
@@ -89,15 +88,12 @@ pub struct ConnectionRequest {
 pub struct ConnectionAccepted {
     pub meta: MessageMeta,
     pub connection_id: ConnectionId,
-    pub ack: Ack,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataTransfer {
     pub meta: MessageMeta,
     pub connection_id: ConnectionId,
-    pub sequence: Sequence,
-    pub ack: Ack,
     pub payload: Payload,
 }
 
@@ -105,8 +101,6 @@ pub struct DataTransfer {
 pub struct Fragment {
     pub meta: MessageMeta,
     pub connection_id: ConnectionId,
-    pub sequence: Sequence,
-    pub ack: Ack,
     pub index: u8,
     pub total: u8,
     pub payload: Payload,
@@ -116,6 +110,22 @@ pub struct Fragment {
 pub struct Heartbeat {
     pub meta: MessageMeta,
     pub connection_id: ConnectionId,
-    pub sequence: Sequence,
-    pub ack: Ack,
 }
+
+// TODO(alex) [low] 2021-07-31: Instead of having one master type with optional fields + bools, we
+// could have a family of `Scheduled`, much like `Packet`, and the `scheduler_pipe` would take an
+// enum of such types.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scheduled<Reliability, Message> {
+    pub id: PacketId,
+    pub address: SocketAddr,
+    pub time: Duration,
+    pub reliability: Reliability,
+    pub message: Message,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reliable {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unreliable {}
