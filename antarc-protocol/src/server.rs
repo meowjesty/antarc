@@ -30,23 +30,16 @@ impl Protocol<Server> {
     }
 
     /// NOTE(alex): API function for scheduling connection accepted packets, called by the user.
+    ///
+    /// - Moves `Peer<RequestingConnection>` -> `Peer<AwaitingConnectionAck>`.
     // TODO(alex) [high] 2021-07-31: The existence of this function means that the user must handle
     // an event of connection request of sorts. When the protocol receives a connection request, it
     // will create (or update) the peer, and put it into the correct HashMap, then an API event
     // must be generated, so that the user may accept or deny this peer's connection.
     pub fn accept_connection(&mut self, connection_id: ConnectionId) {
-        if let Some(peer) = self.service.requesting_connection.get(&connection_id) {
+        if let Some(peer) = self.service.requesting_connection.remove(&connection_id) {
             debug!("server: Accepting connection for {:#?}.", connection_id);
-            // TODO(alex) [high] 2021-07-31: After the connection accepted packet is scheduled here,
-            // when the packet is sent by the network manager, there must be a handler event for
-            // some sort of `SentEvent`, where we take the `Peer` out of requesting connection, and
-            // put it into the next state.
-            //
-            // This can't be done here, as we have no means of guaranteeing the packet will be sent.
-            //
-            // The big question here is: who should keep retrying to send the connection accepted
-            // packet, the `RequestingConnection` or the `AwaitingConnectionAck`? If it's the latter
-            // (`AwaitingConnectionAck`), then we can change state here.
+
             let message = ConnectionAccepted {
                 meta: MetaMessage {
                     packet_type: CONNECTION_ACCEPTED,
@@ -60,9 +53,13 @@ impl Protocol<Server> {
                 reliability: Reliable {},
                 message,
             };
-
             self.scheduler_pipe.push(scheduled.into());
             self.service.packet_id_tracker += 1;
+
+            let awaiting_connection_ack = peer.accepted_connection(self.timer.elapsed());
+            self.service
+                .awaiting_connection_ack
+                .insert(connection_id, awaiting_connection_ack);
         } else {
             self.events
                 .api
@@ -410,10 +407,12 @@ impl Protocol<Server> {
 
     pub fn poll(&mut self) -> Vec<AntarcEvent> {
         for received in self.events.receiver.drain(..) {
+            debug!("server: polling receiver events.");
+
             match received {
                 ReceiverEvent::ConnectionRequest { packet } => {
                     debug!("server: received connection request {:#?}.", packet);
-                    // NOTE(alex): A host only changes RequestingConnection -> AwaitingConnectionAck
+                    // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
                     // after a connection accepted/denied packet is sent.
                     if Protocol::connection_request_another_state(
                         &self.service.awaiting_connection_ack,
@@ -421,7 +420,7 @@ impl Protocol<Server> {
                         &packet,
                     ) {
                         warn!(
-                            "server: host already in another state, skipping {:#?}.",
+                            "server: peer already in another state, skipping {:#?}.",
                             packet
                         );
                         continue;
@@ -435,16 +434,11 @@ impl Protocol<Server> {
                     {
                         peer.connection.attempts += 1;
                     } else {
-                        let new_peer = Peer {
-                            sequence_tracker: Sequence::new(1).unwrap(),
-                            remote_ack_tracker: 1,
-                            local_ack_tracker: 0,
-                            address: packet.delivery.meta.remote,
-                            connection: RequestingConnection {
-                                meta: MetaConnection {},
-                                attempts: 0,
-                            },
-                        };
+                        let new_peer = Peer::new(
+                            self.timer.elapsed(),
+                            packet.delivery.meta.remote,
+                            packet.sequence.get(),
+                        );
 
                         let connection_id = self.service.connection_id_tracker;
                         self.service
@@ -468,18 +462,18 @@ impl Protocol<Server> {
                     let payload = packet.message.payload;
 
                     if let Some(peer) = self.service.connected.get_mut(&connection_id) {
-                        debug!("server: host is connected {:#?}.", peer);
+                        debug!("server: peer is connected {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
                     } else if let Some(mut peer) =
                         self.service.awaiting_connection_ack.remove(&connection_id)
                     {
-                        debug!("server: host is awaiting connection ack {:#?}.", peer);
+                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
-                        let connected = peer.connected(connection_id);
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
 
                         self.service.connected.insert(connection_id, connected);
 
@@ -495,18 +489,18 @@ impl Protocol<Server> {
                     let connection_id = packet.message.connection_id;
 
                     if let Some(peer) = self.service.connected.get_mut(&connection_id) {
-                        debug!("server: host is connected {:#?}.", peer);
+                        debug!("server: peer is connected {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
                     } else if let Some(mut peer) =
                         self.service.awaiting_connection_ack.remove(&connection_id)
                     {
-                        debug!("server: host is awaiting connection ack {:#?}.", peer);
+                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
-                        let connected = peer.connected(connection_id);
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
 
                         self.service.connected.insert(connection_id, connected);
                     }
