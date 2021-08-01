@@ -5,5 +5,5 @@ members = [
     # "antarc",
     "antarc-dummy",
     "server",
-    # "client",
+    "client",
 ]

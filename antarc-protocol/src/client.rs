@@ -4,10 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::debug;
+use log::{debug, warn};
 
 use crate::{
-    events::{AntarcEvent, ProtocolError},
+    events::{AntarcEvent, ProtocolError, ReceiverEvent},
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection},
     EventSystem, Protocol,
@@ -173,5 +173,101 @@ impl Protocol<Client> {
         if self.events.scheduler.len() > old_scheduler_length {
             self.packet_id_tracker += 1;
         }
+    }
+
+    pub fn poll(&mut self) -> Vec<AntarcEvent> {
+        for received in self.events.receiver.drain(..) {
+            debug!("client: polling receiver events.");
+
+            match received {
+                ReceiverEvent::ConnectionRequest { packet } => {
+                    warn!(
+                        "client: received connection request, skipping {:#?}.",
+                        packet
+                    );
+                    continue;
+                }
+                ReceiverEvent::ConnectionAccepted { packet } => {
+                    debug!("client: received connection accepted {:#?}.", packet);
+                    // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
+                    // after a connection accepted/denied packet is sent.
+                    // TODO(alex) [vhigh] 2021-08-01: Implement this check function.
+                    if Protocol::connection_accepted_another_state(
+                        &self.service.requesting_connection,
+                        &self.service.connected,
+                        &packet,
+                    ) {
+                        warn!(
+                            "client: peer already in another state, skipping {:#?}.",
+                            packet
+                        );
+                        continue;
+                    }
+
+                    let connection_id = packet.message.connection_id;
+                    if let Some(peer) = self.service.awaiting_connection_ack.remove(&connection_id)
+                    {
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
+                        self.service.connected.insert(connection_id, connected);
+                    }
+                }
+                ReceiverEvent::DataTransfer { packet } => {
+                    debug!("server: received data transfer {:#?}.", packet);
+
+                    let connection_id = packet.message.connection_id;
+                    let payload = packet.message.payload;
+
+                    if let Some(peer) = self.service.connected.get_mut(&connection_id) {
+                        debug!("server: peer is connected {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                    } else if let Some(mut peer) =
+                        self.service.awaiting_connection_ack.remove(&connection_id)
+                    {
+                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
+
+                        self.service.connected.insert(connection_id, connected);
+
+                        self.events.api.push(AntarcEvent::DataTransfer {
+                            connection_id,
+                            payload,
+                        });
+                    }
+                }
+                ReceiverEvent::Heartbeat { packet } => {
+                    debug!("server: received heartbeat {:#?}.", packet);
+
+                    let connection_id = packet.message.connection_id;
+
+                    if let Some(peer) = self.service.connected.get_mut(&connection_id) {
+                        debug!("server: peer is connected {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                    } else if let Some(mut peer) =
+                        self.service.awaiting_connection_ack.remove(&connection_id)
+                    {
+                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
+
+                        self.service.connected.insert(connection_id, connected);
+                    }
+                }
+            }
+        }
+
+        // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
+        // The network will check if socket is ready, then call a `make_packet` that will take some
+        // scheduled from the scheduler pipe, but how does it handle reliability?
+
+        self.events.api.drain(..).collect()
     }
 }

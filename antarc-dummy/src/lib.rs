@@ -52,4 +52,25 @@ impl DummyManager<Client> {
         let antarc = Protocol::new_client();
         Self { antarc, address }
     }
+
+    pub fn schedule(&mut self, reliable: bool, payload: Payload) {
+        debug!("dummy schedule");
+        self.antarc.schedule(reliable, payload);
+    }
+
+    pub fn connect(&mut self, remote_address: SocketAddr) {
+        debug!("dummy connect");
+        self.antarc.connect(remote_address);
+    }
+
+    pub fn poll(&mut self) -> Vec<AntarcEvent> {
+        debug!("dummy poll");
+
+        for scheduled in self.antarc.events.scheduler.drain(..) {
+            // TODO(alex) [mid] 2021-08-01: Handle the conversion of `Scheduled` into `Packet` by
+            // calling some `Protocol::encode` (should be similar to the `decode`).
+        }
+
+        self.antarc.poll()
+    }
 }

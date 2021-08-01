@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use antarc::DummyManager;
+use antarc_dummy::DummyManager;
 use log::{debug, error, info};
 
 fn main() {
@@ -12,9 +12,9 @@ fn main() {
 fn client_main() {
     let server_addr = "127.0.0.1:7777".parse().unwrap();
     let client_addr = "127.0.0.1:8888".parse().unwrap();
-    let mut client = DummyManager::new_client(&client_addr);
+    let mut client = DummyManager::new_client(client_addr);
 
-    client.connect(&server_addr);
+    client.connect(server_addr);
 
     loop {
         // TODO(alex) [low] 2021-08-01: To avoid allocating events over and over, the user may pass
