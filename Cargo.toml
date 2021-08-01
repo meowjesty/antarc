@@ -2,7 +2,7 @@
 
 members = [
     "antarc-protocol",
-    "antarc",
+    # "antarc",
     "antarc-dummy",
     "server",
     # "client",

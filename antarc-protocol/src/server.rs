@@ -14,7 +14,6 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Server {
-    pub packet_id_tracker: PacketId,
     pub last_antarc_schedule_check: Duration,
     pub connection_id_tracker: ConnectionId,
     pub requesting_connection: HashMap<ConnectionId, Peer<RequestingConnection>>,
@@ -25,7 +24,6 @@ pub struct Server {
 impl Protocol<Server> {
     pub fn new_server() -> Self {
         let service = Server {
-            packet_id_tracker: 0,
             last_antarc_schedule_check: Duration::default(),
             connection_id_tracker: ConnectionId::new(1).unwrap(),
             requesting_connection: HashMap::with_capacity(32),
@@ -34,6 +32,7 @@ impl Protocol<Server> {
         };
 
         Self {
+            packet_id_tracker: 0,
             timer: Instant::now(),
             service,
             events: EventSystem::new(),
@@ -41,7 +40,7 @@ impl Protocol<Server> {
         }
     }
 
-    /// NOTE(alex): API function that feeds the internal* event pipe, it's called from the outside.
+    /// NOTE(alex): API function that feeds the internal* event pipe.
     pub fn received(&mut self, raw_packet: RawPacket) {
         raw_packet.decode(&mut self.events);
     }
@@ -60,14 +59,14 @@ impl Protocol<Server> {
                 connection_id,
             };
             let scheduled = Scheduled {
-                packet_id: self.service.packet_id_tracker,
+                packet_id: self.packet_id_tracker,
                 address: peer.address,
                 time: self.timer.elapsed(),
                 reliability: Reliable {},
                 message,
             };
             self.events.scheduler.push(scheduled.into());
-            self.service.packet_id_tracker += 1;
+            self.packet_id_tracker += 1;
 
             let awaiting_connection_ack = peer.accepted_connection(self.timer.elapsed());
             self.service
@@ -99,7 +98,7 @@ impl Protocol<Server> {
                 let old_scheduler_length = self.events.scheduler.len();
 
                 if let Some(peer) = self.service.connected.get(&connection_id) {
-                    let packet_id = self.service.packet_id_tracker;
+                    let packet_id = self.packet_id_tracker;
 
                     if should_fragment {
                         debug!("server: schedule fragment.");
@@ -196,7 +195,7 @@ impl Protocol<Server> {
                 }
 
                 if self.events.scheduler.len() > old_scheduler_length {
-                    self.service.packet_id_tracker += 1;
+                    self.packet_id_tracker += 1;
                 }
             }
             SendTo::Multiple { connection_ids } => {
@@ -206,7 +205,7 @@ impl Protocol<Server> {
 
                 for connection_id in connection_ids {
                     if let Some(peer) = self.service.connected.get(&connection_id) {
-                        let packet_id = self.service.packet_id_tracker;
+                        let packet_id = self.packet_id_tracker;
 
                         if should_fragment {
                             debug!("server: schedule fragment.");
@@ -304,7 +303,7 @@ impl Protocol<Server> {
                 }
 
                 if self.events.scheduler.len() > old_scheduler_length {
-                    self.service.packet_id_tracker += 1;
+                    self.packet_id_tracker += 1;
                 }
             }
             SendTo::Broadcast => {
@@ -313,7 +312,7 @@ impl Protocol<Server> {
                 let old_scheduler_length = self.events.scheduler.len();
 
                 for peer in self.service.connected.values() {
-                    let packet_id = self.service.packet_id_tracker;
+                    let packet_id = self.packet_id_tracker;
 
                     if should_fragment {
                         debug!("server: schedule fragment.");
@@ -406,7 +405,7 @@ impl Protocol<Server> {
                 }
 
                 if self.events.scheduler.len() > old_scheduler_length {
-                    self.service.packet_id_tracker += 1;
+                    self.packet_id_tracker += 1;
                 }
             }
         }
@@ -543,9 +542,5 @@ impl Protocol<Server> {
         // scheduled from the scheduler pipe, but how does it handle reliability?
 
         self.events.api.drain(..).collect()
-    }
-
-    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
-        unimplemented!()
     }
 }

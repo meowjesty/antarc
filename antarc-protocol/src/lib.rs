@@ -33,6 +33,7 @@ pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().t
 /// NOTE(alex): `Service` may be either a `Client` or a `Server`.
 #[derive(Debug)]
 pub struct Protocol<Service> {
+    pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub service: Service,
     pub events: EventSystem,
