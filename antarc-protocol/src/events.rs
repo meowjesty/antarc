@@ -1,7 +1,4 @@
-use std::{
-    array::TryFromSliceError,
-    num::{NonZeroU32, TryFromIntError},
-};
+use std::{array::TryFromSliceError, net::SocketAddr, num::{NonZeroU32, TryFromIntError}};
 
 use thiserror::Error;
 
@@ -106,6 +103,10 @@ pub enum AntarcEvent {
     DataTransfer {
         connection_id: ConnectionId,
         payload: Payload,
+    },
+    ConnectionRequest {
+        connection_id: ConnectionId,
+        remote: SocketAddr,
     },
 }
 

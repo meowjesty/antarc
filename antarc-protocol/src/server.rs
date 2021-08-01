@@ -426,14 +426,18 @@ impl Protocol<Server> {
                         continue;
                     }
 
-                    if let Some(peer) = self
+                    let (address, connection_id) = if let Some((connection_id, peer)) = self
                         .service
                         .requesting_connection
-                        .values_mut()
-                        .find(|peer| peer.address == packet.delivery.meta.remote)
+                        .iter_mut()
+                        .find(|(_, peer)| peer.address == packet.delivery.meta.remote)
                     {
                         peer.connection.attempts += 1;
+
+                        (peer.address, connection_id.clone())
                     } else {
+                        let address = packet.delivery.meta.remote;
+
                         let new_peer = Peer::new(
                             self.timer.elapsed(),
                             packet.delivery.meta.remote,
@@ -446,7 +450,14 @@ impl Protocol<Server> {
                             .insert(connection_id, new_peer);
                         self.service.connection_id_tracker =
                             ConnectionId::new(connection_id.get() + 1).unwrap();
-                    }
+
+                        (address, connection_id)
+                    };
+
+                    self.events.api.push(AntarcEvent::ConnectionRequest {
+                        connection_id,
+                        remote: address,
+                    });
                 }
                 ReceiverEvent::ConnectionAccepted { packet } => {
                     warn!(
