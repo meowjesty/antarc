@@ -1,12 +1,15 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use log::{debug, warn};
 
 use crate::{
     events::{AntarcEvent, ProtocolError, ReceiverEvent},
     packets::*,
-    peers::{AwaitingConnectionAck, Connected, MetaConnection, Peer, RequestingConnection, SendTo},
-    Protocol,
+    peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
+    EventSystem, Protocol,
 };
 
 #[derive(Debug)]
@@ -21,7 +24,21 @@ pub struct Server {
 
 impl Protocol<Server> {
     pub fn new_server() -> Self {
-        todo!()
+        let service = Server {
+            packet_id_tracker: 0,
+            last_antarc_schedule_check: Duration::default(),
+            connection_id_tracker: ConnectionId::new(1).unwrap(),
+            requesting_connection: HashMap::with_capacity(32),
+            awaiting_connection_ack: HashMap::with_capacity(32),
+            connected: HashMap::with_capacity(32),
+        };
+
+        Self {
+            timer: Instant::now(),
+            service,
+            events: EventSystem::new(),
+            receiver_pipe: Vec::with_capacity(32),
+        }
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe, it's called from the outside.
@@ -32,10 +49,6 @@ impl Protocol<Server> {
     /// NOTE(alex): API function for scheduling connection accepted packets, called by the user.
     ///
     /// - Moves `Peer<RequestingConnection>` -> `Peer<AwaitingConnectionAck>`.
-    // TODO(alex) [high] 2021-07-31: The existence of this function means that the user must handle
-    // an event of connection request of sorts. When the protocol receives a connection request, it
-    // will create (or update) the peer, and put it into the correct HashMap, then an API event
-    // must be generated, so that the user may accept or deny this peer's connection.
     pub fn accept_connection(&mut self, connection_id: ConnectionId) {
         if let Some(peer) = self.service.requesting_connection.remove(&connection_id) {
             debug!("server: Accepting connection for {:#?}.", connection_id);
@@ -53,7 +66,7 @@ impl Protocol<Server> {
                 reliability: Reliable {},
                 message,
             };
-            self.scheduler_pipe.push(scheduled.into());
+            self.events.scheduler.push(scheduled.into());
             self.service.packet_id_tracker += 1;
 
             let awaiting_connection_ack = peer.accepted_connection(self.timer.elapsed());
@@ -77,7 +90,7 @@ impl Protocol<Server> {
             SendTo::Single { connection_id } => {
                 debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
 
-                let old_scheduler_length = self.scheduler_pipe.len();
+                let old_scheduler_length = self.events.scheduler.len();
 
                 if let Some(peer) = self.service.connected.get(&connection_id) {
                     let packet_id = self.service.packet_id_tracker;
@@ -133,7 +146,7 @@ impl Protocol<Server> {
                             })
                             .collect::<Vec<_>>();
 
-                        self.scheduler_pipe.append(&mut scheduling);
+                        self.events.scheduler.append(&mut scheduling);
                     } else {
                         debug!("server: schedule non-fragment.");
 
@@ -168,7 +181,7 @@ impl Protocol<Server> {
                             scheduled.into()
                         };
 
-                        self.scheduler_pipe.push(scheduling);
+                        self.events.scheduler.push(scheduling);
                     }
                 } else {
                     self.events
@@ -176,14 +189,14 @@ impl Protocol<Server> {
                         .push(ProtocolError::ScheduleInvalidPeer(connection_id).into())
                 }
 
-                if self.scheduler_pipe.len() > old_scheduler_length {
+                if self.events.scheduler.len() > old_scheduler_length {
                     self.service.packet_id_tracker += 1;
                 }
             }
             SendTo::Multiple { connection_ids } => {
                 debug!("server: SendTo::Multiple scheduler {:#?}.", connection_ids);
 
-                let old_scheduler_length = self.scheduler_pipe.len();
+                let old_scheduler_length = self.events.scheduler.len();
 
                 for connection_id in connection_ids {
                     if let Some(peer) = self.service.connected.get(&connection_id) {
@@ -240,7 +253,7 @@ impl Protocol<Server> {
                                 })
                                 .collect::<Vec<_>>();
 
-                            self.scheduler_pipe.append(&mut scheduling);
+                            self.events.scheduler.append(&mut scheduling);
                         } else {
                             debug!("server: schedule non-fragment.");
 
@@ -275,7 +288,7 @@ impl Protocol<Server> {
                                 scheduled.into()
                             };
 
-                            self.scheduler_pipe.push(scheduling);
+                            self.events.scheduler.push(scheduling);
                         }
                     } else {
                         self.events
@@ -284,14 +297,14 @@ impl Protocol<Server> {
                     }
                 }
 
-                if self.scheduler_pipe.len() > old_scheduler_length {
+                if self.events.scheduler.len() > old_scheduler_length {
                     self.service.packet_id_tracker += 1;
                 }
             }
             SendTo::Broadcast => {
                 debug!("server: SendTo::Broadcast scheduler.");
 
-                let old_scheduler_length = self.scheduler_pipe.len();
+                let old_scheduler_length = self.events.scheduler.len();
 
                 for peer in self.service.connected.values() {
                     let packet_id = self.service.packet_id_tracker;
@@ -347,7 +360,7 @@ impl Protocol<Server> {
                             })
                             .collect::<Vec<_>>();
 
-                        self.scheduler_pipe.append(&mut scheduling);
+                        self.events.scheduler.append(&mut scheduling);
                     } else {
                         debug!("server: schedule non-fragment.");
 
@@ -382,11 +395,11 @@ impl Protocol<Server> {
                             scheduled.into()
                         };
 
-                        self.scheduler_pipe.push(scheduling);
+                        self.events.scheduler.push(scheduling);
                     }
                 }
 
-                if self.scheduler_pipe.len() > old_scheduler_length {
+                if self.events.scheduler.len() > old_scheduler_length {
                     self.service.packet_id_tracker += 1;
                 }
             }

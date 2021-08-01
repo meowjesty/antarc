@@ -34,18 +34,12 @@ pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().t
 #[derive(Debug)]
 pub struct Protocol<Service> {
     pub timer: Instant,
-    pub retrievable: Vec<(ConnectionId, Vec<u8>)>,
     pub service: Service,
     pub events: EventSystem,
-    pub scheduler_pipe: Vec<ScheduleEvent>,
     pub receiver_pipe: Vec<RawPacket>,
 }
 
 impl<Service> Protocol<Service> {
-    pub fn retrieve(&mut self) -> Drain<(ConnectionId, Vec<u8>)> {
-        self.retrievable.drain(..)
-    }
-
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         todo!()
     }
@@ -54,6 +48,7 @@ impl<Service> Protocol<Service> {
 #[derive(Debug)]
 pub struct EventSystem {
     pub receiver: Vec<ReceiverEvent>,
+    pub scheduler: Vec<ScheduleEvent>,
     pub api: Vec<AntarcEvent>,
 }
 
@@ -61,7 +56,12 @@ impl EventSystem {
     pub fn new() -> Self {
         let receiver = Vec::with_capacity(1024);
         let api = Vec::with_capacity(1024);
+        let scheduler = Vec::with_capacity(1024);
 
-        Self { receiver, api }
+        Self {
+            receiver,
+            api,
+            scheduler,
+        }
     }
 }

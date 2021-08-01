@@ -56,37 +56,7 @@ impl NetManager<Server> {
     // TODO(alex) 2021-05-17: It's probably a good idea to start working on this before going
     // further, to validate that the ideas I had so far are working. Make this the focus.
     pub fn tick(&mut self) -> Result<usize, String> {
-        self.network
-            .poll
-            .poll(&mut self.network.events, Some(Duration::from_millis(150)))
-            .unwrap();
-
-        for event in self.network.events.iter() {
-            if event.is_readable() {
-                self.network.readable = true;
-            }
-
-            if event.is_writable() {
-                self.network.writable = true;
-            }
-        }
-
-        while self.network.readable {
-            match self.network.udp_socket.recv_from(&mut self.buffer) {
-                Ok((num_received, source)) => {
-                    debug_assert!(num_received > 0);
-                    let raw_packet = RawPacket::new(source, self.buffer[..num_received].to_vec());
-                    self.protocol.received(raw_packet);
-                }
-                Err(fail) if fail.kind() == io::ErrorKind::WouldBlock => {
-                    warn!("Would block on recv_from {:?}", fail);
-                    self.network.readable = false;
-                }
-                Err(fail) => {}
-            }
-        }
-
-        Ok(self.protocol.retrievable.len())
+        todo!()
     }
 
     // TODO(alex) [vlow] 2021-06-13: It might be a good idea to return a bit more information than
@@ -94,6 +64,6 @@ impl NetManager<Server> {
     // which payload is the "freshest".
     pub fn retrieve(&mut self) -> Drain<(ConnectionId, Vec<u8>)> {
         debug!("Retrieve for server.");
-        self.protocol.retrieve()
+        todo!()
     }
 }
