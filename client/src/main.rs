@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use antarc::net::NetManager;
-use log::{debug, error};
+use antarc::DummyManager;
+use log::{debug, error, info};
 
 fn main() {
     std::env::set_var("RUST_LOG", "debug");
@@ -12,50 +12,45 @@ fn main() {
 fn client_main() {
     let server_addr = "127.0.0.1:7777".parse().unwrap();
     let client_addr = "127.0.0.1:8888".parse().unwrap();
+    let mut client = DummyManager::new_client(&client_addr);
 
-    debug!("Attempting connection to {:#?}", server_addr);
-    // TODO(alex) 2021-05-18: Possible API if `connect` is async-like.
-    // let connection_id = client.connect(&server_addr).unwrap();
-    // debug!("Connected {:#?}.", connection_id);
-    client.connect(&server_addr).unwrap();
+    client.connect(&server_addr);
 
-    let mut d_counter: i32 = 0;
     loop {
-        if d_counter % 8 == 0 {
-            // TODO(alex) 2021-05-18: Should we allow packets to be enscheduled before the
-            // connection is properly estabilished?
-            let packet_id = client.enschedule((&d_counter.to_be_bytes()).to_vec());
-            debug!("Enschedule test packet {:#?}", packet_id);
-
-            if d_counter % 16 == 0 {
-                debug!("Cancel test packet {:#?}", packet_id);
-                let cancelled = client.cancel_packet(packet_id);
-                debug!("Test packet cancellation result is {:#?}", cancelled);
-            }
-        }
-
-        if d_counter % 6 == 0 {
-            let retrieved_data = client.retrieve();
-            for (connection_id, data) in retrieved_data.iter() {
-                debug!("Retrieved {:#?} from {:#?}.", data, connection_id);
-            }
-        }
-
-        match client.tick() {
-            Ok(received_new_data) => {
-                if received_new_data > 0 {
-                    let retrieved_data = client.retrieve();
-                    for (connection_id, data) in retrieved_data.iter() {
-                        debug!("Retrieved {:#?} from {:#?}.", data, connection_id);
-                    }
+        // TODO(alex) [low] 2021-08-01: To avoid allocating events over and over, the user may pass
+        // an events vector or register some global event list:
+        // let events = Vec::with_capacity(1024);
+        // client.register(events);
+        let mut events = client.poll();
+        for event in events.drain(..) {
+            match event {
+                AntarcEvent::Fail(fail) => error!("{:#?}", fail),
+                AntarcEvent::ConnectionRequest {
+                    connection_id,
+                    remote,
+                } => {
+                    // TODO(alex) [low] 2021-08-01: How do I make this impossible event disappear?
+                    // I would need to separate `ClientEvent` and `ServerEvent`, so the
+                    // `EventSystem` will be different for `Antarc<Client>` and `Antarc<Server>`.
+                    warn!("Client doesn't handle connection request.");
+                    continue;
+                }
+                AntarcEvent::ConnectionAccepted { connection_id } => {
+                    info!("Received connection accepted from {:#?}.", connection_id);
+                    client.schedule(false, Payload(vec![0x3; 30]))
+                }
+                AntarcEvent::DataTransfer {
+                    connection_id,
+                    payload,
+                } => {
+                    info!("Received {:#?} from {:#?}.", payload.len(), connection_id);
+                    client.schedule(false, Payload(vec![0x4; 40]));
                 }
             }
-            Err(fail) => {
-                error!("Tick returned some error {:#?}.", fail);
-            }
         }
 
-        d_counter += 1;
-        std::thread::sleep(Duration::from_millis(1500));
+        client.schedule(false, Payload(vec![0x5; 50]));
+
+        std::thread::sleep(Duration::from_millis(500));
     }
 }

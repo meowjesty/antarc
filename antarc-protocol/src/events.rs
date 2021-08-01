@@ -1,4 +1,8 @@
-use std::{array::TryFromSliceError, net::SocketAddr, num::{NonZeroU32, TryFromIntError}};
+use std::{
+    array::TryFromSliceError,
+    net::SocketAddr,
+    num::{NonZeroU32, TryFromIntError},
+};
 
 use thiserror::Error;
 
@@ -23,6 +27,9 @@ pub enum ProtocolError {
 
     #[error("Could not find a peer with {0}!")]
     NotFound(ConnectionId),
+
+    #[error("Tried to schedule a data transfer, but there are no peers connected!")]
+    NoPeersConnected,
 }
 
 impl Into<AntarcEvent> for ProtocolError {
@@ -91,6 +98,7 @@ impl Into<ScheduleEvent> for Scheduled<Unreliable, Fragment> {
         ScheduleEvent::UnreliableFragment { scheduled: self }
     }
 }
+
 impl Into<ScheduleEvent> for Scheduled<Reliable, ConnectionAccepted> {
     fn into(self) -> ScheduleEvent {
         ScheduleEvent::ConnectionAccepted { scheduled: self }
@@ -107,6 +115,9 @@ pub enum AntarcEvent {
     ConnectionRequest {
         connection_id: ConnectionId,
         remote: SocketAddr,
+    },
+    ConnectionAccepted {
+        connection_id: ConnectionId,
     },
 }
 

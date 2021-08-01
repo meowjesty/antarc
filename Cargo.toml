@@ -4,6 +4,6 @@ members = [
     "antarc-protocol",
     "antarc",
     "antarc-dummy",
-    # "server",
+    "server",
     # "client",
 ]

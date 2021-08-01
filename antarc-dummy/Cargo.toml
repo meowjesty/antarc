@@ -7,3 +7,4 @@ edition = "2018"
 
 [dependencies]
 antarc-protocol = { path = "../antarc-protocol" }
+log = { version = "*" }

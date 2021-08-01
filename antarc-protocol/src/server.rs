@@ -84,6 +84,12 @@ impl Protocol<Server> {
     /// TODO(alex) [mid] 2021-07-31: This function is duplication-city, most of the code inside the
     /// `if should_fragment else` is a copy of each other.
     pub fn schedule(&mut self, reliable: bool, send_to: SendTo, payload: Payload) {
+        if self.service.connected.is_empty() {
+            self.events
+                .api
+                .push(AntarcEvent::Fail(ProtocolError::NoPeersConnected));
+        }
+
         let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;
 
         match send_to {
