@@ -18,7 +18,10 @@ fn server_main() {
         // an events vector or register some global event list:
         // let events = Vec::with_capacity(1024);
         // server.register(events);
-        let mut events = server.poll();
+        //
+        // ADD(alex) [low] 2021-08-01: I've tried returning the `DrainIter` from `poll`, but it
+        // ends up borrowing `server` twice, here and in `schedule`.
+        let mut events = server.poll().collect::<Vec<_>>();
         for event in events.drain(..) {
             match event {
                 AntarcEvent::Fail(fail) => error!("{:#?}", fail),

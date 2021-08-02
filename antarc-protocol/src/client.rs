@@ -54,12 +54,51 @@ impl Protocol<Client> {
         raw_packet.decode(&mut self.events);
     }
 
-    /// TODO(alex) [high] 2021-08-01: Steps to do here:
-    /// 1. check if this address is already in some of the client's state;
-    /// 2. create a new `Peer<RequestingConnection>`;
-    /// 3. schedule a connection request `Scheduled` via some kind of event (must be `Reliable`);
-    pub fn connect(&mut self, remote_address: SocketAddr) {
-        todo!()
+    pub fn known_peer(
+        requesting_connection: &HashMap<ConnectionId, Peer<RequestingConnection>>,
+        awaiting_connection_ack: &HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
+        connected: &HashMap<ConnectionId, Peer<Connected>>,
+        remote_address: &SocketAddr,
+    ) -> bool {
+        requesting_connection
+            .values()
+            .any(|peer| peer.address == *remote_address)
+            || awaiting_connection_ack
+                .values()
+                .any(|peer| peer.address == *remote_address)
+            || connected
+                .values()
+                .any(|peer| peer.address == *remote_address)
+    }
+
+    pub fn connect(&mut self, remote_address: SocketAddr) -> Result<(), ProtocolError> {
+        if Protocol::known_peer(
+            &self.service.requesting_connection,
+            &self.service.awaiting_connection_ack,
+            &self.service.connected,
+            &remote_address,
+        ) {
+            warn!(
+                "client: peer already in another state, skipping connect {:#?}.",
+                remote_address
+            );
+            return Err(ProtocolError::AlreadyConnectingToPeer(remote_address));
+        }
+
+        let requesting_connection = Peer::new(self.timer.elapsed(), remote_address, 0);
+        let connection_request = Scheduled::connection_request(remote_address);
+
+        self.events.scheduler.push(connection_request.into());
+
+        // TODO(alex) [mid] 2021-08-01: We hit an inconsistency here, there is no `ConnectionId` for
+        // this `Peer`, until the server gives a reply, but we're storing it with a temporary one.
+        // The correct approach would be to use the peer's address as the identifier key.
+        //
+        // This is different from the `Server` side of things.
+        self.service
+            .requesting_connection
+            .insert(ConnectionId::new(1).unwrap(), requesting_connection);
+        Ok(())
     }
 
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
@@ -133,7 +172,7 @@ impl Protocol<Client> {
 
                 self.events.scheduler.append(&mut scheduling);
             } else {
-                debug!("server: schedule non-fragment.");
+                debug!("client: schedule non-fragment.");
 
                 let meta = MetaMessage {
                     packet_type: DATA_TRANSFER_FRAGMENTED,
@@ -175,7 +214,19 @@ impl Protocol<Client> {
         }
     }
 
-    pub fn poll(&mut self) -> Vec<AntarcEvent> {
+    pub fn connection_accepted_another_state(
+        requesting_connection: &HashMap<ConnectionId, Peer<RequestingConnection>>,
+        connected: &HashMap<ConnectionId, Peer<Connected>>,
+        packet: &Packet<Received, ConnectionAccepted>,
+    ) -> bool {
+        let address = packet.delivery.meta.remote;
+        requesting_connection
+            .values()
+            .any(|peer| peer.address == address)
+            || connected.values().any(|peer| peer.address == address)
+    }
+
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
         for received in self.events.receiver.drain(..) {
             debug!("client: polling receiver events.");
 
@@ -189,9 +240,6 @@ impl Protocol<Client> {
                 }
                 ReceiverEvent::ConnectionAccepted { packet } => {
                     debug!("client: received connection accepted {:#?}.", packet);
-                    // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
-                    // after a connection accepted/denied packet is sent.
-                    // TODO(alex) [vhigh] 2021-08-01: Implement this check function.
                     if Protocol::connection_accepted_another_state(
                         &self.service.requesting_connection,
                         &self.service.connected,
@@ -212,20 +260,20 @@ impl Protocol<Client> {
                     }
                 }
                 ReceiverEvent::DataTransfer { packet } => {
-                    debug!("server: received data transfer {:#?}.", packet);
+                    debug!("client: received data transfer {:#?}.", packet);
 
                     let connection_id = packet.message.connection_id;
                     let payload = packet.message.payload;
 
                     if let Some(peer) = self.service.connected.get_mut(&connection_id) {
-                        debug!("server: peer is connected {:#?}.", peer);
+                        debug!("client: peer is connected {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
                     } else if let Some(mut peer) =
                         self.service.awaiting_connection_ack.remove(&connection_id)
                     {
-                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
+                        debug!("client: peer is awaiting connection ack {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
@@ -240,19 +288,19 @@ impl Protocol<Client> {
                     }
                 }
                 ReceiverEvent::Heartbeat { packet } => {
-                    debug!("server: received heartbeat {:#?}.", packet);
+                    debug!("client: received heartbeat {:#?}.", packet);
 
                     let connection_id = packet.message.connection_id;
 
                     if let Some(peer) = self.service.connected.get_mut(&connection_id) {
-                        debug!("server: peer is connected {:#?}.", peer);
+                        debug!("client: peer is connected {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
                     } else if let Some(mut peer) =
                         self.service.awaiting_connection_ack.remove(&connection_id)
                     {
-                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
+                        debug!("client: peer is awaiting connection ack {:#?}.", peer);
 
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
@@ -267,7 +315,15 @@ impl Protocol<Client> {
         // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
         // The network will check if socket is ready, then call a `make_packet` that will take some
         // scheduled from the scheduler pipe, but how does it handle reliability?
+        //
+        // ADD(alex) [mid] 2021-08-01: After sending a reliable packet, it should be put in a list
+        // of `SentReliable` or whatever packets, and these packets are checked via their
+        // `meta.time` and resent after some time has passed, and they've not been acked yet.
+        //
+        // No need to convert such a packet into a `Scheduled`, the easier approach would be to have
+        // a secondary `send_non_acked` function, that runs before the common `send`, and it takes
+        // a packet from this reliable list and re-sends it, with updated time.
 
-        self.events.api.drain(..).collect()
+        self.events.api.drain(..)
     }
 }

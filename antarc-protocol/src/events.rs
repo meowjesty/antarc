@@ -30,6 +30,9 @@ pub enum ProtocolError {
 
     #[error("Tried to schedule a data transfer, but there are no peers connected!")]
     NoPeersConnected,
+
+    #[error("Tried connecting to a Peer that is already in another state `{0}`!")]
+    AlreadyConnectingToPeer(SocketAddr),
 }
 
 impl Into<AntarcEvent> for ProtocolError {
@@ -58,6 +61,9 @@ pub enum ReceiverEvent {
 /// the same thing over and over.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScheduleEvent {
+    ConnectionRequest {
+        scheduled: Scheduled<Reliable, ConnectionRequest>,
+    },
     ConnectionAccepted {
         scheduled: Scheduled<Reliable, ConnectionAccepted>,
     },
@@ -75,33 +81,39 @@ pub enum ScheduleEvent {
     },
 }
 
-impl Into<ScheduleEvent> for Scheduled<Reliable, DataTransfer> {
-    fn into(self) -> ScheduleEvent {
-        ScheduleEvent::ReliableDataTransfer { scheduled: self }
+impl From<Scheduled<Reliable, DataTransfer>> for ScheduleEvent {
+    fn from(scheduled: Scheduled<Reliable, DataTransfer>) -> Self {
+        ScheduleEvent::ReliableDataTransfer { scheduled }
     }
 }
 
-impl Into<ScheduleEvent> for Scheduled<Reliable, Fragment> {
-    fn into(self) -> ScheduleEvent {
-        ScheduleEvent::ReliableFragment { scheduled: self }
+impl From<Scheduled<Reliable, Fragment>> for ScheduleEvent {
+    fn from(scheduled: Scheduled<Reliable, Fragment>) -> Self {
+        ScheduleEvent::ReliableFragment { scheduled }
     }
 }
 
-impl Into<ScheduleEvent> for Scheduled<Unreliable, DataTransfer> {
-    fn into(self) -> ScheduleEvent {
-        ScheduleEvent::UnreliableDataTransfer { scheduled: self }
+impl From<Scheduled<Unreliable, DataTransfer>> for ScheduleEvent {
+    fn from(scheduled: Scheduled<Unreliable, DataTransfer>) -> Self {
+        ScheduleEvent::UnreliableDataTransfer { scheduled }
     }
 }
 
-impl Into<ScheduleEvent> for Scheduled<Unreliable, Fragment> {
-    fn into(self) -> ScheduleEvent {
-        ScheduleEvent::UnreliableFragment { scheduled: self }
+impl From<Scheduled<Unreliable, Fragment>> for ScheduleEvent {
+    fn from(scheduled: Scheduled<Unreliable, Fragment>) -> Self {
+        ScheduleEvent::UnreliableFragment { scheduled }
     }
 }
 
-impl Into<ScheduleEvent> for Scheduled<Reliable, ConnectionAccepted> {
-    fn into(self) -> ScheduleEvent {
-        ScheduleEvent::ConnectionAccepted { scheduled: self }
+impl From<Scheduled<Reliable, ConnectionAccepted>> for ScheduleEvent {
+    fn from(scheduled: Scheduled<Reliable, ConnectionAccepted>) -> Self {
+        ScheduleEvent::ConnectionAccepted { scheduled }
+    }
+}
+
+impl From<Scheduled<Reliable, ConnectionRequest>> for ScheduleEvent {
+    fn from(scheduled: Scheduled<Reliable, ConnectionRequest>) -> Self {
+        ScheduleEvent::ConnectionRequest { scheduled }
     }
 }
 

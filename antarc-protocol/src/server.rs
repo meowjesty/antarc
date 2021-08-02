@@ -423,7 +423,7 @@ impl Protocol<Server> {
             || connected.values().any(|peer| peer.address == address)
     }
 
-    pub fn poll(&mut self) -> Vec<AntarcEvent> {
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
         for received in self.events.receiver.drain(..) {
             debug!("server: polling receiver events.");
 
@@ -540,7 +540,15 @@ impl Protocol<Server> {
         // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
         // The network will check if socket is ready, then call a `make_packet` that will take some
         // scheduled from the scheduler pipe, but how does it handle reliability?
+        //
+        // ADD(alex) [mid] 2021-08-01: After sending a reliable packet, it should be put in a list
+        // of `SentReliable` or whatever packets, and these packets are checked via their
+        // `meta.time` and resent after some time has passed, and they've not been acked yet.
+        //
+        // No need to convert such a packet into a `Scheduled`, the easier approach would be to have
+        // a secondary `send_non_acked` function, that runs before the common `send`, and it takes
+        // a packet from this reliable list and re-sends it, with updated time.
 
-        self.events.api.drain(..).collect()
+        self.events.api.drain(..)
     }
 }

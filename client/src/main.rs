@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use antarc_dummy::DummyManager;
-use log::{debug, error, info};
+use antarc_dummy::{AntarcEvent, DummyManager};
+use log::{debug, error, info, warn};
 
 fn main() {
     std::env::set_var("RUST_LOG", "debug");
@@ -21,7 +21,10 @@ fn client_main() {
         // an events vector or register some global event list:
         // let events = Vec::with_capacity(1024);
         // client.register(events);
-        let mut events = client.poll();
+        //
+        // ADD(alex) [low] 2021-08-01: I've tried returning the `DrainIter` from `poll`, but it
+        // ends up borrowing `client` twice, here and in `schedule`.
+        let mut events = client.poll().collect::<Vec<_>>();
         for event in events.drain(..) {
             match event {
                 AntarcEvent::Fail(fail) => error!("{:#?}", fail),
@@ -37,19 +40,19 @@ fn client_main() {
                 }
                 AntarcEvent::ConnectionAccepted { connection_id } => {
                     info!("Received connection accepted from {:#?}.", connection_id);
-                    client.schedule(false, Payload(vec![0x3; 30]))
+                    client.schedule(false, vec![0x3; 30])
                 }
                 AntarcEvent::DataTransfer {
                     connection_id,
                     payload,
                 } => {
                     info!("Received {:#?} from {:#?}.", payload.len(), connection_id);
-                    client.schedule(false, Payload(vec![0x4; 40]));
+                    client.schedule(false, vec![0x4; 40]);
                 }
             }
         }
 
-        client.schedule(false, Payload(vec![0x5; 50]));
+        client.schedule(false, vec![0x5; 50]);
 
         std::thread::sleep(Duration::from_millis(500));
     }

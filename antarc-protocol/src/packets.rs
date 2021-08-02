@@ -129,3 +129,9 @@ pub struct Reliable {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unreliable {}
+
+impl Scheduled<Reliable, ConnectionRequest> {
+    pub fn connection_request(remote_address: SocketAddr) -> Self {
+        todo!()
+    }
+}

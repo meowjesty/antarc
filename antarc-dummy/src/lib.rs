@@ -35,7 +35,7 @@ impl DummyManager<Server> {
         self.antarc.accept_connection(connection_id);
     }
 
-    pub fn poll(&mut self) -> Vec<AntarcEvent> {
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
         debug!("dummy poll");
 
         for scheduled in self.antarc.events.scheduler.drain(..) {
@@ -63,7 +63,7 @@ impl DummyManager<Client> {
         self.antarc.connect(remote_address);
     }
 
-    pub fn poll(&mut self) -> Vec<AntarcEvent> {
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
         debug!("dummy poll");
 
         for scheduled in self.antarc.events.scheduler.drain(..) {
