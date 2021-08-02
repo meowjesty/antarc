@@ -1,10 +1,12 @@
-use core::time::Duration;
+use core::{mem::size_of, time::Duration};
 use std::{
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
 };
 
-use crate::{events::AntarcEvent, EventSystem};
+use crc32fast::Hasher;
+
+use crate::{events::AntarcEvent, EventSystem, ProtocolId, PROTOCOL_ID_BYTES};
 
 pub type PacketId = u64;
 pub type Sequence = NonZeroU32;
@@ -38,11 +40,19 @@ impl RawPacket {
     }
 }
 
-pub trait PacketDelivery {}
-pub trait PacketMessage {}
+pub trait Deliverable {}
+pub trait Messager {}
+
+pub trait Encoder {
+    fn encode(&self) -> Vec<u8>;
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Packet<Delivery: PacketDelivery, Message: PacketMessage> {
+pub struct Packet<Delivery, Message>
+where
+    Delivery: Deliverable,
+    Message: Messager + Encoder,
+{
     pub id: PacketId,
     pub delivery: Delivery,
     pub sequence: Sequence,
@@ -77,25 +87,28 @@ pub struct Acked {
     pub meta: MetaDelivery,
 }
 
-impl PacketDelivery for ToSend {}
-impl PacketDelivery for Sent {}
-impl PacketDelivery for Received {}
-impl PacketDelivery for Acked {}
+impl Deliverable for ToSend {}
+impl Deliverable for Sent {}
+impl Deliverable for Received {}
+impl Deliverable for Acked {}
 
 // REGION(alex): Packet `Message` types:
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaMessage {
+    /// TODO(alex) [low] 2021-08-02: This is a common field for every `Packet`, but it's also being
+    /// used by the `Scheduled` types, thus if I take it out from the `MetaMessage`, it has to be
+    /// inserted in both structs.
     pub packet_type: PacketType,
 }
 
-// TODO(alex) [mid] 2021-07-30: Add `impl` with associated consts for
+// TODO(alex) [vlow] 2021-07-30: Add `impl` with associated consts for
 // `Packet<Delivery, ConnectionRequest>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionRequest {
     pub meta: MetaMessage,
 }
 
-// TODO(alex) [mid] 2021-07-30: Add `impl` with associated consts for
+// TODO(alex) [vlow] 2021-07-30: Add `impl` with associated consts for
 // `Packet<Delivery, ConnectionAccepted>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionAccepted {
@@ -125,15 +138,56 @@ pub struct Heartbeat {
     pub connection_id: ConnectionId,
 }
 
-impl PacketMessage for ConnectionRequest {}
-impl PacketMessage for ConnectionAccepted {}
-impl PacketMessage for DataTransfer {}
-impl PacketMessage for Fragment {}
-impl PacketMessage for Heartbeat {}
+impl Messager for ConnectionRequest {}
+impl Messager for ConnectionAccepted {}
+impl Messager for DataTransfer {}
+impl Messager for Fragment {}
+impl Messager for Heartbeat {}
+
+impl Encoder for ConnectionRequest {
+    fn encode(&self) -> Vec<u8> {
+        let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
+
+        packet_type_bytes
+    }
+}
+
+impl Encoder for ConnectionAccepted {
+    fn encode(&self) -> Vec<u8> {
+        let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
+        let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
+
+        let encoded = vec![packet_type_bytes, connection_id_bytes].concat();
+        encoded
+    }
+}
+
+impl Encoder for DataTransfer {
+    fn encode(&self) -> Vec<u8> {
+        let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
+
+        packet_type_bytes
+    }
+}
+
+impl Encoder for Fragment {
+    fn encode(&self) -> Vec<u8> {
+        let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
+
+        packet_type_bytes
+    }
+}
+impl Encoder for Heartbeat {
+    fn encode(&self) -> Vec<u8> {
+        let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
+
+        packet_type_bytes
+    }
+}
 
 impl<Message> Packet<ToSend, Message>
 where
-    Message: PacketMessage,
+    Message: Messager + Encoder,
 {
     pub fn sent(self, time: Duration) -> Packet<Sent, Message> {
         let packet = Packet {
@@ -151,11 +205,35 @@ where
 
         packet
     }
-}
 
-impl Packet<ToSend, ConnectionRequest> {
     pub fn as_raw(&self) -> RawPacket {
-        todo!()
+        let encoded_message = self.message.encode();
+
+        let sequence_bytes = self.sequence.get().to_be_bytes().to_vec();
+        let ack_bytes = self.ack.to_be_bytes().to_vec();
+
+        let mut hasher = Hasher::new();
+        let mut bytes = vec![
+            PROTOCOL_ID_BYTES.to_vec(),
+            sequence_bytes,
+            ack_bytes,
+            encoded_message,
+        ]
+        .concat();
+
+        hasher.update(&bytes);
+        let crc32 = hasher.finalize();
+        debug_assert!(crc32 != 0);
+
+        bytes.append(&mut crc32.to_be_bytes().to_vec());
+
+        let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
+        let raw_packet = RawPacket {
+            address: self.delivery.meta.remote,
+            bytes: packet_bytes,
+        };
+
+        raw_packet
     }
 }
 
@@ -163,7 +241,7 @@ impl Packet<ToSend, ConnectionRequest> {
 // could have a family of `Scheduled`, much like `Packet`, and the `scheduler_pipe` would take an
 // enum of such types.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Scheduled<Reliability, Message: PacketMessage> {
+pub struct Scheduled<Reliability, Message: Messager> {
     pub packet_id: PacketId,
     pub address: SocketAddr,
     pub time: Duration,
@@ -200,6 +278,31 @@ impl Scheduled<Reliable, ConnectionRequest> {
         ack: Ack,
         time: Duration,
     ) -> Packet<ToSend, ConnectionRequest> {
+        let delivery = ToSend {
+            meta: MetaDelivery {
+                time,
+                remote: self.address,
+            },
+        };
+        let packet = Packet {
+            id: self.packet_id,
+            delivery,
+            sequence,
+            ack,
+            message: self.message,
+        };
+
+        packet
+    }
+}
+
+impl Scheduled<Reliable, ConnectionAccepted> {
+    pub fn into_packet(
+        self,
+        sequence: Sequence,
+        ack: Ack,
+        time: Duration,
+    ) -> Packet<ToSend, ConnectionAccepted> {
         let delivery = ToSend {
             meta: MetaDelivery {
                 time,

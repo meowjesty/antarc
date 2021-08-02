@@ -7,7 +7,7 @@ use std::{
 use log::{debug, warn};
 
 use crate::{
-    events::{AntarcEvent, ProtocolError, ReceiverEvent},
+    events::{AntarcEvent, ProtocolError, ReceiverEvent, ScheduleEvent},
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection},
     EventSystem, Protocol,
@@ -16,8 +16,8 @@ use crate::{
 #[derive(Debug)]
 pub struct Client {
     pub last_sent_time: Duration,
-    pub requesting_connection: HashMap<ConnectionId, Peer<RequestingConnection>>,
-    pub awaiting_connection_ack: HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
+    pub requesting_connection: HashMap<SocketAddr, Peer<RequestingConnection>>,
+    pub awaiting_connection_ack: HashMap<SocketAddr, Peer<AwaitingConnectionAck>>,
     pub connected: HashMap<ConnectionId, Peer<Connected>>,
 }
 
@@ -39,6 +39,44 @@ impl Protocol<Client> {
         }
     }
 
+    // TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
+    // If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
+    pub fn sent_connection_request(&mut self, packet: Packet<ToSend, ConnectionRequest>) {
+        let sent = packet.sent(self.timer.elapsed());
+        let address = sent.delivery.meta.remote;
+
+        let peer = self.service.requesting_connection.remove(&address).unwrap();
+
+        self.events.reliable_sent.push(sent.into());
+        self.service
+            .awaiting_connection_ack
+            .insert(address, peer.await_connection_ack(self.timer.elapsed()));
+    }
+
+    // pub fn sent<Message>(&mut self, packet: Packet<ToSend, Message>)
+    // where
+    //     Message: Messager + Encoder,
+    // {
+    //     let sent = packet.sent(self.timer.elapsed());
+    //     self.events.reliable_sent.push(sent.into());
+    // }
+
+    pub fn prepare_connection_request(
+        &self,
+        scheduled: Scheduled<Reliable, ConnectionRequest>,
+    ) -> Packet<ToSend, ConnectionRequest> {
+        let (sequence, ack) = self
+            .service
+            .requesting_connection
+            .values()
+            .last()
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .unwrap();
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
     /// NOTE(alex): API function that feeds the internal* event pipe.
     pub fn received(&mut self, raw_packet: RawPacket) {
         // TODO(alex) [low] 2021-08-01: There will be a conflict when switching up to
@@ -54,30 +92,23 @@ impl Protocol<Client> {
         raw_packet.decode(&mut self.events);
     }
 
-    pub fn known_peer(
-        requesting_connection: &HashMap<ConnectionId, Peer<RequestingConnection>>,
-        awaiting_connection_ack: &HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
-        connected: &HashMap<ConnectionId, Peer<Connected>>,
-        remote_address: &SocketAddr,
-    ) -> bool {
-        requesting_connection
-            .values()
-            .any(|peer| peer.address == *remote_address)
-            || awaiting_connection_ack
-                .values()
-                .any(|peer| peer.address == *remote_address)
-            || connected
+    pub fn known_peer(&self, remote_address: &SocketAddr) -> bool {
+        self.service
+            .requesting_connection
+            .contains_key(&remote_address)
+            || self
+                .service
+                .awaiting_connection_ack
+                .contains_key(&remote_address)
+            || self
+                .service
+                .connected
                 .values()
                 .any(|peer| peer.address == *remote_address)
     }
 
     pub fn connect(&mut self, remote_address: SocketAddr) -> Result<(), ProtocolError> {
-        if Protocol::known_peer(
-            &self.service.requesting_connection,
-            &self.service.awaiting_connection_ack,
-            &self.service.connected,
-            &remote_address,
-        ) {
+        if self.known_peer(&remote_address) {
             warn!(
                 "client: peer already in another state, skipping connect {:#?}.",
                 remote_address
@@ -93,14 +124,9 @@ impl Protocol<Client> {
         self.events.scheduler.push(connection_request.into());
         self.packet_id_tracker += 1;
 
-        // TODO(alex) [mid] 2021-08-01: We hit an inconsistency here, there is no `ConnectionId` for
-        // this `Peer`, until the server gives a reply, but we're storing it with a temporary one.
-        // The correct approach would be to use the peer's address as the identifier key.
-        //
-        // This is different from the `Server` side of things.
         self.service
             .requesting_connection
-            .insert(ConnectionId::new(1).unwrap(), requesting_connection);
+            .insert(remote_address, requesting_connection);
         Ok(())
     }
 
@@ -243,11 +269,12 @@ impl Protocol<Client> {
                 }
                 ReceiverEvent::ConnectionAccepted { packet } => {
                     debug!("client: received connection accepted {:#?}.", packet);
-                    if Protocol::connection_accepted_another_state(
-                        &self.service.requesting_connection,
-                        &self.service.connected,
-                        &packet,
-                    ) {
+                    let address = packet.delivery.meta.remote;
+                    let connection_id = packet.message.connection_id;
+
+                    if self.service.requesting_connection.contains_key(&address)
+                        || self.service.connected.contains_key(&connection_id)
+                    {
                         warn!(
                             "client: peer already in another state, skipping {:#?}.",
                             packet
@@ -255,9 +282,7 @@ impl Protocol<Client> {
                         continue;
                     }
 
-                    let connection_id = packet.message.connection_id;
-                    if let Some(peer) = self.service.awaiting_connection_ack.remove(&connection_id)
-                    {
+                    if let Some(peer) = self.service.awaiting_connection_ack.remove(&address) {
                         let connected = peer.connected(self.timer.elapsed(), connection_id);
                         self.service.connected.insert(connection_id, connected);
                     }
@@ -265,6 +290,7 @@ impl Protocol<Client> {
                 ReceiverEvent::DataTransfer { packet } => {
                     debug!("client: received data transfer {:#?}.", packet);
 
+                    let address = packet.delivery.meta.remote;
                     let connection_id = packet.message.connection_id;
                     let payload = packet.message.payload;
 
@@ -274,7 +300,7 @@ impl Protocol<Client> {
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
                     } else if let Some(mut peer) =
-                        self.service.awaiting_connection_ack.remove(&connection_id)
+                        self.service.awaiting_connection_ack.remove(&address)
                     {
                         debug!("client: peer is awaiting connection ack {:#?}.", peer);
 
@@ -293,6 +319,7 @@ impl Protocol<Client> {
                 ReceiverEvent::Heartbeat { packet } => {
                     debug!("client: received heartbeat {:#?}.", packet);
 
+                    let address = packet.delivery.meta.remote;
                     let connection_id = packet.message.connection_id;
 
                     if let Some(peer) = self.service.connected.get_mut(&connection_id) {
@@ -301,7 +328,7 @@ impl Protocol<Client> {
                         peer.remote_ack_tracker = packet.sequence.get();
                         peer.local_ack_tracker = packet.ack;
                     } else if let Some(mut peer) =
-                        self.service.awaiting_connection_ack.remove(&connection_id)
+                        self.service.awaiting_connection_ack.remove(&address)
                     {
                         debug!("client: peer is awaiting connection ack {:#?}.", peer);
 

@@ -44,12 +44,17 @@ impl<Service> Protocol<Service> {
     pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
         todo!()
     }
+
+    pub fn scheduler(&mut self) -> Vec<ScheduleEvent> {
+        self.events.scheduler.drain(..).collect()
+    }
 }
 
 #[derive(Debug)]
 pub struct EventSystem {
     pub receiver: Vec<ReceiverEvent>,
     pub scheduler: Vec<ScheduleEvent>,
+    pub reliable_sent: Vec<ReliableSentEvent>,
     pub api: Vec<AntarcEvent>,
 }
 
@@ -58,11 +63,13 @@ impl EventSystem {
         let receiver = Vec::with_capacity(1024);
         let api = Vec::with_capacity(1024);
         let scheduler = Vec::with_capacity(1024);
+        let reliable_sent = Vec::with_capacity(1024);
 
         Self {
             receiver,
             api,
             scheduler,
+            reliable_sent,
         }
     }
 }

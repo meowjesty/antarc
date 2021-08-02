@@ -45,6 +45,38 @@ impl Protocol<Server> {
         raw_packet.decode(&mut self.events);
     }
 
+    // TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
+    // If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
+    //
+    // Check the `client.rs` file that contains a comment with this possible function.
+    pub fn sent_connection_accepted(&mut self, packet: Packet<ToSend, ConnectionAccepted>) {
+        let sent = packet.sent(self.timer.elapsed());
+
+        self.events.reliable_sent.push(sent.into());
+        // TODO(alex) [mid] 2021-08-02: There is one difference between this and the `Client`'s
+        // version of "after send" handler. The server already put the `Peer` into
+        // `AwaitingConnectionAck` when it received the initial connection request. So we don't
+        // have to update anything here.
+        //
+        // The `Peer<AwaitingConnectionAck>` will change to `Peer<Connected>` when we receive an
+        // ack for this reliable packet.
+    }
+
+    pub fn prepare_connection_accepted(
+        &self,
+        scheduled: Scheduled<Reliable, ConnectionAccepted>,
+    ) -> Packet<ToSend, ConnectionAccepted> {
+        let (sequence, ack) = self
+            .service
+            .requesting_connection
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .unwrap();
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
     /// NOTE(alex): API function for scheduling connection accepted packets, called by the user.
     ///
     /// - Moves `Peer<RequestingConnection>` -> `Peer<AwaitingConnectionAck>`.
@@ -68,7 +100,7 @@ impl Protocol<Server> {
             self.events.scheduler.push(scheduled.into());
             self.packet_id_tracker += 1;
 
-            let awaiting_connection_ack = peer.accepted_connection(self.timer.elapsed());
+            let awaiting_connection_ack = peer.await_connection_ack(self.timer.elapsed());
             self.service
                 .awaiting_connection_ack
                 .insert(connection_id, awaiting_connection_ack);
@@ -191,7 +223,7 @@ impl Protocol<Server> {
                 } else {
                     self.events
                         .api
-                        .push(ProtocolError::ScheduleInvalidPeer(connection_id).into())
+                        .push(ProtocolError::ScheduledNotConnected(connection_id).into())
                 }
 
                 if self.events.scheduler.len() > old_scheduler_length {
@@ -298,7 +330,7 @@ impl Protocol<Server> {
                     } else {
                         self.events
                             .api
-                            .push(ProtocolError::ScheduleInvalidPeer(connection_id).into())
+                            .push(ProtocolError::ScheduledNotConnected(connection_id).into())
                     }
                 }
 

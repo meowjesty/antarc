@@ -11,7 +11,7 @@ pub use antarc_protocol::{
     server::Server,
     Protocol,
 };
-use log::{debug, info};
+use log::{debug, info, warn};
 
 #[derive(Debug)]
 pub struct DummyManager<Service> {
@@ -37,11 +37,40 @@ impl DummyManager<Server> {
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
-        debug!("dummy poll");
+        debug!("dummy server poll");
 
-        for scheduled in self.antarc.events.scheduler.drain(..) {
-            // TODO(alex) [high] 2021-08-01: Handle the conversion of `Scheduled` into `Packet` by
-            // calling some `Protocol::encode` (should be similar to the `decode`).
+        for scheduled in self.antarc.scheduler().drain(..) {
+            match scheduled {
+                ScheduleEvent::ConnectionRequest { scheduled } => {
+                    warn!("Invalid packet type {:#?} scheduled for client.", scheduled);
+                    self.antarc
+                        .events
+                        .api
+                        .push(ProtocolError::ScheduledInvalidPeer(scheduled.packet_id).into());
+                }
+                ScheduleEvent::ConnectionAccepted { scheduled } => {
+                    debug!("preparing to send a connection request {:#?}.", scheduled);
+
+                    let packet = self.antarc.prepare_connection_accepted(scheduled);
+                    debug!("ready to send {:#?}", packet);
+
+                    // NOTE(alex): Dummy send.
+                    {
+                        let raw_packet = packet.as_raw();
+                        info!(
+                            "Sent: {:#?} bytes to {:#?}",
+                            raw_packet.bytes.len(),
+                            raw_packet.address
+                        );
+                    }
+
+                    self.antarc.sent_connection_accepted(packet);
+                }
+                ScheduleEvent::ReliableDataTransfer { scheduled } => todo!(),
+                ScheduleEvent::ReliableFragment { scheduled } => todo!(),
+                ScheduleEvent::UnreliableDataTransfer { scheduled } => todo!(),
+                ScheduleEvent::UnreliableFragment { scheduled } => todo!(),
+            }
         }
 
         self.antarc.poll()
@@ -71,33 +100,17 @@ impl DummyManager<Client> {
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
-        debug!("dummy poll");
+        debug!("dummy client poll");
 
-        for scheduled in self.antarc.events.scheduler.drain(..) {
+        for scheduled in self.antarc.scheduler().drain(..) {
             match scheduled {
                 ScheduleEvent::ConnectionRequest { scheduled } => {
                     debug!("preparing to send a connection request {:#?}.", scheduled);
 
-                    // TODO(alex) [high] 2021-08-02: This should be part of the protocol, but how do
-                    // I make something generic over this? I should probably start with single
-                    // functions, one for each type of packet / peer connection combination.
-                    //
-                    // TODO(alex) [mid] 2021-08-02: Thinking about how to do reliability for the
-                    // `Packet`, instead of adding a new generic to it, I could insert reliable
-                    // packets into a `Vec<Packet<Sent, T>>` sort of thing. Maybe wrap it into an
-                    // event style enum, like `Scheduled`.
-                    let (sequence, ack) = self
-                        .antarc
-                        .service
-                        .requesting_connection
-                        .values()
-                        .last()
-                        .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
-                        .unwrap();
-
-                    let packet = scheduled.into_packet(sequence, ack, self.antarc.timer.elapsed());
+                    let packet = self.antarc.prepare_connection_request(scheduled);
                     debug!("ready to send {:#?}", packet);
 
+                    // NOTE(alex): Dummy send.
                     {
                         let raw_packet = packet.as_raw();
                         info!(
@@ -107,20 +120,20 @@ impl DummyManager<Client> {
                         );
                     }
 
-                    let sent = packet.sent(self.antarc.timer.elapsed());
-                    debug!("sent packet {:#?}", sent);
-                    // TODO(alex) [vhigh] 2021-08-02: Add this packet to the list of reliable sent.
+                    self.antarc.sent_connection_request(packet);
                 }
-                ScheduleEvent::ConnectionAccepted { scheduled } => self.antarc.events.api.push(
-                    ProtocolError::ScheduleInvalidPeer(scheduled.message.connection_id).into(),
-                ),
+                ScheduleEvent::ConnectionAccepted { scheduled } => {
+                    warn!("Invalid packet type {:#?} scheduled for client.", scheduled);
+                    self.antarc
+                        .events
+                        .api
+                        .push(ProtocolError::ScheduledInvalidPeer(scheduled.packet_id).into());
+                }
                 ScheduleEvent::ReliableDataTransfer { scheduled } => todo!(),
                 ScheduleEvent::ReliableFragment { scheduled } => todo!(),
                 ScheduleEvent::UnreliableDataTransfer { scheduled } => todo!(),
                 ScheduleEvent::UnreliableFragment { scheduled } => todo!(),
             }
-            // TODO(alex) [high] 2021-08-01: Handle the conversion of `Scheduled` into `Packet` by
-            // calling some `Protocol::encode` (should be similar to the `decode`).
         }
 
         self.antarc.poll()

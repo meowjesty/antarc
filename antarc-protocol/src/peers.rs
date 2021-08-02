@@ -70,7 +70,7 @@ impl Peer<RequestingConnection> {
         }
     }
 
-    pub fn accepted_connection(self, time_entered_state: Duration) -> Peer<AwaitingConnectionAck> {
+    pub fn await_connection_ack(self, time_entered_state: Duration) -> Peer<AwaitingConnectionAck> {
         Peer {
             sequence_tracker: self.sequence_tracker,
             remote_ack_tracker: self.remote_ack_tracker,

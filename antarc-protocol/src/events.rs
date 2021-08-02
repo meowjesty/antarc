@@ -23,7 +23,10 @@ pub enum ProtocolError {
     IntConversion(#[from] TryFromIntError),
 
     #[error("Tried to schedule a packet for Peer {0} which is not connected!")]
-    ScheduleInvalidPeer(ConnectionId),
+    ScheduledNotConnected(ConnectionId),
+
+    #[error("Tried to schedule a packet {0} for an invalid type of Peer!")]
+    ScheduledInvalidPeer(PacketId),
 
     #[error("Could not find a peer with {0}!")]
     NotFound(ConnectionId),
@@ -57,6 +60,40 @@ pub enum ReceiverEvent {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReliableSentEvent {
+    ConnectionRequest {
+        packet: Packet<Sent, ConnectionRequest>,
+    },
+    ConnectionAccepted {
+        packet: Packet<Sent, ConnectionAccepted>,
+    },
+}
+
+impl From<Packet<Sent, ConnectionRequest>> for ReliableSentEvent {
+    fn from(packet: Packet<Sent, ConnectionRequest>) -> Self {
+        Self::ConnectionRequest { packet }
+    }
+}
+
+impl From<Packet<Sent, ConnectionAccepted>> for ReliableSentEvent {
+    fn from(packet: Packet<Sent, ConnectionAccepted>) -> Self {
+        Self::ConnectionAccepted { packet }
+    }
+}
+
+impl From<Packet<Sent, DataTransfer>> for ReliableSentEvent {
+    fn from(packet: Packet<Sent, DataTransfer>) -> Self {
+        todo!()
+    }
+}
+
+impl From<Packet<Sent, Heartbeat>> for ReliableSentEvent {
+    fn from(packet: Packet<Sent, Heartbeat>) -> Self {
+        todo!()
+    }
+}
+
 /// TODO(alex) [low] 2021-07-31: Write a macro to derive the proper `Into`, as it's basically just
 /// the same thing over and over.
 #[derive(Debug, Clone, PartialEq)]
@@ -83,37 +120,37 @@ pub enum ScheduleEvent {
 
 impl From<Scheduled<Reliable, DataTransfer>> for ScheduleEvent {
     fn from(scheduled: Scheduled<Reliable, DataTransfer>) -> Self {
-        ScheduleEvent::ReliableDataTransfer { scheduled }
+        Self::ReliableDataTransfer { scheduled }
     }
 }
 
 impl From<Scheduled<Reliable, Fragment>> for ScheduleEvent {
     fn from(scheduled: Scheduled<Reliable, Fragment>) -> Self {
-        ScheduleEvent::ReliableFragment { scheduled }
+        Self::ReliableFragment { scheduled }
     }
 }
 
 impl From<Scheduled<Unreliable, DataTransfer>> for ScheduleEvent {
     fn from(scheduled: Scheduled<Unreliable, DataTransfer>) -> Self {
-        ScheduleEvent::UnreliableDataTransfer { scheduled }
+        Self::UnreliableDataTransfer { scheduled }
     }
 }
 
 impl From<Scheduled<Unreliable, Fragment>> for ScheduleEvent {
     fn from(scheduled: Scheduled<Unreliable, Fragment>) -> Self {
-        ScheduleEvent::UnreliableFragment { scheduled }
+        Self::UnreliableFragment { scheduled }
     }
 }
 
 impl From<Scheduled<Reliable, ConnectionAccepted>> for ScheduleEvent {
     fn from(scheduled: Scheduled<Reliable, ConnectionAccepted>) -> Self {
-        ScheduleEvent::ConnectionAccepted { scheduled }
+        Self::ConnectionAccepted { scheduled }
     }
 }
 
 impl From<Scheduled<Reliable, ConnectionRequest>> for ScheduleEvent {
     fn from(scheduled: Scheduled<Reliable, ConnectionRequest>) -> Self {
-        ScheduleEvent::ConnectionRequest { scheduled }
+        Self::ConnectionRequest { scheduled }
     }
 }
 
