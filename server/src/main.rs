@@ -1,7 +1,7 @@
 use std::{env, time::Duration};
 
 use antarc_dummy::{AntarcEvent, DummyManager, SendTo};
-use log::{debug, error, info, warn};
+use log::*;
 
 fn main() {
     env::set_var("RUST_LOG", "debug");

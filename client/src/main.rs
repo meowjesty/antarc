@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use antarc_dummy::{AntarcEvent, DummyManager};
-use log::{debug, error, info, warn};
+use log::*;
 
 fn main() {
     std::env::set_var("RUST_LOG", "debug");
@@ -14,7 +14,7 @@ fn client_main() {
     let client_addr = "127.0.0.1:8888".parse().unwrap();
     let mut client = DummyManager::new_client(client_addr);
 
-    client.connect(server_addr);
+    client.connect(server_addr).unwrap();
 
     loop {
         // TODO(alex) [low] 2021-08-01: To avoid allocating events over and over, the user may pass
@@ -28,10 +28,7 @@ fn client_main() {
         for event in events.drain(..) {
             match event {
                 AntarcEvent::Fail(fail) => error!("{:#?}", fail),
-                AntarcEvent::ConnectionRequest {
-                    connection_id,
-                    remote,
-                } => {
+                AntarcEvent::ConnectionRequest { .. } => {
                     // TODO(alex) [low] 2021-08-01: How do I make this impossible event disappear?
                     // I would need to separate `ClientEvent` and `ServerEvent`, so the
                     // `EventSystem` will be different for `Antarc<Client>` and `Antarc<Server>`.

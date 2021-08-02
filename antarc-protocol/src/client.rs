@@ -86,9 +86,12 @@ impl Protocol<Client> {
         }
 
         let requesting_connection = Peer::new(self.timer.elapsed(), remote_address, 0);
-        let connection_request = Scheduled::connection_request(remote_address);
+        let packet_id = self.packet_id_tracker;
+        let connection_request =
+            Scheduled::connection_request(packet_id, remote_address, self.timer.elapsed());
 
         self.events.scheduler.push(connection_request.into());
+        self.packet_id_tracker += 1;
 
         // TODO(alex) [mid] 2021-08-01: We hit an inconsistency here, there is no `ConnectionId` for
         // this `Peer`, until the server gives a reply, but we're storing it with a temporary one.
