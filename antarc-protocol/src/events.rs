@@ -22,6 +22,9 @@ pub enum ProtocolError {
     #[error("{0}")]
     IntConversion(#[from] TryFromIntError),
 
+    #[error("Tried to decode a packet with invalid type code of {0}!")]
+    InvalidPacketType(PacketType),
+
     #[error("Tried to schedule a packet for Peer {0} which is not connected!")]
     ScheduledNotConnected(ConnectionId),
 

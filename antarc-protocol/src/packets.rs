@@ -1,12 +1,17 @@
 use core::{mem::size_of, time::Duration};
 use std::{
+    convert::TryInto,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
 };
 
 use crc32fast::Hasher;
+use log::{debug, error};
 
-use crate::{events::AntarcEvent, EventSystem, ProtocolId, PROTOCOL_ID_BYTES};
+use crate::{
+    events::{AntarcEvent, ProtocolError, ReceiverEvent},
+    read_buffer_inc, EventSystem, ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
+};
 
 pub type PacketId = u64;
 pub type Sequence = NonZeroU32;
@@ -32,25 +37,184 @@ pub struct RawPacket {
 
 impl RawPacket {
     pub fn new(address: SocketAddr, bytes: Vec<u8>) -> Self {
-        todo!()
+        Self { address, bytes }
     }
 
-    pub fn decode(self, events: &mut EventSystem) {
-        todo!()
+    pub fn decode(self, events: &mut EventSystem, id: PacketId, time: Duration) {
+        let mut hasher = Hasher::new();
+
+        let length = self.bytes.len();
+        let bytes = self.bytes;
+
+        let crc32_position = length - size_of::<ProtocolId>();
+        let crc32_bytes: &[u8; size_of::<NonZeroU32>()] =
+            bytes[crc32_position..].try_into().unwrap();
+        let crc32_received = u32::from_be_bytes(*crc32_bytes);
+
+        // NOTE(alex): Cannot use the full buffer when re-calculating the crc32 for comparison, as
+        // the crc32 is calculated after encoding.
+        let bytes_without_crc32 = &bytes[..crc32_position];
+
+        let packet_with_protocol_id = [&PROTOCOL_ID_BYTES, bytes_without_crc32].concat();
+
+        hasher.update(&packet_with_protocol_id);
+        let crc32 = hasher.finalize();
+
+        if crc32 == crc32_received {
+            let buffer = packet_with_protocol_id;
+            let mut buffer_position = 0;
+
+            // TODO(alex) [low] 2021-08-04: Find out a way to make `from_be_bytes::<ProtocolId>`
+            // work.
+            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
+            if PROTOCOL_ID.get() != read_protocol_id {
+                events.api.push(
+                    ProtocolError::InvalidProtocolId {
+                        got: read_protocol_id,
+                        expected: PROTOCOL_ID,
+                    }
+                    .into(),
+                );
+
+                return;
+            }
+
+            let read_sequence = read_buffer_inc!({ buffer, buffer_position } : u32);
+            debug_assert_ne!(read_sequence, 0);
+
+            let read_ack = read_buffer_inc!({ buffer, buffer_position } : Ack);
+            let read_packet_type = read_buffer_inc!({ buffer, buffer_position } : PacketType);
+            match read_packet_type {
+                ConnectionRequest::PACKET_TYPE => {
+                    debug!("Decoding connection request packet.");
+                    debug_assert_eq!(buffer_position, ConnectionRequest::HEADER_SIZE);
+
+                    let delivery = Received {
+                        meta: MetaDelivery {
+                            time,
+                            remote: self.address,
+                        },
+                    };
+                    let message = ConnectionRequest {
+                        meta: MetaMessage {
+                            packet_type: read_packet_type,
+                        },
+                    };
+
+                    let packet = Packet {
+                        id,
+                        delivery,
+                        sequence: read_sequence.try_into().unwrap(),
+                        ack: read_ack,
+                        message,
+                    };
+
+                    events
+                        .receiver
+                        .push(ReceiverEvent::ConnectionRequest { packet });
+                }
+                ConnectionAccepted::PACKET_TYPE => {
+                    debug!("Decoding connection accepted packet.");
+
+                    // TODO(alex) [low] 2021-08-04: Find out a way to make
+                    // `from_be_bytes::<ConnectionId>` work.
+                    let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                    debug_assert_eq!(buffer_position, ConnectionAccepted::HEADER_SIZE);
+
+                    let delivery = Received {
+                        meta: MetaDelivery {
+                            time,
+                            remote: self.address,
+                        },
+                    };
+                    let message = ConnectionAccepted {
+                        meta: MetaMessage {
+                            packet_type: read_packet_type,
+                        },
+                        connection_id: read_connection_id.try_into().unwrap(),
+                    };
+
+                    let packet = Packet {
+                        id,
+                        delivery,
+                        sequence: read_sequence.try_into().unwrap(),
+                        ack: read_ack,
+                        message,
+                    };
+
+                    events
+                        .receiver
+                        .push(ReceiverEvent::ConnectionAccepted { packet });
+                }
+                DataTransfer::PACKET_TYPE => {
+                    debug!("Decoding data transfer packet.");
+
+                    // TODO(alex) [low] 2021-08-04: Find out a way to make
+                    // `from_be_bytes::<ConnectionId>` work.
+                    let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                    debug_assert_eq!(buffer_position, DataTransfer::HEADER_SIZE);
+
+                    let read_payload = buffer[buffer_position..].to_vec();
+
+                    let delivery = Received {
+                        meta: MetaDelivery {
+                            time,
+                            remote: self.address,
+                        },
+                    };
+                    let message = ConnectionAccepted {
+                        meta: MetaMessage {
+                            packet_type: read_packet_type,
+                        },
+                        connection_id: read_connection_id.try_into().unwrap(),
+                    };
+
+                    let packet = Packet {
+                        id,
+                        delivery,
+                        sequence: read_sequence.try_into().unwrap(),
+                        ack: read_ack,
+                        message,
+                    };
+
+                    events
+                        .receiver
+                        .push(ReceiverEvent::ConnectionAccepted { packet });
+                }
+                Fragment::PACKET_TYPE => {
+                    debug!("Decoding fragment packet.");
+                    todo!();
+                }
+                Heartbeat::PACKET_TYPE => {
+                    debug!("Decoding heartbeat packet.");
+                    todo!();
+                }
+                invalid => {
+                    error!("Decoding invalid packet type {:#?}.", invalid);
+                    events
+                        .api
+                        .push(ProtocolError::InvalidPacketType(invalid).into());
+                    return;
+                }
+            };
+        }
     }
 }
 
-pub trait Deliverable {}
-pub trait Messager {}
+pub trait Deliver {}
+pub trait Messager {
+    const PACKET_TYPE: PacketType;
+}
 
 pub trait Encoder {
-    fn encode(&self) -> Vec<u8>;
+    const HEADER_SIZE: usize;
+    fn encoded(&self) -> Vec<u8>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Packet<Delivery, Message>
 where
-    Delivery: Deliverable,
+    Delivery: Deliver,
     Message: Messager + Encoder,
 {
     pub id: PacketId,
@@ -87,10 +251,10 @@ pub struct Acked {
     pub meta: MetaDelivery,
 }
 
-impl Deliverable for ToSend {}
-impl Deliverable for Sent {}
-impl Deliverable for Received {}
-impl Deliverable for Acked {}
+impl Deliver for ToSend {}
+impl Deliver for Sent {}
+impl Deliver for Received {}
+impl Deliver for Acked {}
 
 // REGION(alex): Packet `Message` types:
 #[derive(Debug, Clone, PartialEq)]
@@ -138,14 +302,32 @@ pub struct Heartbeat {
     pub connection_id: ConnectionId,
 }
 
-impl Messager for ConnectionRequest {}
-impl Messager for ConnectionAccepted {}
-impl Messager for DataTransfer {}
-impl Messager for Fragment {}
-impl Messager for Heartbeat {}
+impl Messager for ConnectionRequest {
+    const PACKET_TYPE: PacketType = 0x1;
+}
+
+impl Messager for ConnectionAccepted {
+    const PACKET_TYPE: PacketType = 0x2;
+}
+
+impl Messager for DataTransfer {
+    const PACKET_TYPE: PacketType = 0x3;
+}
+
+impl Messager for Fragment {
+    const PACKET_TYPE: PacketType = 0x4;
+}
+impl Messager for Heartbeat {
+    const PACKET_TYPE: PacketType = 0x5;
+}
 
 impl Encoder for ConnectionRequest {
-    fn encode(&self) -> Vec<u8> {
+    const HEADER_SIZE: usize = size_of::<ProtocolId>()
+        + size_of::<Sequence>()
+        + size_of::<Ack>()
+        + size_of::<PacketType>();
+
+    fn encoded(&self) -> Vec<u8> {
         let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
 
         packet_type_bytes
@@ -153,7 +335,12 @@ impl Encoder for ConnectionRequest {
 }
 
 impl Encoder for ConnectionAccepted {
-    fn encode(&self) -> Vec<u8> {
+    const HEADER_SIZE: usize = size_of::<ProtocolId>()
+        + size_of::<Sequence>()
+        + size_of::<Ack>()
+        + size_of::<PacketType>();
+
+    fn encoded(&self) -> Vec<u8> {
         let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
         let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
 
@@ -163,7 +350,13 @@ impl Encoder for ConnectionAccepted {
 }
 
 impl Encoder for DataTransfer {
-    fn encode(&self) -> Vec<u8> {
+    const HEADER_SIZE: usize = size_of::<ProtocolId>()
+        + size_of::<Sequence>()
+        + size_of::<Ack>()
+        + size_of::<PacketType>()
+        + size_of::<u16>();
+
+    fn encoded(&self) -> Vec<u8> {
         let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
 
         packet_type_bytes
@@ -171,14 +364,26 @@ impl Encoder for DataTransfer {
 }
 
 impl Encoder for Fragment {
-    fn encode(&self) -> Vec<u8> {
+    const HEADER_SIZE: usize = size_of::<ProtocolId>()
+        + size_of::<Sequence>()
+        + size_of::<Ack>()
+        + size_of::<PacketType>()
+        // TODO(alex) [mid] 2021-08-04: Missing fragmend index, fragment total sizes.
+        + size_of::<u16>();
+
+    fn encoded(&self) -> Vec<u8> {
         let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
 
         packet_type_bytes
     }
 }
 impl Encoder for Heartbeat {
-    fn encode(&self) -> Vec<u8> {
+    const HEADER_SIZE: usize = size_of::<ProtocolId>()
+        + size_of::<Sequence>()
+        + size_of::<Ack>()
+        + size_of::<PacketType>();
+
+    fn encoded(&self) -> Vec<u8> {
         let packet_type_bytes = self.meta.packet_type.to_be_bytes().to_vec();
 
         packet_type_bytes
@@ -207,7 +412,7 @@ where
     }
 
     pub fn as_raw(&self) -> RawPacket {
-        let encoded_message = self.message.encode();
+        let encoded_message = self.message.encoded();
 
         let sequence_bytes = self.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = self.ack.to_be_bytes().to_vec();

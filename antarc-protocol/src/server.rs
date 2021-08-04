@@ -42,7 +42,12 @@ impl Protocol<Server> {
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
     pub fn received(&mut self, raw_packet: RawPacket) {
-        raw_packet.decode(&mut self.events);
+        raw_packet.decode(
+            &mut self.events,
+            self.packet_id_tracker,
+            self.timer.elapsed(),
+        );
+        self.packet_id_tracker += 1;
     }
 
     // TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
@@ -62,6 +67,8 @@ impl Protocol<Server> {
         // ack for this reliable packet.
     }
 
+    // FIXME(alex) [vhigh] 2021-08-04: unwrap on None.
+    // This error is happening because the Peer is being put into the `await_connection_ack` list.
     pub fn prepare_connection_accepted(
         &self,
         scheduled: Scheduled<Reliable, ConnectionAccepted>,
@@ -100,6 +107,13 @@ impl Protocol<Server> {
             self.events.scheduler.push(scheduled.into());
             self.packet_id_tracker += 1;
 
+            // FIXME(alex) [vhigh] 2021-08-04: Cause of error at `prepare_connection_accepted`.
+            // As we put the Peer into AwaitingConnectionAck state here, but when it's time to
+            // actually send the connection accepted packet, we try to get a Peer in
+            // RequestingConnection.
+            //
+            // There is a question to be answered here, should the user be able to cancel a
+            // connection accepted? I believe the handshake should not be cancellable.
             let awaiting_connection_ack = peer.await_connection_ack(self.timer.elapsed());
             self.service
                 .awaiting_connection_ack

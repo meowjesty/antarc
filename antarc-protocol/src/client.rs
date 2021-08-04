@@ -89,7 +89,13 @@ impl Protocol<Client> {
         // only appropriate packet types (whenever this is handled), and so does the client.
         //
         // The `DecodedEvent` accepts any type of packet.
-        raw_packet.decode(&mut self.events);
+        raw_packet.decode(
+            &mut self.events,
+            self.packet_id_tracker,
+            self.timer.elapsed(),
+        );
+
+        self.packet_id_tracker += 1;
     }
 
     pub fn known_peer(&self, remote_address: &SocketAddr) -> bool {

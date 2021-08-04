@@ -1,6 +1,5 @@
-use std::net::SocketAddr;
+use std::{convert::TryInto, net::SocketAddr};
 
-use antarc_protocol::events::{ProtocolError, ScheduleEvent};
 // TODO(alex) [mid] 2021-07-31: Create a dummy network manager implementation, that just uses
 // buffers to move data, no sockets involved!
 pub use antarc_protocol::{
@@ -11,19 +10,32 @@ pub use antarc_protocol::{
     server::Server,
     Protocol,
 };
+use antarc_protocol::{
+    events::{ProtocolError, ScheduleEvent},
+    packets::RawPacket,
+};
 use log::{debug, info, warn};
 
 #[derive(Debug)]
 pub struct DummyManager<Service> {
     antarc: Protocol<Service>,
     address: SocketAddr,
+    pub dummy_sender: Vec<Vec<u8>>,
+    pub dummy_receiver: Vec<Vec<u8>>,
 }
 
 impl DummyManager<Server> {
     pub fn new_server(address: SocketAddr) -> Self {
         debug!("dummy new server");
         let antarc = Protocol::new_server();
-        Self { antarc, address }
+        let dummy_sender = Vec::with_capacity(100);
+        let dummy_receiver = Vec::with_capacity(100);
+        Self {
+            antarc,
+            address,
+            dummy_sender,
+            dummy_receiver,
+        }
     }
 
     pub fn schedule(&mut self, reliable: bool, send_to: SendTo, payload: Payload) {
@@ -62,6 +74,7 @@ impl DummyManager<Server> {
                             raw_packet.bytes.len(),
                             raw_packet.address
                         );
+                        self.dummy_sender.push(raw_packet.bytes);
                     }
 
                     self.antarc.sent_connection_accepted(packet);
@@ -73,6 +86,12 @@ impl DummyManager<Server> {
             }
         }
 
+        // NOTE(alex): Dummy receive.
+        for received in self.dummy_receiver.drain(..) {
+            let raw_received = RawPacket::new("127.0.0.1:8888".parse().unwrap(), received);
+            self.antarc.received(raw_received);
+        }
+
         self.antarc.poll()
     }
 }
@@ -80,7 +99,14 @@ impl DummyManager<Server> {
 impl DummyManager<Client> {
     pub fn new_client(address: SocketAddr) -> Self {
         let antarc = Protocol::new_client();
-        Self { antarc, address }
+        let dummy_sender = Vec::with_capacity(100);
+        let dummy_receiver = Vec::with_capacity(100);
+        Self {
+            antarc,
+            address,
+            dummy_sender,
+            dummy_receiver,
+        }
     }
 
     // TODO(alex) [mid] 2021-08-02: Remember to return a `PacketId` from scheduling functions, so
@@ -118,6 +144,7 @@ impl DummyManager<Client> {
                             raw_packet.bytes.len(),
                             raw_packet.address
                         );
+                        self.dummy_sender.push(raw_packet.bytes);
                     }
 
                     self.antarc.sent_connection_request(packet);
@@ -135,6 +162,17 @@ impl DummyManager<Client> {
                 ScheduleEvent::UnreliableFragment { scheduled } => todo!(),
             }
         }
+
+        // NOTE(alex): Dummy receive.
+        for received in self.dummy_receiver.drain(..) {
+            let raw_received = RawPacket::new("127.0.0.1:7777".parse().unwrap(), received);
+            self.antarc.received(raw_received);
+        }
+
+        // TODO(alex) [vhigh] 2021-08-02: We have the handshake completed, but our dummy here
+        // doesn't actually implement message passing, so the client and server do not communicate.
+        //
+        // I need a way of passing data between the two.
 
         self.antarc.poll()
     }
