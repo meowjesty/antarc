@@ -1,4 +1,4 @@
-use std::{convert::TryInto, net::SocketAddr};
+use std::net::SocketAddr;
 
 // TODO(alex) [mid] 2021-07-31: Create a dummy network manager implementation, that just uses
 // buffers to move data, no sockets involved!
@@ -10,10 +10,7 @@ pub use antarc_protocol::{
     server::Server,
     Protocol,
 };
-use antarc_protocol::{
-    events::{ProtocolError, ScheduleEvent},
-    packets::RawPacket,
-};
+use antarc_protocol::{events::*, packets::*};
 use log::{debug, info, warn};
 
 #[derive(Debug)]
@@ -26,7 +23,6 @@ pub struct DummyManager<Service> {
 
 impl DummyManager<Server> {
     pub fn new_server(address: SocketAddr) -> Self {
-        debug!("dummy new server");
         let antarc = Protocol::new_server();
         let dummy_sender = Vec::with_capacity(100);
         let dummy_receiver = Vec::with_capacity(100);
@@ -39,38 +35,45 @@ impl DummyManager<Server> {
     }
 
     pub fn schedule(&mut self, reliable: bool, send_to: SendTo, payload: Payload) {
-        debug!("dummy schedule");
+        info!(
+            "Server: scheduling transfer of {:#?} bytes, is reliable {:#?}, to {:#?}.",
+            payload.len(),
+            reliable,
+            send_to,
+        );
         self.antarc.schedule(reliable, send_to, payload);
     }
 
     pub fn accept_connection(&mut self, connection_id: ConnectionId) {
-        debug!("dummy accept connection");
+        debug!(
+            "Server: dummy accept connection with id {:#?}.",
+            connection_id
+        );
         self.antarc.accept_connection(connection_id);
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
-        debug!("dummy server poll");
+        debug!("Server: dummy poll");
 
         for scheduled in self.antarc.scheduler().drain(..) {
             match scheduled {
                 ScheduleEvent::ConnectionRequest { scheduled } => {
-                    warn!("Invalid packet type {:#?} scheduled for client.", scheduled);
+                    warn!("Server: invalid packet type {:#?} scheduled.", scheduled);
                     self.antarc
                         .events
                         .api
                         .push(ProtocolError::ScheduledInvalidPeer(scheduled.packet_id).into());
                 }
                 ScheduleEvent::ConnectionAccepted { scheduled } => {
-                    debug!("preparing to send a connection request {:#?}.", scheduled);
-
+                    debug!("Server: preparing to send {:#?}.", scheduled);
                     let packet = self.antarc.prepare_connection_accepted(scheduled);
-                    debug!("ready to send {:#?}", packet);
+                    debug!("Server: ready to send {:#?}", packet);
 
                     // NOTE(alex): Dummy send.
                     {
                         let raw_packet = packet.as_raw();
                         info!(
-                            "Sent: {:#?} bytes to {:#?}",
+                            "Server: sent {:#?} bytes to {:#?}",
                             raw_packet.bytes.len(),
                             raw_packet.address
                         );
@@ -79,17 +82,21 @@ impl DummyManager<Server> {
 
                     self.antarc.sent_connection_accepted(packet);
                 }
-                ScheduleEvent::ReliableDataTransfer { scheduled } => todo!(),
-                ScheduleEvent::ReliableFragment { scheduled } => todo!(),
-                ScheduleEvent::UnreliableDataTransfer { scheduled } => todo!(),
-                ScheduleEvent::UnreliableFragment { scheduled } => todo!(),
+                ScheduleEvent::ReliableDataTransfer { .. } => todo!(),
+                ScheduleEvent::ReliableFragment { .. } => todo!(),
+                ScheduleEvent::UnreliableDataTransfer { .. } => {
+                    // TODO(alex) [high] 2021-08-05: We have a handshake of sorts, now it's time
+                    // to implement the other messages.
+                    todo!()
+                }
+                ScheduleEvent::UnreliableFragment { .. } => todo!(),
             }
         }
 
         // NOTE(alex): Dummy receive.
         for received in self.dummy_receiver.drain(..) {
             let raw_received = RawPacket::new("127.0.0.1:8888".parse().unwrap(), received);
-            self.antarc.received(raw_received);
+            self.antarc.on_received(raw_received);
         }
 
         self.antarc.poll()
@@ -113,7 +120,7 @@ impl DummyManager<Client> {
     // that the user may cancel a packet.
     pub fn schedule(&mut self, reliable: bool, payload: Payload) {
         info!(
-            "Scheduling transfer of {:#?} bytes, is reliable {:#?}.",
+            "Client: scheduling transfer of {:#?} bytes, is reliable {:#?}.",
             payload.len(),
             reliable
         );
@@ -121,26 +128,25 @@ impl DummyManager<Client> {
     }
 
     pub fn connect(&mut self, remote_address: SocketAddr) -> Result<(), ProtocolError> {
-        info!("Connect to {:#?}.", remote_address);
+        info!("Client: connect to {:#?}.", remote_address);
         self.antarc.connect(remote_address)
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
-        debug!("dummy client poll");
+        info!("Client: dummy poll");
 
         for scheduled in self.antarc.scheduler().drain(..) {
             match scheduled {
                 ScheduleEvent::ConnectionRequest { scheduled } => {
-                    debug!("preparing to send a connection request {:#?}.", scheduled);
-
+                    debug!("Client: preparing to send {:#?}.", scheduled);
                     let packet = self.antarc.prepare_connection_request(scheduled);
-                    debug!("ready to send {:#?}", packet);
+                    debug!("Client: ready to send {:#?}", packet);
 
                     // NOTE(alex): Dummy send.
                     {
                         let raw_packet = packet.as_raw();
                         info!(
-                            "Sent: {:#?} bytes to {:#?}",
+                            "Client: sent {:#?} bytes to {:#?}",
                             raw_packet.bytes.len(),
                             raw_packet.address
                         );
@@ -150,23 +156,40 @@ impl DummyManager<Client> {
                     self.antarc.sent_connection_request(packet);
                 }
                 ScheduleEvent::ConnectionAccepted { scheduled } => {
-                    warn!("Invalid packet type {:#?} scheduled for client.", scheduled);
+                    warn!("Client: invalid packet type {:#?} scheduled.", scheduled);
                     self.antarc
                         .events
                         .api
                         .push(ProtocolError::ScheduledInvalidPeer(scheduled.packet_id).into());
                 }
-                ScheduleEvent::ReliableDataTransfer { scheduled } => todo!(),
-                ScheduleEvent::ReliableFragment { scheduled } => todo!(),
-                ScheduleEvent::UnreliableDataTransfer { scheduled } => todo!(),
-                ScheduleEvent::UnreliableFragment { scheduled } => todo!(),
+                ScheduleEvent::ReliableDataTransfer { .. } => todo!(),
+                ScheduleEvent::ReliableFragment { .. } => todo!(),
+                ScheduleEvent::UnreliableDataTransfer { scheduled } => {
+                    debug!("Client: preparing to send {:#?}.", scheduled);
+                    let packet = self.antarc.prepare_unreliable_data_transfer(scheduled);
+                    debug!("Client: ready to send {:#?}.", packet);
+
+                    // NOTE(alex): Dummy send.
+                    {
+                        let raw_packet = packet.as_raw();
+                        info!(
+                            "Client: sent {:#?} bytes to {:#?}.",
+                            raw_packet.bytes.len(),
+                            raw_packet.address
+                        );
+                        self.dummy_sender.push(raw_packet.bytes);
+                    }
+
+                    self.antarc.sent_data_transfer(packet);
+                }
+                ScheduleEvent::UnreliableFragment { .. } => todo!(),
             }
         }
 
         // NOTE(alex): Dummy receive.
         for received in self.dummy_receiver.drain(..) {
             let raw_received = RawPacket::new("127.0.0.1:7777".parse().unwrap(), received);
-            self.antarc.received(raw_received);
+            self.antarc.on_received(raw_received);
         }
 
         // TODO(alex) [vhigh] 2021-08-02: We have the handshake completed, but our dummy here

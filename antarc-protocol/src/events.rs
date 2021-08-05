@@ -86,13 +86,13 @@ impl From<Packet<Sent, ConnectionAccepted>> for ReliableSentEvent {
 }
 
 impl From<Packet<Sent, DataTransfer>> for ReliableSentEvent {
-    fn from(packet: Packet<Sent, DataTransfer>) -> Self {
+    fn from(_packet: Packet<Sent, DataTransfer>) -> Self {
         todo!()
     }
 }
 
 impl From<Packet<Sent, Heartbeat>> for ReliableSentEvent {
-    fn from(packet: Packet<Sent, Heartbeat>) -> Self {
+    fn from(_packet: Packet<Sent, Heartbeat>) -> Self {
         todo!()
     }
 }

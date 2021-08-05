@@ -6,7 +6,7 @@ use std::{
 use log::{debug, warn};
 
 use crate::{
-    events::{AntarcEvent, ProtocolError, ReceiverEvent},
+    events::*,
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
     EventSystem, Protocol,
@@ -41,12 +41,119 @@ impl Protocol<Server> {
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
-    pub fn received(&mut self, raw_packet: RawPacket) {
-        raw_packet.decode(
-            &mut self.events,
-            self.packet_id_tracker,
-            self.timer.elapsed(),
-        );
+    pub fn on_received(&mut self, raw_packet: RawPacket) {
+        if let Ok(decoded) = raw_packet.decode(self.packet_id_tracker, self.timer.elapsed()) {
+            match decoded {
+                Decoded::ConnectionRequest { packet } => {
+                    debug!("server: received connection request {:#?}.", packet);
+                    // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
+                    // after a connection accepted/denied packet is sent.
+                    if Protocol::connection_request_another_state(
+                        &self.service.awaiting_connection_ack,
+                        &self.service.connected,
+                        &packet,
+                    ) {
+                        warn!(
+                            "server: peer already in another state, skipping {:#?}.",
+                            packet
+                        );
+                        return;
+                    }
+
+                    let (address, connection_id) = if let Some((connection_id, peer)) = self
+                        .service
+                        .requesting_connection
+                        .iter_mut()
+                        .find(|(_, peer)| peer.address == packet.delivery.meta.remote)
+                    {
+                        peer.connection.attempts += 1;
+
+                        (peer.address, connection_id.clone())
+                    } else {
+                        let address = packet.delivery.meta.remote;
+
+                        let new_peer = Peer::new(
+                            self.timer.elapsed(),
+                            packet.delivery.meta.remote,
+                            packet.sequence.get(),
+                        );
+
+                        let connection_id = self.service.connection_id_tracker;
+                        self.service
+                            .requesting_connection
+                            .insert(connection_id, new_peer);
+                        self.service.connection_id_tracker =
+                            ConnectionId::new(connection_id.get() + 1).unwrap();
+
+                        (address, connection_id)
+                    };
+
+                    self.events.api.push(AntarcEvent::ConnectionRequest {
+                        connection_id,
+                        remote: address,
+                    });
+                }
+                Decoded::DataTransfer { packet } => {
+                    debug!("server: received data transfer {:#?}.", packet);
+
+                    let connection_id = packet.message.connection_id;
+                    let payload = packet.message.payload;
+
+                    if let Some(peer) = self.service.connected.get_mut(&connection_id) {
+                        debug!("server: peer is connected {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                    } else if let Some(mut peer) =
+                        self.service.awaiting_connection_ack.remove(&connection_id)
+                    {
+                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
+
+                        self.service.connected.insert(connection_id, connected);
+
+                        self.events.api.push(AntarcEvent::DataTransfer {
+                            connection_id,
+                            payload,
+                        });
+                    }
+                }
+                Decoded::Fragment { .. } => todo!(),
+                Decoded::Heartbeat { packet } => {
+                    debug!("server: received heartbeat {:#?}.", packet);
+
+                    let connection_id = packet.message.connection_id;
+
+                    if let Some(peer) = self.service.connected.get_mut(&connection_id) {
+                        debug!("server: peer is connected {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                    } else if let Some(mut peer) =
+                        self.service.awaiting_connection_ack.remove(&connection_id)
+                    {
+                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
+
+                        peer.remote_ack_tracker = packet.sequence.get();
+                        peer.local_ack_tracker = packet.ack;
+                        let connected = peer.connected(self.timer.elapsed(), connection_id);
+
+                        self.service.connected.insert(connection_id, connected);
+                    }
+                }
+                invalid => {
+                    warn!(
+                        "server: received an invalid packet, skipping {:#?}.",
+                        invalid
+                    );
+                    return;
+                }
+            }
+        }
+
         self.packet_id_tracker += 1;
     }
 
@@ -56,6 +163,14 @@ impl Protocol<Server> {
     // Check the `client.rs` file that contains a comment with this possible function.
     pub fn sent_connection_accepted(&mut self, packet: Packet<ToSend, ConnectionAccepted>) {
         let sent = packet.sent(self.timer.elapsed());
+
+        if let Some(peer) = self
+            .service
+            .awaiting_connection_ack
+            .get_mut(&sent.message.connection_id)
+        {
+            peer.sequence_tracker = peer.sequence_tracker.checked_add(1).unwrap();
+        }
 
         self.events.reliable_sent.push(sent.into());
         // TODO(alex) [mid] 2021-08-02: There is one difference between this and the `Client`'s
@@ -67,15 +182,13 @@ impl Protocol<Server> {
         // ack for this reliable packet.
     }
 
-    // FIXME(alex) [vhigh] 2021-08-04: unwrap on None.
-    // This error is happening because the Peer is being put into the `await_connection_ack` list.
     pub fn prepare_connection_accepted(
         &self,
         scheduled: Scheduled<Reliable, ConnectionAccepted>,
     ) -> Packet<ToSend, ConnectionAccepted> {
         let (sequence, ack) = self
             .service
-            .requesting_connection
+            .awaiting_connection_ack
             .get(&scheduled.message.connection_id)
             .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
             .unwrap();
@@ -107,13 +220,6 @@ impl Protocol<Server> {
             self.events.scheduler.push(scheduled.into());
             self.packet_id_tracker += 1;
 
-            // FIXME(alex) [vhigh] 2021-08-04: Cause of error at `prepare_connection_accepted`.
-            // As we put the Peer into AwaitingConnectionAck state here, but when it's time to
-            // actually send the connection accepted packet, we try to get a Peer in
-            // RequestingConnection.
-            //
-            // There is a question to be answered here, should the user be able to cancel a
-            // connection accepted? I believe the handshake should not be cancellable.
             let awaiting_connection_ack = peer.await_connection_ack(self.timer.elapsed());
             self.service
                 .awaiting_connection_ack
@@ -161,7 +267,7 @@ impl Protocol<Server> {
                             .into_iter()
                             .map(|(fragment_index, payload)| {
                                 let meta = MetaMessage {
-                                    packet_type: DATA_TRANSFER_FRAGMENTED,
+                                    packet_type: Fragment::PACKET_TYPE,
                                 };
                                 let message = Fragment {
                                     meta,
@@ -202,7 +308,7 @@ impl Protocol<Server> {
                         debug!("server: schedule non-fragment.");
 
                         let meta = MetaMessage {
-                            packet_type: DATA_TRANSFER_FRAGMENTED,
+                            packet_type: DataTransfer::PACKET_TYPE,
                         };
                         let message = DataTransfer {
                             meta,
@@ -268,7 +374,7 @@ impl Protocol<Server> {
                                 .into_iter()
                                 .map(|(fragment_index, payload)| {
                                     let meta = MetaMessage {
-                                        packet_type: DATA_TRANSFER_FRAGMENTED,
+                                        packet_type: Fragment::PACKET_TYPE,
                                     };
                                     let message = Fragment {
                                         meta,
@@ -309,7 +415,7 @@ impl Protocol<Server> {
                             debug!("server: schedule non-fragment.");
 
                             let meta = MetaMessage {
-                                packet_type: DATA_TRANSFER_FRAGMENTED,
+                                packet_type: DataTransfer::PACKET_TYPE,
                             };
                             let message = DataTransfer {
                                 meta,
@@ -375,7 +481,7 @@ impl Protocol<Server> {
                             .into_iter()
                             .map(|(fragment_index, payload)| {
                                 let meta = MetaMessage {
-                                    packet_type: DATA_TRANSFER_FRAGMENTED,
+                                    packet_type: Fragment::PACKET_TYPE,
                                 };
                                 let message = Fragment {
                                     meta,
@@ -416,7 +522,7 @@ impl Protocol<Server> {
                         debug!("server: schedule non-fragment.");
 
                         let meta = MetaMessage {
-                            packet_type: DATA_TRANSFER_FRAGMENTED,
+                            packet_type: DataTransfer::PACKET_TYPE,
                         };
                         let message = DataTransfer {
                             meta,
@@ -470,119 +576,6 @@ impl Protocol<Server> {
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
-        for received in self.events.receiver.drain(..) {
-            debug!("server: polling receiver events.");
-
-            match received {
-                ReceiverEvent::ConnectionRequest { packet } => {
-                    debug!("server: received connection request {:#?}.", packet);
-                    // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
-                    // after a connection accepted/denied packet is sent.
-                    if Protocol::connection_request_another_state(
-                        &self.service.awaiting_connection_ack,
-                        &self.service.connected,
-                        &packet,
-                    ) {
-                        warn!(
-                            "server: peer already in another state, skipping {:#?}.",
-                            packet
-                        );
-                        continue;
-                    }
-
-                    let (address, connection_id) = if let Some((connection_id, peer)) = self
-                        .service
-                        .requesting_connection
-                        .iter_mut()
-                        .find(|(_, peer)| peer.address == packet.delivery.meta.remote)
-                    {
-                        peer.connection.attempts += 1;
-
-                        (peer.address, connection_id.clone())
-                    } else {
-                        let address = packet.delivery.meta.remote;
-
-                        let new_peer = Peer::new(
-                            self.timer.elapsed(),
-                            packet.delivery.meta.remote,
-                            packet.sequence.get(),
-                        );
-
-                        let connection_id = self.service.connection_id_tracker;
-                        self.service
-                            .requesting_connection
-                            .insert(connection_id, new_peer);
-                        self.service.connection_id_tracker =
-                            ConnectionId::new(connection_id.get() + 1).unwrap();
-
-                        (address, connection_id)
-                    };
-
-                    self.events.api.push(AntarcEvent::ConnectionRequest {
-                        connection_id,
-                        remote: address,
-                    });
-                }
-                ReceiverEvent::ConnectionAccepted { packet } => {
-                    warn!(
-                        "server: received connection accepted, skipping {:#?}.",
-                        packet
-                    );
-                    continue;
-                }
-                ReceiverEvent::DataTransfer { packet } => {
-                    debug!("server: received data transfer {:#?}.", packet);
-
-                    let connection_id = packet.message.connection_id;
-                    let payload = packet.message.payload;
-
-                    if let Some(peer) = self.service.connected.get_mut(&connection_id) {
-                        debug!("server: peer is connected {:#?}.", peer);
-
-                        peer.remote_ack_tracker = packet.sequence.get();
-                        peer.local_ack_tracker = packet.ack;
-                    } else if let Some(mut peer) =
-                        self.service.awaiting_connection_ack.remove(&connection_id)
-                    {
-                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
-
-                        peer.remote_ack_tracker = packet.sequence.get();
-                        peer.local_ack_tracker = packet.ack;
-                        let connected = peer.connected(self.timer.elapsed(), connection_id);
-
-                        self.service.connected.insert(connection_id, connected);
-
-                        self.events.api.push(AntarcEvent::DataTransfer {
-                            connection_id,
-                            payload,
-                        });
-                    }
-                }
-                ReceiverEvent::Heartbeat { packet } => {
-                    debug!("server: received heartbeat {:#?}.", packet);
-
-                    let connection_id = packet.message.connection_id;
-
-                    if let Some(peer) = self.service.connected.get_mut(&connection_id) {
-                        debug!("server: peer is connected {:#?}.", peer);
-
-                        peer.remote_ack_tracker = packet.sequence.get();
-                        peer.local_ack_tracker = packet.ack;
-                    } else if let Some(mut peer) =
-                        self.service.awaiting_connection_ack.remove(&connection_id)
-                    {
-                        debug!("server: peer is awaiting connection ack {:#?}.", peer);
-
-                        peer.remote_ack_tracker = packet.sequence.get();
-                        peer.local_ack_tracker = packet.ack;
-                        let connected = peer.connected(self.timer.elapsed(), connection_id);
-
-                        self.service.connected.insert(connection_id, connected);
-                    }
-                }
-            }
-        }
-
         // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
         // The network will check if socket is ready, then call a `make_packet` that will take some
         // scheduled from the scheduler pipe, but how does it handle reliability?

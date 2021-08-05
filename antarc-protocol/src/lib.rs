@@ -1,9 +1,10 @@
 #![feature(duration_consts_2)]
 #![feature(drain_filter)]
 #![feature(hash_drain_filter)]
+#![feature(nonzero_ops)]
 
 use core::mem::size_of;
-use std::{num::NonZeroU32, time::Instant, vec::Drain};
+use std::{num::NonZeroU32, time::Instant};
 
 use events::*;
 use packets::*;
@@ -41,7 +42,7 @@ pub struct Protocol<Service> {
 }
 
 impl<Service> Protocol<Service> {
-    pub fn cancel_packet(&mut self, packet_id: PacketId) -> bool {
+    pub fn cancel_packet(&mut self, _packet_id: PacketId) -> bool {
         todo!()
     }
 
