@@ -37,8 +37,14 @@ pub enum ProtocolError {
     #[error("Tried to schedule a data transfer, but there are no peers connected!")]
     NoPeersConnected,
 
+    #[error("Peer with address `{0}` is banned!")]
+    Banned(SocketAddr),
+
     #[error("Tried connecting to a Peer that is already in another state `{0}`!")]
     AlreadyConnectingToPeer(SocketAddr),
+
+    #[error("Received connection accepted for a Peer that is in another state `{0}`!")]
+    PeerInAnotherState(SocketAddr),
 }
 
 impl Into<AntarcEvent> for ProtocolError {

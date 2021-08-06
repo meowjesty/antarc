@@ -1,14 +1,18 @@
 use core::{mem::size_of, ops::RangeInclusive, time::Duration};
 use std::{
     convert::TryInto,
+    marker::PhantomData,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
 };
 
 use crc32fast::Hasher;
-use log::{debug, error};
+use log::{debug, error, warn};
 
-use crate::*;
+use crate::{
+    client::Client, events::ProtocolError, read_buffer_inc, server::Server, ProtocolId,
+    PROTOCOL_ID, PROTOCOL_ID_BYTES,
+};
 
 pub type PacketId = u64;
 pub type Sequence = NonZeroU32;
@@ -20,9 +24,19 @@ pub type Payload = Vec<u8>;
 pub const MAX_FRAGMENT_SIZE: usize = 1500;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawPacket {
+pub struct PartialDecode {
+    pub buffer: Vec<u8>,
+    pub buffer_position: usize,
+    pub packet_type: PacketType,
+    pub sequence: Sequence,
+    pub ack: Ack,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawPacket<T> {
     pub address: SocketAddr,
     pub bytes: Vec<u8>,
+    pub phantom: PhantomData<T>,
 }
 
 // TODO(alex) [vlow] 2021-08-05: Maybe renaming the connection packets to some handshake-y name
@@ -46,14 +60,215 @@ pub enum Decoded {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecodedForClient {
+    ConnectionAccepted {
+        packet: Packet<Received, ConnectionAccepted>,
+    },
+    DataTransfer {
+        packet: Packet<Received, DataTransfer>,
+    },
+    Fragment {
+        packet: Packet<Received, Fragment>,
+    },
+    Heartbeat {
+        packet: Packet<Received, Heartbeat>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecodedForServer {
+    ConnectionRequest {
+        packet: Packet<Received, ConnectionRequest>,
+    },
+    DataTransfer {
+        packet: Packet<Received, DataTransfer>,
+    },
+    Fragment {
+        packet: Packet<Received, Fragment>,
+    },
+    Heartbeat {
+        packet: Packet<Received, Heartbeat>,
+    },
+}
+
 pub const PACKET_TYPE_RANGE: RangeInclusive<u8> = 0x1..=0x6;
 
-impl RawPacket {
+impl RawPacket<Server> {
+    pub fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
+        let address = self.address;
+        let PartialDecode {
+            buffer,
+            mut buffer_position,
+            packet_type,
+            sequence,
+            ack,
+        } = self.inner_decode()?;
+
+        match packet_type {
+            ConnectionRequest::PACKET_TYPE => {
+                debug!("Decoding connection request packet.");
+                debug_assert_eq!(buffer_position, ConnectionRequest::HEADER_SIZE);
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = ConnectionRequest {
+                    meta: MetaMessage { packet_type },
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForServer::ConnectionRequest { packet })
+            }
+            ConnectionAccepted::PACKET_TYPE => {
+                warn!("server: tried decoding a connection accepted, skipping.");
+                Err(ProtocolError::InvalidPacketType(packet_type))
+            }
+            DataTransfer::PACKET_TYPE => {
+                debug!("Decoding data transfer packet.");
+
+                // TODO(alex) [low] 2021-08-04: Find out a way to make
+                // `from_be_bytes::<ConnectionId>` work.
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, DataTransfer::HEADER_SIZE);
+
+                let read_payload = buffer[buffer_position..].to_vec();
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = DataTransfer {
+                    meta: MetaMessage { packet_type },
+                    connection_id: read_connection_id.try_into()?,
+                    payload: read_payload,
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForServer::DataTransfer { packet })
+            }
+            Fragment::PACKET_TYPE => {
+                debug!("Decoding fragment packet.");
+                todo!();
+            }
+            Heartbeat::PACKET_TYPE => {
+                debug!("Decoding heartbeat packet.");
+                todo!();
+            }
+            invalid => {
+                error!("Decoding invalid packet type {:#?}.", invalid);
+                Err(ProtocolError::InvalidPacketType(invalid).into())
+            }
+        }
+    }
+}
+
+impl RawPacket<Client> {
+    pub fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
+        let address = self.address;
+        let PartialDecode {
+            buffer,
+            mut buffer_position,
+            packet_type,
+            sequence,
+            ack,
+        } = self.inner_decode()?;
+
+        match packet_type {
+            ConnectionRequest::PACKET_TYPE => {
+                warn!("client: tried decoding a connection request, skipping.");
+                Err(ProtocolError::InvalidPacketType(packet_type))
+            }
+            ConnectionAccepted::PACKET_TYPE => {
+                debug!("client: decoding connection accepted packet.");
+
+                // TODO(alex) [low] 2021-08-04: Find out a way to make
+                // `from_be_bytes::<ConnectionId>` work.
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, ConnectionAccepted::HEADER_SIZE);
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = ConnectionAccepted {
+                    meta: MetaMessage { packet_type },
+                    connection_id: read_connection_id.try_into()?,
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForClient::ConnectionAccepted { packet })
+            }
+            DataTransfer::PACKET_TYPE => {
+                debug!("Decoding data transfer packet.");
+
+                // TODO(alex) [low] 2021-08-04: Find out a way to make
+                // `from_be_bytes::<ConnectionId>` work.
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, DataTransfer::HEADER_SIZE);
+
+                let read_payload = buffer[buffer_position..].to_vec();
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = DataTransfer {
+                    meta: MetaMessage { packet_type },
+                    connection_id: read_connection_id.try_into()?,
+                    payload: read_payload,
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForClient::DataTransfer { packet })
+            }
+            Fragment::PACKET_TYPE => {
+                debug!("Decoding fragment packet.");
+                todo!();
+            }
+            Heartbeat::PACKET_TYPE => {
+                debug!("Decoding heartbeat packet.");
+                todo!();
+            }
+            invalid => {
+                error!("Decoding invalid packet type {:#?}.", invalid);
+                Err(ProtocolError::InvalidPacketType(invalid).into())
+            }
+        }
+    }
+}
+
+impl<T> RawPacket<T> {
     pub fn new(address: SocketAddr, bytes: Vec<u8>) -> Self {
-        Self { address, bytes }
+        Self {
+            address,
+            bytes,
+            phantom: PhantomData::default(),
+        }
     }
 
-    pub fn decode(self, id: PacketId, time: Duration) -> Result<Decoded, ProtocolError> {
+    pub fn inner_decode(self) -> Result<PartialDecode, ProtocolError> {
         let mut hasher = Hasher::new();
 
         let length = self.bytes.len();
@@ -94,111 +309,15 @@ impl RawPacket {
             let read_packet_type = read_buffer_inc!({ buffer, buffer_position } : PacketType);
             debug_assert!(PACKET_TYPE_RANGE.contains(&read_packet_type));
 
-            match read_packet_type {
-                ConnectionRequest::PACKET_TYPE => {
-                    debug!("Decoding connection request packet.");
-                    debug_assert_eq!(buffer_position, ConnectionRequest::HEADER_SIZE);
+            let partial_decode = PartialDecode {
+                buffer,
+                buffer_position,
+                packet_type: read_packet_type,
+                sequence: read_sequence.try_into()?,
+                ack: read_ack,
+            };
 
-                    let delivery = Received {
-                        meta: MetaDelivery {
-                            time,
-                            remote: self.address,
-                        },
-                    };
-                    let message = ConnectionRequest {
-                        meta: MetaMessage {
-                            packet_type: read_packet_type,
-                        },
-                    };
-
-                    let packet = Packet {
-                        id,
-                        delivery,
-                        sequence: read_sequence.try_into()?,
-                        ack: read_ack,
-                        message,
-                    };
-
-                    Ok(Decoded::ConnectionRequest { packet })
-                }
-                ConnectionAccepted::PACKET_TYPE => {
-                    debug!("Decoding connection accepted packet.");
-
-                    // TODO(alex) [low] 2021-08-04: Find out a way to make
-                    // `from_be_bytes::<ConnectionId>` work.
-                    let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
-                    debug_assert_eq!(buffer_position, ConnectionAccepted::HEADER_SIZE);
-
-                    let delivery = Received {
-                        meta: MetaDelivery {
-                            time,
-                            remote: self.address,
-                        },
-                    };
-                    let message = ConnectionAccepted {
-                        meta: MetaMessage {
-                            packet_type: read_packet_type,
-                        },
-                        connection_id: read_connection_id.try_into()?,
-                    };
-
-                    let packet = Packet {
-                        id,
-                        delivery,
-                        sequence: read_sequence.try_into()?,
-                        ack: read_ack,
-                        message,
-                    };
-
-                    Ok(Decoded::ConnectionAccepted { packet })
-                }
-                DataTransfer::PACKET_TYPE => {
-                    debug!("Decoding data transfer packet.");
-
-                    // TODO(alex) [low] 2021-08-04: Find out a way to make
-                    // `from_be_bytes::<ConnectionId>` work.
-                    let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
-                    debug_assert_eq!(buffer_position, DataTransfer::HEADER_SIZE);
-
-                    let read_payload = buffer[buffer_position..].to_vec();
-
-                    let delivery = Received {
-                        meta: MetaDelivery {
-                            time,
-                            remote: self.address,
-                        },
-                    };
-                    let message = DataTransfer {
-                        meta: MetaMessage {
-                            packet_type: read_packet_type,
-                        },
-                        connection_id: read_connection_id.try_into()?,
-                        payload: read_payload,
-                    };
-
-                    let packet = Packet {
-                        id,
-                        delivery,
-                        sequence: read_sequence.try_into()?,
-                        ack: read_ack,
-                        message,
-                    };
-
-                    Ok(Decoded::DataTransfer { packet })
-                }
-                Fragment::PACKET_TYPE => {
-                    debug!("Decoding fragment packet.");
-                    todo!();
-                }
-                Heartbeat::PACKET_TYPE => {
-                    debug!("Decoding heartbeat packet.");
-                    todo!();
-                }
-                invalid => {
-                    error!("Decoding invalid packet type {:#?}.", invalid);
-                    Err(ProtocolError::InvalidPacketType(invalid).into())
-                }
-            }
+            Ok(partial_decode)
         } else {
             Err(ProtocolError::InvalidCrc32 {
                 got: read_crc32,
@@ -225,7 +344,6 @@ where
     Delivery: Deliver,
     Message: Messager + Encoder,
 {
-    pub id: PacketId,
     pub delivery: Delivery,
     pub sequence: Sequence,
     pub ack: Ack,
@@ -236,11 +354,12 @@ where
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaDelivery {
     pub time: Duration,
-    pub remote: SocketAddr,
+    pub address: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToSend {
+    pub id: PacketId,
     pub meta: MetaDelivery,
 }
 
@@ -398,9 +517,9 @@ impl Encoder for Fragment {
 
     fn encoded(&self) -> Vec<u8> {
         todo!();
-        let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
+        // let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
 
-        packet_type_bytes
+        // packet_type_bytes
     }
 }
 impl Encoder for Heartbeat {
@@ -425,11 +544,10 @@ where
 {
     pub fn sent(self, time: Duration) -> Packet<Sent, Message> {
         let packet = Packet {
-            id: self.id,
             delivery: Sent {
                 meta: MetaDelivery {
                     time,
-                    remote: self.delivery.meta.remote,
+                    address: self.delivery.meta.address,
                 },
             },
             sequence: self.sequence,
@@ -440,7 +558,7 @@ where
         packet
     }
 
-    pub fn as_raw(&self) -> RawPacket {
+    pub fn as_raw<T>(&self) -> RawPacket<T> {
         let sequence_bytes = self.sequence.get().to_be_bytes().to_vec();
         let ack_bytes = self.ack.to_be_bytes().to_vec();
 
@@ -463,8 +581,9 @@ where
 
         let packet_bytes = bytes[size_of::<ProtocolId>()..].to_vec();
         let raw_packet = RawPacket {
-            address: self.delivery.meta.remote,
+            address: self.delivery.meta.address,
             bytes: packet_bytes,
+            phantom: PhantomData::default(),
         };
 
         // debug_assert_eq!(self, raw_packet.decode()?)
@@ -515,13 +634,13 @@ impl Scheduled<Reliable, ConnectionRequest> {
         time: Duration,
     ) -> Packet<ToSend, ConnectionRequest> {
         let delivery = ToSend {
+            id: self.packet_id,
             meta: MetaDelivery {
                 time,
-                remote: self.address,
+                address: self.address,
             },
         };
         let packet = Packet {
-            id: self.packet_id,
             delivery,
             sequence,
             ack,
@@ -540,13 +659,13 @@ impl Scheduled<Reliable, ConnectionAccepted> {
         time: Duration,
     ) -> Packet<ToSend, ConnectionAccepted> {
         let delivery = ToSend {
+            id: self.packet_id,
             meta: MetaDelivery {
                 time,
-                remote: self.address,
+                address: self.address,
             },
         };
         let packet = Packet {
-            id: self.packet_id,
             delivery,
             sequence,
             ack,
@@ -565,13 +684,13 @@ impl Scheduled<Unreliable, DataTransfer> {
         time: Duration,
     ) -> Packet<ToSend, DataTransfer> {
         let delivery = ToSend {
+            id: self.packet_id,
             meta: MetaDelivery {
                 time,
-                remote: self.address,
+                address: self.address,
             },
         };
         let packet = Packet {
-            id: self.packet_id,
             delivery,
             sequence,
             ack,

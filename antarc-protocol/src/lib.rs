@@ -38,7 +38,7 @@ pub struct Protocol<Service> {
     pub timer: Instant,
     pub service: Service,
     pub events: EventSystem,
-    pub receiver_pipe: Vec<RawPacket>,
+    pub receiver_pipe: Vec<RawPacket<Service>>,
 }
 
 impl<Service> Protocol<Service> {

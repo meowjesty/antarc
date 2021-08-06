@@ -25,7 +25,7 @@ fn server_main() {
         //
         // ADD(alex) [low] 2021-08-01: I've tried returning the `DrainIter` from `poll`, but it
         // ends up borrowing `server` twice, here and in `schedule`.
-
+        //
         // Server:
         for event in server.poll().collect::<Vec<_>>().drain(..) {
             match event {
@@ -38,16 +38,12 @@ fn server_main() {
                         "Server -> received a connection request from {:#?} with id {:#?}",
                         remote, connection_id
                     );
-
-                    server.accept_connection(connection_id);
                 }
                 AntarcEvent::ConnectionAccepted { .. } => {
                     // TODO(alex) [low] 2021-08-01: How do I make this impossible event disappear?
                     // I would need to separate `ClientEvent` and `ServerEvent`, so the
                     // `EventSystem` will be different for `Antarc<Client>` and `Antarc<Server>`.
                     warn!("Server -> cannot handle connection accepted.");
-                    // FIXME(alex) [vhigh] 2021-08-05: Server is decoding a packet that was supposed
-                    // to be a data transfer as a connection accepted.
                     continue;
                 }
                 AntarcEvent::DataTransfer {
