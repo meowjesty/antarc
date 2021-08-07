@@ -1,25 +1,24 @@
 #![feature(proc_macro_diagnostic)]
 
-use std::iter::FromIterator;
-
 use proc_macro::Diagnostic;
-use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
+use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data::Enum, DataEnum, DeriveInput, Field, Path, TypePath, Variant};
+use syn::{Data::Enum, DataEnum, DeriveInput, Field, Ident, Variant};
 
-pub(crate) struct EventEnum {
-    variants: Vec<EventVariant>,
+pub(crate) struct SingleFieldEnum {
+    ident: Ident,
+    variants: Vec<SingleFieldVariant>,
 }
 
-pub(crate) struct EventVariant {
+pub(crate) struct SingleFieldVariant {
     inner: Variant,
     field: Field,
 }
 
-pub(crate) fn get_event_variant(variant: &Variant) -> EventVariant {
+pub(crate) fn get_variant(variant: &Variant) -> SingleFieldVariant {
     let field = variant.fields.iter().last().unwrap();
 
-    let event_variant = EventVariant {
+    let event_variant = SingleFieldVariant {
         inner: variant.clone(),
         field: field.clone(),
     };
@@ -33,37 +32,39 @@ pub fn derive_from_scheduled(input: proc_macro::TokenStream) -> proc_macro::Toke
     let diag = Diagnostic::new(proc_macro::Level::Error, format!("FOOOOO \n\n FOOOO"));
     diag.emit();
     let output: proc_macro2::TokenStream = {
-        let DeriveInput {
-            attrs, ident, data, ..
-        } = syn::parse2(input).unwrap();
+        let derive_input: DeriveInput = syn::parse2(input).unwrap();
+        let data = derive_input.data;
+        let ident = derive_input.ident;
 
-        let event_enum = if let Enum(data_enum) = data {
+        let single_field_enum = if let Enum(data_enum) = data {
             let DataEnum { variants, .. } = data_enum;
 
-            let event = EventEnum {
+            let single_field_enum = SingleFieldEnum {
+                ident,
                 variants: variants
                     .iter()
-                    .map(|variant| get_event_variant(variant))
+                    .map(|variant| get_variant(variant))
                     .collect(),
             };
 
-            event
+            single_field_enum
         } else {
             panic!("Only supports `Enum`s!");
         };
 
-        let impl_variants = event_enum
+        let impl_variants = single_field_enum
             .variants
             .iter()
             .flat_map(|variant| {
                 let variant_field_type = &variant.field.ty;
                 let variant_field_name = &variant.field.ident;
                 let variant_name = &variant.inner.ident;
+                let enum_name = &single_field_enum.ident;
 
                 let expand = quote! {
-                    impl From<#variant_field_type> for ScheduleEvent {
+                    impl From<#variant_field_type> for #enum_name {
                         fn from(#variant_field_name: #variant_field_type) -> Self {
-                            Self::#variant_name { scheduled }
+                            Self::#variant_name { #variant_field_name }
                         }
                     }
                 };
