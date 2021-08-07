@@ -5,4 +5,5 @@ members = [
     # "antarc",
     "antarc-dummy",
     "antarc-dummy-sample",
+    "antarc-macro",
 ]

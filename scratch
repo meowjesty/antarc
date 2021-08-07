@@ -1,0 +1,180 @@
+
+use std::iter::FromIterator;
+
+use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
+use quote::format_ident;
+use syn::{
+    braced, bracketed, parenthesized, parse::ParseStream, token, Attribute, Data, DataEnum,
+    DeriveInput, Error, Generics, Ident, Index, LitInt, Member, Result, Token, Type,
+};
+
+#[derive(Clone)]
+pub(crate) struct Scheduled<'a> {
+    pub(crate) original: &'a Attribute,
+    pub(crate) args: TokenStream,
+}
+
+/// NOTE(alex): The attribute we want to parse.
+///
+/// These are the attributes on each variant, in our case we only have one called `scheduled`, and
+/// it's always required.
+pub(crate) struct Attributes<'a> {
+    pub(crate) scheduled: Scheduled<'a>,
+}
+
+/// NOTE(alex): Field of an enum (or struct, but this macro only deals with enums).
+pub(crate) struct Field<'a> {
+    pub(crate) original: &'a syn::Field,
+    pub(crate) attributes: Attributes<'a>,
+    pub(crate) member: Member,
+    pub(crate) ty: &'a Type,
+}
+
+/// NOTE(alex): Variant of an enum.
+pub(crate) struct Variant<'a> {
+    pub(crate) original: &'a syn::Variant,
+    pub(crate) attributes: Attributes<'a>,
+    pub(crate) ident: Ident,
+    pub(crate) fields: Vec<Field<'a>>,
+}
+
+pub(crate) struct Enum<'a> {
+    pub(crate) original: &'a DeriveInput,
+    pub(crate) ident: Ident,
+    pub(crate) generics: &'a Generics,
+    pub(crate) variants: Vec<Variant<'a>>,
+}
+
+impl<'a> Attributes<'a> {
+    pub(crate) fn get(input: &[Attribute]) -> Result<Attributes> {
+        let mut attributes: Option<Attributes> = None;
+
+        for attr in input {
+            if attr.path.is_ident("scheduled") {
+                let scheduled = Attributes::parse_scheduled_attribute(attr)?;
+                attributes = Some(Attributes { scheduled });
+            } else {
+                return Err(Error::new_spanned(
+                    attr,
+                    "should only contain one attribute",
+                ));
+            }
+        }
+
+        attributes.ok_or(Error::new_spanned(input[0], "failed getting scheduled"))
+    }
+
+    pub(crate) fn parse_scheduled_attribute(attr: &'a Attribute) -> Result<Scheduled> {
+        attr.parse_args_with(|input: ParseStream| {
+            let scheduled = Scheduled {
+                original: attr,
+                args: Attributes::parse_token_expr(input, false)?,
+            };
+
+            Ok(scheduled)
+        })
+    }
+
+    pub(crate) fn parse_token_expr(
+        input: ParseStream,
+        mut begin_expr: bool,
+    ) -> Result<TokenStream> {
+        let mut tokens = Vec::new();
+        while !input.is_empty() {
+            if begin_expr && input.peek(Token![.]) {
+                if input.peek2(Ident) {
+                    input.parse::<Token![.]>()?;
+                    begin_expr = false;
+                    continue;
+                }
+            }
+
+            if input.peek2(LitInt) {
+                input.parse::<Token![.]>()?;
+                let int: Index = input.parse()?;
+                let ident = format_ident!("_{}", int.index, span = int.span);
+                tokens.push(TokenTree::Ident(ident));
+                begin_expr = false;
+                continue;
+            }
+
+            begin_expr = input.peek(Token![break])
+                || input.peek(Token![continue])
+                || input.peek(Token![if])
+                || input.peek(Token![in])
+                || input.peek(Token![match])
+                || input.peek(Token![mut])
+                || input.peek(Token![return])
+                || input.peek(Token![while])
+                || input.peek(Token![+])
+                || input.peek(Token![&])
+                || input.peek(Token![!])
+                || input.peek(Token![^])
+                || input.peek(Token![,])
+                || input.peek(Token![/])
+                || input.peek(Token![=])
+                || input.peek(Token![>])
+                || input.peek(Token![<])
+                || input.peek(Token![|])
+                || input.peek(Token![%])
+                || input.peek(Token![;])
+                || input.peek(Token![*])
+                || input.peek(Token![-]);
+
+            let token: TokenTree = if input.peek(token::Paren) {
+                let content;
+                let delimiter = parenthesized!(content in input);
+                let nested = Attributes::parse_token_expr(&content, true)?;
+                let mut group = Group::new(Delimiter::Parenthesis, nested);
+                group.set_span(delimiter.span);
+                TokenTree::Group(group)
+            } else if input.peek(token::Brace) {
+                let content;
+                let delimiter = braced!(content in input);
+                let nested = Attributes::parse_token_expr(&content, true)?;
+                let mut group = Group::new(Delimiter::Brace, nested);
+                group.set_span(delimiter.span);
+                TokenTree::Group(group)
+            } else if input.peek(token::Bracket) {
+                let content;
+                let delimiter = bracketed!(content in input);
+                let nested = Attributes::parse_token_expr(&content, true)?;
+                let mut group = Group::new(Delimiter::Brace, nested);
+                group.set_span(delimiter.span);
+                TokenTree::Group(group)
+            } else {
+                input.parse()?
+            };
+
+            tokens.push(token);
+        }
+
+        Ok(TokenStream::from_iter(tokens))
+    }
+}
+
+impl<'a> Enum<'a> {
+    fn from_syn(node: &'a DeriveInput, data: &'a DataEnum) -> Result<Self> {
+        let variants = data.variants.iter().map(|node| {
+            let mut variant = Variant::from_syn(node,)
+
+        }).collect::<Result<_>>()?;
+    }
+}
+
+#[proc_macro_derive(FromScheduled, attributes(scheduled))]
+pub fn derive_from_scheduled(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+
+    let output: proc_macro2::TokenStream = {
+        let DeriveInput {
+            attrs, ident, data, ..
+        } = syn::parse2(input).unwrap();
+
+        data.variants.iter();
+
+        todo!()
+    };
+
+    proc_macro::TokenStream::from(output)
+}

@@ -4,6 +4,7 @@ use std::{
     num::{NonZeroU32, TryFromIntError},
 };
 
+use antarc_macro::FromScheduled;
 use thiserror::Error;
 
 use crate::{packets::*, *};
@@ -105,63 +106,74 @@ impl From<Packet<Sent, Heartbeat>> for ReliableSentEvent {
 
 /// TODO(alex) [low] 2021-07-31: Write a macro to derive the proper `Into`, as it's basically just
 /// the same thing over and over.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, FromScheduled)]
 pub enum ScheduleEvent {
+    // #[scheduled(Scheduled<Reliable, ConnectionRequest>)]
     ConnectionRequest {
         scheduled: Scheduled<Reliable, ConnectionRequest>,
     },
+
+    // #[scheduled(Scheduled<Reliable, ConnectionAccepted>)]
     ConnectionAccepted {
         scheduled: Scheduled<Reliable, ConnectionAccepted>,
     },
+
+    // #[scheduled(Scheduled<Reliable, DataTransfer>)]
     ReliableDataTransfer {
         scheduled: Scheduled<Reliable, DataTransfer>,
     },
+
+    // #[scheduled(Scheduled<Reliable, Fragment>)]
     ReliableFragment {
         scheduled: Scheduled<Reliable, Fragment>,
     },
+
+    // #[scheduled(Scheduled<Unreliable, DataTransfer>)]
     UnreliableDataTransfer {
         scheduled: Scheduled<Unreliable, DataTransfer>,
     },
+
+    // #[scheduled(Scheduled<Unreliable, Fragment>)]
     UnreliableFragment {
         scheduled: Scheduled<Unreliable, Fragment>,
     },
 }
 
-impl From<Scheduled<Reliable, DataTransfer>> for ScheduleEvent {
-    fn from(scheduled: Scheduled<Reliable, DataTransfer>) -> Self {
-        Self::ReliableDataTransfer { scheduled }
-    }
-}
+// impl From<Scheduled<Reliable, DataTransfer>> for ScheduleEvent {
+//     fn from(scheduled: Scheduled<Reliable, DataTransfer>) -> Self {
+//         Self::ReliableDataTransfer { scheduled }
+//     }
+// }
 
-impl From<Scheduled<Reliable, Fragment>> for ScheduleEvent {
-    fn from(scheduled: Scheduled<Reliable, Fragment>) -> Self {
-        Self::ReliableFragment { scheduled }
-    }
-}
+// impl From<Scheduled<Reliable, Fragment>> for ScheduleEvent {
+//     fn from(scheduled: Scheduled<Reliable, Fragment>) -> Self {
+//         Self::ReliableFragment { scheduled }
+//     }
+// }
 
-impl From<Scheduled<Unreliable, DataTransfer>> for ScheduleEvent {
-    fn from(scheduled: Scheduled<Unreliable, DataTransfer>) -> Self {
-        Self::UnreliableDataTransfer { scheduled }
-    }
-}
+// impl From<Scheduled<Unreliable, DataTransfer>> for ScheduleEvent {
+//     fn from(scheduled: Scheduled<Unreliable, DataTransfer>) -> Self {
+//         Self::UnreliableDataTransfer { scheduled }
+//     }
+// }
 
-impl From<Scheduled<Unreliable, Fragment>> for ScheduleEvent {
-    fn from(scheduled: Scheduled<Unreliable, Fragment>) -> Self {
-        Self::UnreliableFragment { scheduled }
-    }
-}
+// impl From<Scheduled<Unreliable, Fragment>> for ScheduleEvent {
+//     fn from(scheduled: Scheduled<Unreliable, Fragment>) -> Self {
+//         Self::UnreliableFragment { scheduled }
+//     }
+// }
 
-impl From<Scheduled<Reliable, ConnectionAccepted>> for ScheduleEvent {
-    fn from(scheduled: Scheduled<Reliable, ConnectionAccepted>) -> Self {
-        Self::ConnectionAccepted { scheduled }
-    }
-}
+// impl From<Scheduled<Reliable, ConnectionAccepted>> for ScheduleEvent {
+//     fn from(scheduled: Scheduled<Reliable, ConnectionAccepted>) -> Self {
+//         Self::ConnectionAccepted { scheduled }
+//     }
+// }
 
-impl From<Scheduled<Reliable, ConnectionRequest>> for ScheduleEvent {
-    fn from(scheduled: Scheduled<Reliable, ConnectionRequest>) -> Self {
-        Self::ConnectionRequest { scheduled }
-    }
-}
+// impl From<Scheduled<Reliable, ConnectionRequest>> for ScheduleEvent {
+//     fn from(scheduled: Scheduled<Reliable, ConnectionRequest>) -> Self {
+//         Self::ConnectionRequest { scheduled }
+//     }
+// }
 
 #[derive(Debug)]
 pub enum AntarcEvent {
