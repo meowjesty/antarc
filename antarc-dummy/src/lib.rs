@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 pub use antarc_protocol::{
     client::Client,
     events::AntarcEvent,
-    packets::{ConnectionId, Payload},
+    packets::{ConnectionId, Payload, ReliabilityType},
     peers::SendTo,
     server::Server,
     Protocol,
@@ -34,14 +34,19 @@ impl DummyManager<Server> {
         }
     }
 
-    pub fn schedule(&mut self, reliable: bool, send_to: SendTo, payload: Payload) {
+    pub fn schedule(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+        payload: Payload,
+    ) -> Result<PacketId, ProtocolError> {
         info!(
             "Server: scheduling transfer of {:#?} bytes, is reliable {:#?}, to {:#?}.",
             payload.len(),
-            reliable,
+            reliability,
             send_to,
         );
-        self.antarc.schedule(reliable, send_to, payload);
+        self.antarc.schedule(reliability, send_to, payload)
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
@@ -113,13 +118,18 @@ impl DummyManager<Client> {
 
     // TODO(alex) [mid] 2021-08-02: Remember to return a `PacketId` from scheduling functions, so
     // that the user may cancel a packet.
-    pub fn schedule(&mut self, reliable: bool, payload: Payload) {
+    pub fn schedule(
+        &mut self,
+        reliability: ReliabilityType,
+        payload: Payload,
+    ) -> Result<PacketId, ProtocolError> {
         info!(
             "Client: scheduling transfer of {:#?} bytes, is reliable {:#?}.",
             payload.len(),
-            reliable
+            reliability
         );
-        self.antarc.schedule(reliable, payload);
+
+        self.antarc.schedule(reliability, payload)
     }
 
     pub fn connect(&mut self, remote_address: SocketAddr) -> Result<(), ProtocolError> {

@@ -248,3 +248,340 @@ impl From<NonZeroU32> for ProtocolId {
         ProtocolId(primitive)
     }
 }
+
+
+///////////////////////////////////
+
+        if self.service.connected.is_empty() {
+            self.events
+                .api
+                .push(AntarcEvent::Fail(ProtocolError::NoPeersConnected));
+        }
+
+        let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;
+
+        match send_to {
+            SendTo::Single { connection_id } => {
+                debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
+
+                let old_scheduler_length = self.events.scheduler.len();
+
+                if let Some(peer) = self.service.connected.get(&connection_id) {
+                    let packet_id = self.packet_id_tracker;
+
+                    if should_fragment {
+                        debug!("server: schedule fragment.");
+
+                        let fragments = payload
+                            .chunks(MAX_FRAGMENT_SIZE)
+                            .enumerate()
+                            .map(|(index, chunk)| (index, chunk.to_vec()))
+                            .collect::<Vec<_>>();
+
+                        let fragment_total = fragments.len();
+
+                        let mut scheduling = fragments
+                            .into_iter()
+                            .map(|(fragment_index, payload)| {
+                                let scheduled: Scheduled<R, Fragment> = Scheduled::new(
+                                    packet_id,
+                                    connection_id,
+                                    reliability,
+                                    payload.clone(),
+                                    fragment_index,
+                                    fragment_total,
+                                    self.timer.elapsed(),
+                                    peer.address.clone(),
+                                );
+                                let scheduling = if reliability {
+                                    let scheduled = Scheduled::new_reliable(
+                                        packet_id,
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
+
+                                    scheduled.into()
+                                } else {
+                                    let scheduled = Scheduled::new_unreliable(
+                                        packet_id,
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
+
+                                    scheduled.into()
+                                };
+
+                                scheduling
+                            })
+                            .collect::<Vec<_>>();
+
+                        self.events.scheduler.append(&mut scheduling);
+                    } else {
+                        debug!("server: schedule non-fragment.");
+
+                        let meta = MetaMessage {
+                            packet_type: DataTransfer::PACKET_TYPE,
+                        };
+                        let message = DataTransfer {
+                            meta,
+                            connection_id,
+                            payload: payload.clone(),
+                        };
+
+                        let scheduling = if reliability {
+                            let scheduled = Scheduled {
+                                packet_id,
+                                time: self.timer.elapsed(),
+                                address: peer.address.clone(),
+                                reliability: Reliable {},
+                                message,
+                            };
+
+                            scheduled.into()
+                        } else {
+                            let scheduled = Scheduled {
+                                packet_id,
+                                time: self.timer.elapsed(),
+                                address: peer.address.clone(),
+                                reliability: Unreliable {},
+                                message,
+                            };
+
+                            scheduled.into()
+                        };
+
+                        self.events.scheduler.push(scheduling);
+                    }
+                } else {
+                    self.events
+                        .api
+                        .push(ProtocolError::ScheduledNotConnected(connection_id).into())
+                }
+
+                if self.events.scheduler.len() > old_scheduler_length {
+                    self.packet_id_tracker += 1;
+                }
+            }
+            SendTo::Multiple { connection_ids } => {
+                debug!("server: SendTo::Multiple scheduler {:#?}.", connection_ids);
+
+                let old_scheduler_length = self.events.scheduler.len();
+
+                for connection_id in connection_ids {
+                    if let Some(peer) = self.service.connected.get(&connection_id) {
+                        let packet_id = self.packet_id_tracker;
+
+                        if should_fragment {
+                            debug!("server: schedule fragment.");
+
+                            let fragments = payload
+                                .chunks(MAX_FRAGMENT_SIZE)
+                                .enumerate()
+                                .map(|(index, chunk)| (index, chunk.to_vec()))
+                                .collect::<Vec<_>>();
+
+                            let fragment_total = fragments.len();
+
+                            let mut scheduling = fragments
+                                .into_iter()
+                                .map(|(fragment_index, payload)| {
+                                    let scheduling = if reliability {
+                                        let scheduled = Scheduled::new_reliable(
+                                            packet_id,
+                                            connection_id,
+                                            payload.clone(),
+                                            fragment_index,
+                                            fragment_total,
+                                            self.timer.elapsed(),
+                                            peer.address.clone(),
+                                        );
+
+                                        scheduled.into()
+                                    } else {
+                                        let scheduled = Scheduled::new_unreliable(
+                                            packet_id,
+                                            connection_id,
+                                            payload.clone(),
+                                            fragment_index,
+                                            fragment_total,
+                                            self.timer.elapsed(),
+                                            peer.address.clone(),
+                                        );
+
+                                        scheduled.into()
+                                    };
+
+                                    scheduling
+                                })
+                                .collect::<Vec<_>>();
+
+                            self.events.scheduler.append(&mut scheduling);
+                        } else {
+                            debug!("server: schedule non-fragment.");
+
+                            let meta = MetaMessage {
+                                packet_type: DataTransfer::PACKET_TYPE,
+                            };
+                            let message = DataTransfer {
+                                meta,
+                                connection_id,
+                                payload: payload.clone(),
+                            };
+
+                            let scheduling = if reliability {
+                                let scheduled = Scheduled {
+                                    packet_id,
+                                    time: self.timer.elapsed(),
+                                    address: peer.address.clone(),
+                                    reliability: Reliable {},
+                                    message,
+                                };
+
+                                scheduled.into()
+                            } else {
+                                let scheduled = Scheduled {
+                                    packet_id,
+                                    time: self.timer.elapsed(),
+                                    address: peer.address.clone(),
+                                    reliability: Unreliable {},
+                                    message,
+                                };
+
+                                scheduled.into()
+                            };
+
+                            self.events.scheduler.push(scheduling);
+                        }
+                    } else {
+                        self.events
+                            .api
+                            .push(ProtocolError::ScheduledNotConnected(connection_id).into())
+                    }
+                }
+
+                if self.events.scheduler.len() > old_scheduler_length {
+                    self.packet_id_tracker += 1;
+                }
+            }
+            SendTo::Broadcast => {
+                debug!("server: SendTo::Broadcast scheduler.");
+
+                let old_scheduler_length = self.events.scheduler.len();
+
+                for peer in self.service.connected.values() {
+                    let packet_id = self.packet_id_tracker;
+
+                    if should_fragment {
+                        debug!("server: schedule fragment.");
+
+                        let fragments = payload
+                            .chunks(MAX_FRAGMENT_SIZE)
+                            .enumerate()
+                            .map(|(index, chunk)| (index, chunk.to_vec()))
+                            .collect::<Vec<_>>();
+
+                        let fragment_total = fragments.len();
+                        let connection_id = peer.connection.connection_id;
+
+                        let mut scheduling = fragments
+                            .into_iter()
+                            .map(|(fragment_index, payload)| {
+                                let scheduling = if reliability {
+                                    let scheduled = Scheduled::new_reliable(
+                                        packet_id,
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
+
+                                    scheduled.into()
+                                } else {
+                                    let scheduled = Scheduled::new_unreliable(
+                                        packet_id,
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
+
+                                    scheduled.into()
+                                };
+
+                                scheduling
+                            })
+                            .collect::<Vec<_>>();
+
+                        self.events.scheduler.append(&mut scheduling);
+                    } else {
+                        debug!("server: schedule non-fragment.");
+
+                        let meta = MetaMessage {
+                            packet_type: DataTransfer::PACKET_TYPE,
+                        };
+                        let message = DataTransfer {
+                            meta,
+                            connection_id: peer.connection.connection_id,
+                            payload: payload.clone(),
+                        };
+
+                        let scheduling = if reliability {
+                            let scheduled = Scheduled {
+                                packet_id,
+                                time: self.timer.elapsed(),
+                                address: peer.address.clone(),
+                                reliability: Reliable {},
+                                message,
+                            };
+
+                            scheduled.into()
+                        } else {
+                            let scheduled = Scheduled {
+                                packet_id,
+                                time: self.timer.elapsed(),
+                                address: peer.address.clone(),
+                                reliability: Unreliable {},
+                                message,
+                            };
+
+                            scheduled.into()
+                        };
+
+                        self.events.scheduler.push(scheduling);
+                    }
+                }
+
+                if self.events.scheduler.len() > old_scheduler_length {
+                    self.packet_id_tracker += 1;
+                }
+            }
+        }
+
+////////////////
+
+  //
+                                //
+
+                                let scheduled = scheduler!({
+                                        packet_id,
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone() } : R);
+
+                                //
+                                //

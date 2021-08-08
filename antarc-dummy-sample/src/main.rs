@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use antarc_dummy::{AntarcEvent, DummyManager, SendTo};
+use antarc_dummy::{AntarcEvent, DummyManager, ReliabilityType, SendTo};
 use log::*;
 
 fn main() {
@@ -56,7 +56,12 @@ fn server_main() {
                         connection_id
                     );
 
-                    server.schedule(false, SendTo::Single { connection_id }, vec![0x1; 2]);
+                    let scheduled = server.schedule(
+                        ReliabilityType::Unreliable,
+                        SendTo::Single { connection_id },
+                        vec![0x1; 2],
+                    );
+                    info!("Server -> result of schedule call {:#?}", scheduled);
                 }
             }
         }
@@ -77,7 +82,9 @@ fn server_main() {
                         "Client -> received connection accepted from {:#?}.",
                         connection_id
                     );
-                    client.schedule(false, vec![0x3; 2])
+
+                    let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x3; 2]);
+                    info!("Client -> result of schedule call {:#?}", scheduled);
                 }
                 AntarcEvent::DataTransfer {
                     connection_id,
@@ -88,13 +95,19 @@ fn server_main() {
                         payload.len(),
                         connection_id
                     );
-                    client.schedule(false, vec![0x4; 2]);
+
+                    let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x4; 2]);
+                    info!("Client -> result of schedule call {:#?}", scheduled);
                 }
             }
         }
 
-        client.schedule(false, vec![0x5; 2]);
-        server.schedule(false, SendTo::Broadcast, vec![0x2; 2]);
+        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x5; 2]);
+        info!("Client -> result of schedule call {:#?}", scheduled);
+
+        let scheduled =
+            server.schedule(ReliabilityType::Unreliable, SendTo::Broadcast, vec![0x2; 2]);
+        info!("Server -> result of schedule call {:#?}", scheduled);
 
         server.dummy_receiver = client.dummy_sender.clone();
         client.dummy_receiver = server.dummy_sender.clone();

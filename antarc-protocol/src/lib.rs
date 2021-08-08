@@ -27,6 +27,25 @@ macro_rules! read_buffer_inc {
     }};
 }
 
+#[macro_export]
+macro_rules! scheduler {
+    ({$packet_id: expr, $connection_id: expr, $payload: expr, $fragment_index: expr,
+        $fragment_total: expr, $time: expr, $address: expr} :$reliability: ident) => {{
+        let scheduled: Scheduled<$reliability, Fragment> = Scheduled::new(
+            $packet_id,
+            $connection_id,
+            $reliability {},
+            $payload,
+            $fragment_index,
+            $fragment_total,
+            $time,
+            $address,
+        );
+
+        scheduled
+    }};
+}
+
 pub type ProtocolId = NonZeroU32;
 
 pub const PROTOCOL_ID: ProtocolId = unsafe { ProtocolId::new_unchecked(0xbabedad) };

@@ -422,6 +422,43 @@ pub struct Fragment {
     pub payload: Payload,
 }
 
+impl Fragment {
+    pub(crate) fn new(
+        connection_id: ConnectionId,
+        payload: Payload,
+        fragment_index: usize,
+        fragment_total: usize,
+    ) -> Self {
+        let meta = MetaMessage {
+            packet_type: Self::PACKET_TYPE,
+        };
+        let fragment = Self {
+            meta,
+            connection_id,
+            index: fragment_index as u8,
+            total: fragment_total as u8,
+            payload: payload.clone(),
+        };
+
+        fragment
+    }
+}
+
+impl DataTransfer {
+    pub(crate) fn new(connection_id: ConnectionId, payload: Payload) -> Self {
+        let meta = MetaMessage {
+            packet_type: Self::PACKET_TYPE,
+        };
+        let data_transfer = Self {
+            meta,
+            connection_id,
+            payload: payload.clone(),
+        };
+
+        data_transfer
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heartbeat {
     pub meta: MetaMessage,
@@ -599,19 +636,31 @@ where
 // could have a family of `Scheduled`, much like `Packet`, and the `scheduler_pipe` would take an
 // enum of such types.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Scheduled<Reliability, Message: Messager> {
+pub struct Scheduled<R: Reliability, Message: Messager> {
     pub packet_id: PacketId,
     pub address: SocketAddr,
     pub time: Duration,
-    pub reliability: Reliability,
+    pub reliability: R,
     pub message: Message,
 }
+
+#[derive(Debug, Clone, PartialEq, Copy)]
+pub enum ReliabilityType {
+    Reliable,
+    Unreliable,
+}
+
+pub trait Reliability {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reliable {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unreliable {}
+
+impl Reliability for Reliable {}
+
+impl Reliability for Unreliable {}
 
 impl Scheduled<Reliable, ConnectionRequest> {
     pub fn connection_request(packet_id: PacketId, address: SocketAddr, time: Duration) -> Self {
@@ -704,30 +753,8 @@ impl Scheduled<Unreliable, DataTransfer> {
     }
 }
 
-impl<Reliability> Scheduled<Reliability, Fragment> {
-    fn new_fragment(
-        connection_id: ConnectionId,
-        payload: Payload,
-        fragment_index: usize,
-        fragment_total: usize,
-    ) -> Fragment {
-        let meta = MetaMessage {
-            packet_type: Fragment::PACKET_TYPE,
-        };
-        let message = Fragment {
-            meta,
-            connection_id,
-            index: fragment_index as u8,
-            total: fragment_total as u8,
-            payload: payload.clone(),
-        };
-
-        message
-    }
-}
-
 impl Scheduled<Unreliable, Fragment> {
-    pub(crate) fn new_unreliable(
+    pub(crate) fn new_unreliable_fragment(
         packet_id: PacketId,
         connection_id: ConnectionId,
         payload: Payload,
@@ -741,14 +768,15 @@ impl Scheduled<Unreliable, Fragment> {
             time,
             address,
             reliability: Unreliable {},
-            message: Self::new_fragment(connection_id, payload, fragment_index, fragment_total),
+            message: Fragment::new(connection_id, payload, fragment_index, fragment_total),
         };
 
         scheduled
     }
 }
+
 impl Scheduled<Reliable, Fragment> {
-    pub(crate) fn new_reliable(
+    pub(crate) fn new_reliable_fragment(
         packet_id: PacketId,
         connection_id: ConnectionId,
         payload: Payload,
@@ -762,7 +790,47 @@ impl Scheduled<Reliable, Fragment> {
             time,
             address,
             reliability: Reliable {},
-            message: Self::new_fragment(connection_id, payload, fragment_index, fragment_total),
+            message: Fragment::new(connection_id, payload, fragment_index, fragment_total),
+        };
+
+        scheduled
+    }
+}
+
+impl Scheduled<Unreliable, DataTransfer> {
+    pub(crate) fn new_unreliable_data_transfer(
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        payload: Payload,
+        time: Duration,
+        address: SocketAddr,
+    ) -> Self {
+        let scheduled = Self {
+            packet_id,
+            address,
+            time,
+            reliability: Unreliable {},
+            message: DataTransfer::new(connection_id, payload),
+        };
+
+        scheduled
+    }
+}
+
+impl Scheduled<Reliable, DataTransfer> {
+    pub(crate) fn new_reliable_data_transfer(
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        payload: Payload,
+        time: Duration,
+        address: SocketAddr,
+    ) -> Self {
+        let scheduled = Self {
+            packet_id,
+            address,
+            time,
+            reliability: Reliable {},
+            message: DataTransfer::new(connection_id, payload),
         };
 
         scheduled
