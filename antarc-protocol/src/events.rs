@@ -4,7 +4,7 @@ use std::{
     num::{NonZeroU32, TryFromIntError},
 };
 
-use antarc_macro::FromScheduled;
+use antarc_macro::FromSingleVariant;
 use thiserror::Error;
 
 use crate::{packets::*, *};
@@ -19,6 +19,9 @@ pub enum ProtocolError {
 
     #[error("{0}")]
     ArrayConversion(#[from] TryFromSliceError),
+
+    #[error("`from_be_bytes` failed to convert array into valid `NonZero` value!")]
+    BytesConversion,
 
     #[error("{0}")]
     IntConversion(#[from] TryFromIntError),
@@ -104,7 +107,7 @@ impl From<Packet<Sent, Heartbeat>> for ReliableSentEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromScheduled)]
+#[derive(Debug, Clone, PartialEq, FromSingleVariant)]
 pub enum ScheduleEvent {
     ConnectionRequest {
         scheduled: Scheduled<Reliable, ConnectionRequest>,

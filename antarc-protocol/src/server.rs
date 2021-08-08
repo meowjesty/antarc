@@ -43,34 +43,31 @@ impl Protocol<Server> {
         }
     }
 
+    pub(crate) fn unexpected_connection(&self, address: &SocketAddr) -> Result<(), ProtocolError> {
+        // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
+        // after a connection accepted/denied packet is sent.
+        if Protocol::connection_request_another_state(
+            &self.service.awaiting_connection_ack,
+            &self.service.connected,
+            address,
+        ) {
+            warn!("server: peer {:#?} already in another state.", address);
+            Err(ProtocolError::PeerInAnotherState(address.clone()))
+        } else if self.service.ban_list.contains(address) {
+            warn!("server: peer {:#?} is in the ban list.", address);
+            Err(ProtocolError::Banned(address.clone()))
+        } else {
+            Ok(())
+        }
+    }
+
     /// NOTE(alex): API function that feeds the internal* event pipe.
     pub fn on_received(&mut self, raw_packet: RawPacket<Server>) -> Result<(), ProtocolError> {
         let decoded = raw_packet.decode(self.timer.elapsed())?;
         match decoded {
             DecodedForServer::ConnectionRequest { packet } => {
                 debug!("server: received connection request {:#?}.", packet);
-                // NOTE(alex): A peer only changes RequestingConnection -> AwaitingConnectionAck
-                // after a connection accepted/denied packet is sent.
-                if Protocol::connection_request_another_state(
-                    &self.service.awaiting_connection_ack,
-                    &self.service.connected,
-                    &packet,
-                ) {
-                    warn!(
-                        "server: peer already in another state, skipping {:#?}.",
-                        packet
-                    );
-
-                    return Err(ProtocolError::PeerInAnotherState(
-                        packet.delivery.meta.address,
-                    ));
-                } else if self
-                    .service
-                    .ban_list
-                    .contains(&packet.delivery.meta.address)
-                {
-                    return Err(ProtocolError::Banned(packet.delivery.meta.address));
-                }
+                let _ = self.unexpected_connection(&packet.delivery.meta.address)?;
 
                 let connection_id = if let Some((connection_id, peer)) = self
                     .service
@@ -268,35 +265,28 @@ impl Protocol<Server> {
                         let mut scheduling = fragments
                             .into_iter()
                             .map(|(fragment_index, payload)| {
-                                let meta = MetaMessage {
-                                    packet_type: Fragment::PACKET_TYPE,
-                                };
-                                let message = Fragment {
-                                    meta,
-                                    connection_id,
-                                    index: fragment_index as u8,
-                                    total: fragment_total as u8,
-                                    payload: payload.clone(),
-                                };
-
                                 let scheduling = if reliable {
-                                    let scheduled = Scheduled {
+                                    let scheduled = Scheduled::new_reliable(
                                         packet_id,
-                                        time: self.timer.elapsed(),
-                                        address: peer.address.clone(),
-                                        reliability: Reliable {},
-                                        message,
-                                    };
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
 
                                     scheduled.into()
                                 } else {
-                                    let scheduled = Scheduled {
+                                    let scheduled = Scheduled::new_unreliable(
                                         packet_id,
-                                        time: self.timer.elapsed(),
-                                        address: peer.address.clone(),
-                                        reliability: Unreliable {},
-                                        message,
-                                    };
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
 
                                     scheduled.into()
                                 };
@@ -375,35 +365,28 @@ impl Protocol<Server> {
                             let mut scheduling = fragments
                                 .into_iter()
                                 .map(|(fragment_index, payload)| {
-                                    let meta = MetaMessage {
-                                        packet_type: Fragment::PACKET_TYPE,
-                                    };
-                                    let message = Fragment {
-                                        meta,
-                                        connection_id,
-                                        index: fragment_index as u8,
-                                        total: fragment_total as u8,
-                                        payload: payload.clone(),
-                                    };
-
                                     let scheduling = if reliable {
-                                        let scheduled = Scheduled {
+                                        let scheduled = Scheduled::new_reliable(
                                             packet_id,
-                                            time: self.timer.elapsed(),
-                                            address: peer.address.clone(),
-                                            reliability: Reliable {},
-                                            message,
-                                        };
+                                            connection_id,
+                                            payload.clone(),
+                                            fragment_index,
+                                            fragment_total,
+                                            self.timer.elapsed(),
+                                            peer.address.clone(),
+                                        );
 
                                         scheduled.into()
                                     } else {
-                                        let scheduled = Scheduled {
+                                        let scheduled = Scheduled::new_unreliable(
                                             packet_id,
-                                            time: self.timer.elapsed(),
-                                            address: peer.address.clone(),
-                                            reliability: Unreliable {},
-                                            message,
-                                        };
+                                            connection_id,
+                                            payload.clone(),
+                                            fragment_index,
+                                            fragment_total,
+                                            self.timer.elapsed(),
+                                            peer.address.clone(),
+                                        );
 
                                         scheduled.into()
                                     };
@@ -478,39 +461,33 @@ impl Protocol<Server> {
                             .collect::<Vec<_>>();
 
                         let fragment_total = fragments.len();
+                        let connection_id = peer.connection.connection_id;
 
                         let mut scheduling = fragments
                             .into_iter()
                             .map(|(fragment_index, payload)| {
-                                let meta = MetaMessage {
-                                    packet_type: Fragment::PACKET_TYPE,
-                                };
-                                let message = Fragment {
-                                    meta,
-                                    connection_id: peer.connection.connection_id,
-                                    index: fragment_index as u8,
-                                    total: fragment_total as u8,
-                                    payload: payload.clone(),
-                                };
-
                                 let scheduling = if reliable {
-                                    let scheduled = Scheduled {
+                                    let scheduled = Scheduled::new_reliable(
                                         packet_id,
-                                        time: self.timer.elapsed(),
-                                        address: peer.address.clone(),
-                                        reliability: Reliable {},
-                                        message,
-                                    };
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
 
                                     scheduled.into()
                                 } else {
-                                    let scheduled = Scheduled {
+                                    let scheduled = Scheduled::new_unreliable(
                                         packet_id,
-                                        time: self.timer.elapsed(),
-                                        address: peer.address.clone(),
-                                        reliability: Unreliable {},
-                                        message,
-                                    };
+                                        connection_id,
+                                        payload.clone(),
+                                        fragment_index,
+                                        fragment_total,
+                                        self.timer.elapsed(),
+                                        peer.address.clone(),
+                                    );
 
                                     scheduled.into()
                                 };
@@ -568,13 +545,12 @@ impl Protocol<Server> {
     pub(crate) fn connection_request_another_state(
         awaiting_connection_ack: &HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
         connected: &HashMap<ConnectionId, Peer<Connected>>,
-        packet: &Packet<Received, ConnectionRequest>,
+        address: &SocketAddr,
     ) -> bool {
-        let address = packet.delivery.meta.address;
         awaiting_connection_ack
             .values()
-            .any(|peer| peer.address == address)
-            || connected.values().any(|peer| peer.address == address)
+            .any(|peer| peer.address == *address)
+            || connected.values().any(|peer| peer.address == *address)
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {

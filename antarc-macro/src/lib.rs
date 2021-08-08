@@ -1,6 +1,5 @@
 #![feature(proc_macro_diagnostic)]
 
-use proc_macro::Diagnostic;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data::Enum, DataEnum, DeriveInput, Field, Ident, Variant};
@@ -26,11 +25,10 @@ pub(crate) fn get_variant(variant: &Variant) -> SingleFieldVariant {
     event_variant
 }
 
-#[proc_macro_derive(FromScheduled)]
-pub fn derive_from_scheduled(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+#[proc_macro_derive(FromSingleVariant)]
+pub fn derive_from_single_variant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = proc_macro2::TokenStream::from(input);
-    let diag = Diagnostic::new(proc_macro::Level::Error, format!("FOOOOO \n\n FOOOO"));
-    diag.emit();
+
     let output: proc_macro2::TokenStream = {
         let derive_input: DeriveInput = syn::parse2(input).unwrap();
         let data = derive_input.data;

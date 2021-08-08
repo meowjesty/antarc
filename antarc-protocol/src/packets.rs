@@ -107,7 +107,7 @@ impl RawPacket<Server> {
 
         match packet_type {
             ConnectionRequest::PACKET_TYPE => {
-                debug!("Decoding connection request packet.");
+                debug!("server: decoding connection request packet.");
                 debug_assert_eq!(buffer_position, ConnectionRequest::HEADER_SIZE);
 
                 let delivery = Received {
@@ -131,7 +131,7 @@ impl RawPacket<Server> {
                 Err(ProtocolError::InvalidPacketType(packet_type))
             }
             DataTransfer::PACKET_TYPE => {
-                debug!("Decoding data transfer packet.");
+                debug!("server: decoding data transfer packet.");
 
                 // TODO(alex) [low] 2021-08-04: Find out a way to make
                 // `from_be_bytes::<ConnectionId>` work.
@@ -159,15 +159,15 @@ impl RawPacket<Server> {
                 Ok(DecodedForServer::DataTransfer { packet })
             }
             Fragment::PACKET_TYPE => {
-                debug!("Decoding fragment packet.");
+                debug!("server: decoding fragment packet.");
                 todo!();
             }
             Heartbeat::PACKET_TYPE => {
-                debug!("Decoding heartbeat packet.");
+                debug!("server: decoding heartbeat packet.");
                 todo!();
             }
             invalid => {
-                error!("Decoding invalid packet type {:#?}.", invalid);
+                error!("server: decoding invalid packet type {:#?}.", invalid);
                 Err(ProtocolError::InvalidPacketType(invalid).into())
             }
         }
@@ -216,7 +216,7 @@ impl RawPacket<Client> {
                 Ok(DecodedForClient::ConnectionAccepted { packet })
             }
             DataTransfer::PACKET_TYPE => {
-                debug!("Decoding data transfer packet.");
+                debug!("client: decoding data transfer packet.");
 
                 // TODO(alex) [low] 2021-08-04: Find out a way to make
                 // `from_be_bytes::<ConnectionId>` work.
@@ -244,15 +244,15 @@ impl RawPacket<Client> {
                 Ok(DecodedForClient::DataTransfer { packet })
             }
             Fragment::PACKET_TYPE => {
-                debug!("Decoding fragment packet.");
+                debug!("client: decoding fragment packet.");
                 todo!();
             }
             Heartbeat::PACKET_TYPE => {
-                debug!("Decoding heartbeat packet.");
+                debug!("client: decoding heartbeat packet.");
                 todo!();
             }
             invalid => {
-                error!("Decoding invalid packet type {:#?}.", invalid);
+                error!("client: decoding invalid packet type {:#?}.", invalid);
                 Err(ProtocolError::InvalidPacketType(invalid).into())
             }
         }
@@ -293,6 +293,9 @@ impl<T> RawPacket<T> {
 
             // TODO(alex) [low] 2021-08-04: Find out a way to make `from_be_bytes::<ProtocolId>`
             // work.
+            //
+            // ADD(alex) [low] 2021-08-07: I've tried tackling this to see if a simple wrapper type
+            // around `NonZero` would be enough, but it gets a bit too messy for little benefit.
             let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
             if PROTOCOL_ID.get() != read_protocol_id {
                 return Err(ProtocolError::InvalidProtocolId {
@@ -698,5 +701,70 @@ impl Scheduled<Unreliable, DataTransfer> {
         };
 
         packet
+    }
+}
+
+impl<Reliability> Scheduled<Reliability, Fragment> {
+    fn new_fragment(
+        connection_id: ConnectionId,
+        payload: Payload,
+        fragment_index: usize,
+        fragment_total: usize,
+    ) -> Fragment {
+        let meta = MetaMessage {
+            packet_type: Fragment::PACKET_TYPE,
+        };
+        let message = Fragment {
+            meta,
+            connection_id,
+            index: fragment_index as u8,
+            total: fragment_total as u8,
+            payload: payload.clone(),
+        };
+
+        message
+    }
+}
+
+impl Scheduled<Unreliable, Fragment> {
+    pub(crate) fn new_unreliable(
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        payload: Payload,
+        fragment_index: usize,
+        fragment_total: usize,
+        time: Duration,
+        address: SocketAddr,
+    ) -> Self {
+        let scheduled = Self {
+            packet_id,
+            time,
+            address,
+            reliability: Unreliable {},
+            message: Self::new_fragment(connection_id, payload, fragment_index, fragment_total),
+        };
+
+        scheduled
+    }
+}
+impl Scheduled<Reliable, Fragment> {
+    pub(crate) fn new_reliable(
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        payload: Payload,
+        fragment_index: usize,
+        fragment_total: usize,
+        time: Duration,
+        address: SocketAddr,
+    ) -> Self {
+        let scheduled = Self {
+            packet_id,
+            time,
+            address,
+            reliability: Reliable {},
+            message: Self::new_fragment(connection_id, payload, fragment_index, fragment_total),
+        };
+
+        scheduled
     }
 }

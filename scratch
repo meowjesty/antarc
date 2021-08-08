@@ -178,3 +178,73 @@ pub fn derive_from_scheduled(input: proc_macro::TokenStream) -> proc_macro::Toke
 
     proc_macro::TokenStream::from(output)
 }
+
+
+////
+
+let connection_id = self
+                    .service
+                    .requesting_connection
+                    .iter_mut()
+                    .find_map(|(connection_id, peer)| {
+                        if peer.address == packet.delivery.meta.address {
+                            peer.connection.attempts += 1;
+                            Some(connection_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or({
+                        let new_peer = Peer::new(
+                            self.timer.elapsed(),
+                            packet.delivery.meta.address,
+                            packet.sequence.get(),
+                        );
+
+                        let connection_id = self.service.connection_id_tracker;
+                        self.service
+                            .requesting_connection
+                            .insert(connection_id, new_peer);
+                        self.service.connection_id_tracker =
+                            ConnectionId::new(connection_id.get() + 1).unwrap();
+
+                        connection_id
+                    });
+
+////////////////////
+
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+pub struct ProtocolId(NonZeroU32);
+
+impl ProtocolId {
+    pub const fn from_be_bytes(bytes: [u8; size_of::<u32>()]) -> Option<Self> {
+        let primitive = u32::from_be_bytes(bytes);
+        let non_zero = NonZeroU32::new(primitive);
+        if non_zero.is_some() {
+            Some(Self(non_zero.unwrap()))
+        } else {
+            None
+        }
+    }
+}
+
+impl Deref for ProtocolId {
+    type Target = NonZeroU32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ProtocolId {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<NonZeroU32> for ProtocolId {
+    fn from(primitive: NonZeroU32) -> Self {
+        ProtocolId(primitive)
+    }
+}

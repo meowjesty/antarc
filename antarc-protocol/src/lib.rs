@@ -2,6 +2,7 @@
 #![feature(drain_filter)]
 #![feature(hash_drain_filter)]
 #![feature(nonzero_ops)]
+// #![feature(const_try)]
 
 use core::mem::size_of;
 use std::{num::NonZeroU32, time::Instant};
@@ -19,7 +20,7 @@ pub mod server;
 macro_rules! read_buffer_inc {
     ({ $buffer: expr, $start: expr } : $kind: ident) => {{
         let end = $start + size_of::<$kind>();
-        let bytes_arr: &[u8; size_of::<$kind>()] = $buffer[$start..end].try_into().unwrap();
+        let bytes_arr: &[u8; size_of::<$kind>()] = $buffer[$start..end].try_into()?;
         let val = $kind::from_be_bytes(*bytes_arr);
         $start = end;
         val
@@ -28,7 +29,7 @@ macro_rules! read_buffer_inc {
 
 pub type ProtocolId = NonZeroU32;
 
-pub const PROTOCOL_ID: ProtocolId = unsafe { NonZeroU32::new_unchecked(0xbabedad) };
+pub const PROTOCOL_ID: ProtocolId = unsafe { ProtocolId::new_unchecked(0xbabedad) };
 pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
 
 /// NOTE(alex): `Service` may be either a `Client` or a `Server`.
