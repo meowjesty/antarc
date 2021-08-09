@@ -234,7 +234,7 @@ impl Protocol<Server> {
     ///
     /// TODO(alex) [low] 2021-08-08: Parts of this function could be simplified, or at least I think
     /// it's possible. Leaving it with low priority for now though.
-    pub(crate) fn inner_schedule(
+    pub(crate) fn schedule_for_connected_peer(
         &mut self,
         payload: Payload,
         reliability: ReliabilityType,
@@ -260,41 +260,15 @@ impl Protocol<Server> {
                             "server: schedule fragment {:?}/{:?}.",
                             fragment_index, fragment_total
                         );
-                        // TODO(alex) [mid] 2021-08-08: This and the data transfer part are
-                        // finnicky, if I call the wrong `new` function, we could end up with both
-                        // sides creating the same `ScheduleEvent`.
-                        //
-                        // Maybe one simple way of solving this would be to put the `Reliable` and
-                        // `Unreliable` types inside the `ReliabilityType::Reliable(Reliable)` for
-                        // example, and pass it into the `new` functions.
-                        let schedule_event = match reliability {
-                            ReliabilityType::Reliable => {
-                                let scheduled = Scheduled::new_reliable_fragment(
-                                    packet_id,
-                                    connection_id,
-                                    payload.clone(),
-                                    fragment_index,
-                                    fragment_total,
-                                    self.timer.elapsed(),
-                                    peer.address.clone(),
-                                );
-
-                                scheduled.into()
-                            }
-                            ReliabilityType::Unreliable => {
-                                let scheduled = Scheduled::new_unreliable_fragment(
-                                    packet_id,
-                                    connection_id,
-                                    payload.clone(),
-                                    fragment_index,
-                                    fragment_total,
-                                    self.timer.elapsed(),
-                                    peer.address.clone(),
-                                );
-
-                                scheduled.into()
-                            }
-                        };
+                        let schedule_event = reliability.as_fragment_event(
+                            packet_id,
+                            connection_id,
+                            payload.clone(),
+                            fragment_index,
+                            fragment_total,
+                            self.timer.elapsed(),
+                            peer.address,
+                        );
 
                         schedule_event
                     })
@@ -304,33 +278,13 @@ impl Protocol<Server> {
             } else {
                 debug!("server: schedule non-fragment.");
 
-                // TODO(alex) [mid] 2021-08-08: This and the fragment part are finnicky, if I call
-                // the wrong `new` function, we could end up with both sides creating the same
-                // `ScheduleEvent`.
-                let schedule_event = match reliability {
-                    ReliabilityType::Reliable => {
-                        let scheduled = Scheduled::new_reliable_data_transfer(
-                            packet_id,
-                            connection_id,
-                            payload.clone(),
-                            self.timer.elapsed(),
-                            peer.address,
-                        );
-
-                        scheduled.into()
-                    }
-                    ReliabilityType::Unreliable => {
-                        let scheduled = Scheduled::new_unreliable_data_transfer(
-                            packet_id,
-                            connection_id,
-                            payload.clone(),
-                            self.timer.elapsed(),
-                            peer.address,
-                        );
-
-                        scheduled.into()
-                    }
-                };
+                let schedule_event = reliability.as_data_transfer_event(
+                    packet_id,
+                    connection_id,
+                    payload.clone(),
+                    self.timer.elapsed(),
+                    peer.address,
+                );
 
                 self.events.scheduler.push(schedule_event);
             }
@@ -343,8 +297,21 @@ impl Protocol<Server> {
 
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
     ///
+    /// There are 2 choices:
+    ///
+    /// 1. schedule to single peer;
+    /// 2. broadcast to every peer;
+    ///
+    /// If the user wants to send to multiple select peers, then they must call the single version
+    /// multiple times.
+    ///
     /// TODO(alex) [low] 2021-08-08: Most of the duplication problems were solved by moving into a
     /// separate helper function, a bit remains though.
+    ///
+    /// TODO(alex) [vlow] 2021-08-09: There was a `SendTo::Multiple` that took a list of connection
+    /// ids, but this function can't properly handle failure state for this variant. To schedule for
+    /// multiple peers like that, another return type must be had in case the user passes 1 or more
+    /// not-connected connection ids. This could be some sort of `schedule_batch`.
     pub fn schedule(
         &mut self,
         reliability: ReliabilityType,
@@ -364,23 +331,8 @@ impl Protocol<Server> {
 
                 let old_scheduler_length = self.events.scheduler.len();
 
-                let packet_id = self.inner_schedule(payload, reliability, connection_id)?;
-
-                if self.events.scheduler.len() > old_scheduler_length {
-                    self.packet_id_tracker += 1;
-                }
-
-                Ok(packet_id)
-            }
-            SendTo::Multiple { connection_ids } => {
-                debug!("server: SendTo::Multiple scheduler {:#?}.", connection_ids);
-
-                let old_scheduler_length = self.events.scheduler.len();
-                let packet_id = self.packet_id_tracker;
-
-                for connection_id in connection_ids {
-                    let _ = self.inner_schedule(payload.clone(), reliability, connection_id)?;
-                }
+                let packet_id =
+                    self.schedule_for_connected_peer(payload, reliability, connection_id)?;
 
                 if self.events.scheduler.len() > old_scheduler_length {
                     self.packet_id_tracker += 1;
@@ -402,7 +354,9 @@ impl Protocol<Server> {
                     .collect::<Vec<_>>();
 
                 for connection_id in connection_ids {
-                    let _ = self.inner_schedule(payload.clone(), reliability, connection_id)?;
+                    let _ = self
+                        .schedule_for_connected_peer(payload.clone(), reliability, connection_id)
+                        .expect("Scheduling a broadcast should be infallible!");
                 }
 
                 if self.events.scheduler.len() > old_scheduler_length {

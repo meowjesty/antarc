@@ -73,7 +73,7 @@ pub enum ReceiverEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, FromSingleVariant)]
 pub enum ReliableSentEvent {
     ConnectionRequest {
         packet: Packet<Sent, ConnectionRequest>,
@@ -81,18 +81,6 @@ pub enum ReliableSentEvent {
     ConnectionAccepted {
         packet: Packet<Sent, ConnectionAccepted>,
     },
-}
-
-impl From<Packet<Sent, ConnectionRequest>> for ReliableSentEvent {
-    fn from(packet: Packet<Sent, ConnectionRequest>) -> Self {
-        Self::ConnectionRequest { packet }
-    }
-}
-
-impl From<Packet<Sent, ConnectionAccepted>> for ReliableSentEvent {
-    fn from(packet: Packet<Sent, ConnectionAccepted>) -> Self {
-        Self::ConnectionAccepted { packet }
-    }
 }
 
 impl From<Packet<Sent, DataTransfer>> for ReliableSentEvent {

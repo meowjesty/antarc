@@ -259,8 +259,6 @@ impl Protocol<Client> {
 
         let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;
 
-        let old_scheduler_length = self.events.scheduler.len();
-
         if let Some(peer) = self.service.connected.values().last() {
             let packet_id = self.packet_id_tracker;
             let connection_id = peer.connection.connection_id;
@@ -281,41 +279,16 @@ impl Protocol<Client> {
                             "client: schedule fragment {:?}/{:?}.",
                             fragment_index, fragment_total
                         );
-                        // TODO(alex) [mid] 2021-08-08: This and the data transfer part are
-                        // finnicky, if I call the wrong `new` function, we could end up with both
-                        // sides creating the same `ScheduleEvent`.
-                        //
-                        // Maybe one simple way of solving this would be to put the `Reliable` and
-                        // `Unreliable` types inside the `ReliabilityType::Reliable(Reliable)` for
-                        // example, and pass it into the `new` functions.
-                        let schedule_event = match reliability {
-                            ReliabilityType::Reliable => {
-                                let scheduled = Scheduled::new_reliable_fragment(
-                                    packet_id,
-                                    connection_id,
-                                    payload.clone(),
-                                    fragment_index,
-                                    fragment_total,
-                                    self.timer.elapsed(),
-                                    peer.address.clone(),
-                                );
 
-                                scheduled.into()
-                            }
-                            ReliabilityType::Unreliable => {
-                                let scheduled = Scheduled::new_unreliable_fragment(
-                                    packet_id,
-                                    connection_id,
-                                    payload.clone(),
-                                    fragment_index,
-                                    fragment_total,
-                                    self.timer.elapsed(),
-                                    peer.address.clone(),
-                                );
-
-                                scheduled.into()
-                            }
-                        };
+                        let schedule_event = reliability.as_fragment_event(
+                            packet_id,
+                            connection_id,
+                            payload.clone(),
+                            fragment_index,
+                            fragment_total,
+                            self.timer.elapsed(),
+                            peer.address,
+                        );
 
                         schedule_event
                     })
@@ -325,40 +298,18 @@ impl Protocol<Client> {
             } else {
                 debug!("client: schedule non-fragment.");
 
-                // TODO(alex) [mid] 2021-08-08: This and the fragment part are finnicky, if I call
-                // the wrong `new` function, we could end up with both sides creating the same
-                // `ScheduleEvent`.
-                let schedule_event = match reliability {
-                    ReliabilityType::Reliable => {
-                        let scheduled = Scheduled::new_reliable_data_transfer(
-                            packet_id,
-                            connection_id,
-                            payload.clone(),
-                            self.timer.elapsed(),
-                            peer.address,
-                        );
-
-                        scheduled.into()
-                    }
-                    ReliabilityType::Unreliable => {
-                        let scheduled = Scheduled::new_unreliable_data_transfer(
-                            packet_id,
-                            connection_id,
-                            payload.clone(),
-                            self.timer.elapsed(),
-                            peer.address,
-                        );
-
-                        scheduled.into()
-                    }
-                };
+                let schedule_event = reliability.as_data_transfer_event(
+                    packet_id,
+                    connection_id,
+                    payload.clone(),
+                    self.timer.elapsed(),
+                    peer.address,
+                );
 
                 self.events.scheduler.push(schedule_event);
             }
 
-            if self.events.scheduler.len() > old_scheduler_length {
-                self.packet_id_tracker += 1;
-            }
+            self.packet_id_tracker += 1;
 
             Ok(packet_id)
         } else {

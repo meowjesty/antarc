@@ -2,6 +2,7 @@
 #![feature(drain_filter)]
 #![feature(hash_drain_filter)]
 #![feature(nonzero_ops)]
+#![feature(const_generics)]
 // #![feature(const_try)]
 
 use core::mem::size_of;

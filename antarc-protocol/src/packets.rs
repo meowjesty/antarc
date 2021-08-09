@@ -1,4 +1,9 @@
-use core::{mem::size_of, ops::RangeInclusive, time::Duration};
+use core::{
+    any::{Any, TypeId},
+    mem::size_of,
+    ops::RangeInclusive,
+    time::Duration,
+};
 use std::{
     convert::TryInto,
     marker::PhantomData,
@@ -10,8 +15,11 @@ use crc32fast::Hasher;
 use log::{debug, error, warn};
 
 use crate::{
-    client::Client, events::ProtocolError, read_buffer_inc, server::Server, ProtocolId,
-    PROTOCOL_ID, PROTOCOL_ID_BYTES,
+    client::Client,
+    events::{ProtocolError, ScheduleEvent},
+    read_buffer_inc,
+    server::Server,
+    ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
 pub type PacketId = u64;
@@ -650,12 +658,100 @@ pub enum ReliabilityType {
     Unreliable,
 }
 
+impl ReliabilityType {
+    pub(crate) fn as_fragment_event(
+        self,
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        payload: Payload,
+        fragment_index: usize,
+        fragment_total: usize,
+        time: Duration,
+        address: SocketAddr,
+    ) -> ScheduleEvent {
+        // TODO(alex) [mid] 2021-08-08: This and the data transfer part are
+        // finnicky, if I call the wrong `new` function, we could end up with both
+        // sides creating the same `ScheduleEvent`.
+        //
+        // Maybe one simple way of solving this would be to put the `Reliable` and
+        // `Unreliable` types inside the `ReliabilityType::Reliable(Reliable)` for
+        // example, and pass it into the `new` functions.
+        match self {
+            ReliabilityType::Reliable => {
+                let scheduled: Scheduled<Reliable, Fragment> = Scheduled::new_reliable_fragment(
+                    packet_id,
+                    connection_id,
+                    payload,
+                    fragment_index,
+                    fragment_total,
+                    time,
+                    address,
+                );
+
+                scheduled.into()
+            }
+            ReliabilityType::Unreliable => {
+                let scheduled: Scheduled<Unreliable, Fragment> = Scheduled::new_unreliable_fragment(
+                    packet_id,
+                    connection_id,
+                    payload,
+                    fragment_index,
+                    fragment_total,
+                    time,
+                    address,
+                );
+
+                scheduled.into()
+            }
+        }
+    }
+
+    pub(crate) fn as_data_transfer_event(
+        self,
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        payload: Payload,
+        time: Duration,
+        address: SocketAddr,
+    ) -> ScheduleEvent {
+        // TODO(alex) [mid] 2021-08-08: This and the fragment part are finnicky, if I call
+        // the wrong `new` function, we could end up with both sides creating the same
+        // `ScheduleEvent`.
+        match self {
+            ReliabilityType::Reliable => {
+                let scheduled: Scheduled<Reliable, DataTransfer> =
+                    Scheduled::new_reliable_data_transfer(
+                        packet_id,
+                        connection_id,
+                        payload,
+                        time,
+                        address,
+                    );
+
+                scheduled.into()
+            }
+            ReliabilityType::Unreliable => {
+                let scheduled: Scheduled<Unreliable, DataTransfer> =
+                    Scheduled::new_unreliable_data_transfer(
+                        packet_id,
+                        connection_id,
+                        payload,
+                        time,
+                        address,
+                    );
+
+                scheduled.into()
+            }
+        }
+    }
+}
+
 pub trait Reliability {}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reliable {}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreliable {}
 
 impl Reliability for Reliable {}

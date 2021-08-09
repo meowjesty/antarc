@@ -17,7 +17,6 @@ pub struct Peer<Connection> {
 #[derive(Debug)]
 pub enum SendTo {
     Single { connection_id: ConnectionId },
-    Multiple { connection_ids: Vec<ConnectionId> },
     Broadcast,
 }
 
