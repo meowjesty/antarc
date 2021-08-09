@@ -10,7 +10,7 @@ use crate::{
     events::*,
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
-    scheduler, EventSystem, Protocol,
+    EventSystem, Protocol,
 };
 
 #[derive(Debug)]
@@ -112,7 +112,7 @@ impl Protocol<Server> {
                 } else if let Some(mut peer) =
                     self.service.awaiting_connection_ack.remove(&connection_id)
                 {
-                    debug!("server: peer is awaiting connection ack {:#?}.", peer);
+                    debug!("server: peer was awaiting connection ack {:#?}.", peer);
 
                     peer.remote_ack_tracker = packet.sequence.get();
                     peer.local_ack_tracker = packet.ack;
@@ -181,7 +181,7 @@ impl Protocol<Server> {
         // ack for this reliable packet.
     }
 
-    pub fn prepare_connection_accepted(
+    pub fn create_connection_accepted(
         &self,
         scheduled: Scheduled<Reliable, ConnectionAccepted>,
     ) -> Packet<ToSend, ConnectionAccepted> {
@@ -194,6 +194,31 @@ impl Protocol<Server> {
 
         let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
         packet
+    }
+
+    // REGION(alex): Data Transfer
+    pub fn create_unreliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Unreliable, DataTransfer>,
+    ) -> Packet<ToSend, DataTransfer> {
+        let (sequence, ack) = self
+            .service
+            .connected
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .unwrap();
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
+    pub fn sent_data_transfer(&mut self, packet: Packet<ToSend, DataTransfer>) {
+        let sent = packet.sent(self.timer.elapsed());
+        let connection_id = sent.message.connection_id;
+
+        if let Some(connected) = self.service.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
     }
 
     /// NOTE(alex): API function for scheduling connection accepted packets, called by the user.
@@ -318,12 +343,9 @@ impl Protocol<Server> {
         send_to: SendTo,
         payload: Payload,
     ) -> Result<PacketId, ProtocolError> {
-        let _ = self
-            .service
-            .connected
-            .is_empty()
-            .then(|| ())
-            .ok_or(ProtocolError::NoPeersConnected)?;
+        if self.service.connected.is_empty() {
+            return Err(ProtocolError::NoPeersConnected);
+        }
 
         match send_to {
             SendTo::Single { connection_id } => {

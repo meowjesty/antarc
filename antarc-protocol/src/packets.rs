@@ -1,9 +1,4 @@
-use core::{
-    any::{Any, TypeId},
-    mem::size_of,
-    ops::RangeInclusive,
-    time::Duration,
-};
+use core::{mem::size_of, ops::RangeInclusive, time::Duration};
 use std::{
     convert::TryInto,
     marker::PhantomData,
@@ -103,7 +98,7 @@ pub enum DecodedForServer {
 pub const PACKET_TYPE_RANGE: RangeInclusive<u8> = 0x1..=0x6;
 
 impl RawPacket<Server> {
-    pub fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
+    pub(crate) fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
         let address = self.address;
         let PartialDecode {
             buffer,
@@ -183,7 +178,7 @@ impl RawPacket<Server> {
 }
 
 impl RawPacket<Client> {
-    pub fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
+    pub(crate) fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
         let address = self.address;
         let PartialDecode {
             buffer,
@@ -276,7 +271,7 @@ impl<T> RawPacket<T> {
         }
     }
 
-    pub fn inner_decode(self) -> Result<PartialDecode, ProtocolError> {
+    pub(crate) fn inner_decode(self) -> Result<PartialDecode, ProtocolError> {
         let mut hasher = Hasher::new();
 
         let length = self.bytes.len();

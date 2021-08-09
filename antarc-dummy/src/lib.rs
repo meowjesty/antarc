@@ -63,7 +63,7 @@ impl DummyManager<Server> {
                 }
                 ScheduleEvent::ConnectionAccepted { scheduled } => {
                     debug!("Server: preparing to send {:#?}.", scheduled);
-                    let packet = self.antarc.prepare_connection_accepted(scheduled);
+                    let packet = self.antarc.create_connection_accepted(scheduled);
                     debug!("Server: ready to send {:#?}", packet);
 
                     // NOTE(alex): Dummy send.
@@ -81,10 +81,36 @@ impl DummyManager<Server> {
                 }
                 ScheduleEvent::ReliableDataTransfer { .. } => todo!(),
                 ScheduleEvent::ReliableFragment { .. } => todo!(),
-                ScheduleEvent::UnreliableDataTransfer { .. } => {
+                ScheduleEvent::UnreliableDataTransfer { scheduled } => {
                     // TODO(alex) [high] 2021-08-05: We have a handshake of sorts, now it's time
                     // to implement the other messages.
-                    todo!()
+                    //
+                    // ADD(alex) [vhigh] 2021-08-09: Need to create the actual reliability
+                    // mechanism, this means refactoring these `create_p` functions. I think moving
+                    // them into the appropriate packet type `Packet<ToSend, DataTransfer>` is the
+                    // best choice.
+                    //
+                    // How will reliability be handled though?
+                    //
+                    // Or should I tackle fragmentation / reassembly first? I think reliability is
+                    // more general, as a reliable fragment won't reassemble until all of its parts
+                    // have arrived.
+                    debug!("Server: preparing to send {:#?}.", scheduled);
+                    let packet = self.antarc.create_unreliable_data_transfer(scheduled);
+                    debug!("Server: ready to send {:#?}", packet);
+
+                    // NOTE(alex): Dummy send.
+                    {
+                        let raw_packet = packet.as_raw::<Server>();
+                        info!(
+                            "Server: sent {:#?} bytes to {:#?}",
+                            raw_packet.bytes.len(),
+                            raw_packet.address
+                        );
+                        self.dummy_sender.push(raw_packet.bytes);
+                    }
+
+                    self.antarc.sent_data_transfer(packet);
                 }
                 ScheduleEvent::UnreliableFragment { .. } => todo!(),
             }
@@ -93,6 +119,7 @@ impl DummyManager<Server> {
         // NOTE(alex): Dummy receive.
         for received in self.dummy_receiver.drain(..) {
             let raw_received = RawPacket::new("127.0.0.1:8888".parse().unwrap(), received);
+
             if let Err(fail) = self.antarc.on_received(raw_received) {
                 error!("Server: encountered error on received {:#?}.", fail);
                 self.antarc.events.api.push(AntarcEvent::Fail(fail));
