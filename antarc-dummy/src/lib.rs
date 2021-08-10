@@ -4,17 +4,17 @@ use std::net::SocketAddr;
 // buffers to move data, no sockets involved!
 pub use antarc_protocol::{
     client::Client,
-    events::AntarcEvent,
+    events::{AntarcEvent, ClientEvent, ServerEvent},
     packets::{ConnectionId, Payload, ReliabilityType},
     peers::SendTo,
     server::Server,
     Protocol,
 };
-use antarc_protocol::{events::*, packets::*};
-use log::{debug, error, info, warn};
+use antarc_protocol::{events::*, packets::*, Servicer};
+use log::*;
 
 #[derive(Debug)]
-pub struct DummyManager<Service> {
+pub struct DummyManager<Service: Servicer> {
     antarc: Protocol<Service>,
     address: SocketAddr,
     pub dummy_sender: Vec<Vec<u8>>,
@@ -49,71 +49,68 @@ impl DummyManager<Server> {
         self.antarc.schedule(reliability, send_to, payload)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ServerEvent>> {
         debug!("Server: dummy poll");
 
-        for scheduled in self.antarc.scheduler().drain(..) {
-            match scheduled {
-                ScheduleEvent::ConnectionRequest { scheduled } => {
-                    warn!("Server: invalid packet type {:#?} scheduled.", scheduled);
-                    self.antarc
-                        .events
-                        .api
-                        .push(ProtocolError::ScheduledInvalidPeer(scheduled.packet_id).into());
-                }
-                ScheduleEvent::ConnectionAccepted { scheduled } => {
-                    debug!("Server: preparing to send {:#?}.", scheduled);
-                    let packet = self.antarc.create_connection_accepted(scheduled);
-                    debug!("Server: ready to send {:#?}", packet);
+        for scheduled in self
+            .antarc
+            .service
+            .drain_connection_accepted(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Server: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_connection_accepted(scheduled);
+            debug!("Server: ready to send {:#?}", packet);
 
-                    // NOTE(alex): Dummy send.
-                    {
-                        let raw_packet = packet.as_raw::<Server>();
-                        info!(
-                            "Server: sent {:#?} bytes to {:#?}",
-                            raw_packet.bytes.len(),
-                            raw_packet.address
-                        );
-                        self.dummy_sender.push(raw_packet.bytes);
-                    }
-
-                    self.antarc.sent_connection_accepted(packet);
-                }
-                ScheduleEvent::ReliableDataTransfer { .. } => todo!(),
-                ScheduleEvent::ReliableFragment { .. } => todo!(),
-                ScheduleEvent::UnreliableDataTransfer { scheduled } => {
-                    // TODO(alex) [high] 2021-08-05: We have a handshake of sorts, now it's time
-                    // to implement the other messages.
-                    //
-                    // ADD(alex) [vhigh] 2021-08-09: Need to create the actual reliability
-                    // mechanism, this means refactoring these `create_p` functions. I think moving
-                    // them into the appropriate packet type `Packet<ToSend, DataTransfer>` is the
-                    // best choice.
-                    //
-                    // How will reliability be handled though?
-                    //
-                    // Or should I tackle fragmentation / reassembly first? I think reliability is
-                    // more general, as a reliable fragment won't reassemble until all of its parts
-                    // have arrived.
-                    debug!("Server: preparing to send {:#?}.", scheduled);
-                    let packet = self.antarc.create_unreliable_data_transfer(scheduled);
-                    debug!("Server: ready to send {:#?}", packet);
-
-                    // NOTE(alex): Dummy send.
-                    {
-                        let raw_packet = packet.as_raw::<Server>();
-                        info!(
-                            "Server: sent {:#?} bytes to {:#?}",
-                            raw_packet.bytes.len(),
-                            raw_packet.address
-                        );
-                        self.dummy_sender.push(raw_packet.bytes);
-                    }
-
-                    self.antarc.sent_data_transfer(packet);
-                }
-                ScheduleEvent::UnreliableFragment { .. } => todo!(),
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Server>();
+                info!(
+                    "Server: sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
             }
+
+            self.antarc.sent_connection_accepted(packet);
+        }
+
+        for scheduled in self
+            .antarc
+            .service
+            .drain_unreliable_data_transfer(..)
+            .collect::<Vec<_>>()
+        {
+            // TODO(alex) [high] 2021-08-05: We have a handshake of sorts, now it's time
+            // to implement the other messages.
+            //
+            // ADD(alex) [vhigh] 2021-08-09: Need to create the actual reliability
+            // mechanism, this means refactoring these `create_p` functions. I think moving
+            // them into the appropriate packet type `Packet<ToSend, DataTransfer>` is the
+            // best choice.
+            //
+            // How will reliability be handled though?
+            //
+            // Or should I tackle fragmentation / reassembly first? I think reliability is
+            // more general, as a reliable fragment won't reassemble until all of its parts
+            // have arrived.
+            debug!("Server: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_unreliable_data_transfer(scheduled);
+            debug!("Server: ready to send {:#?}", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Server>();
+                info!(
+                    "Server: sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc.sent_data_transfer(packet);
         }
 
         // NOTE(alex): Dummy receive.
@@ -122,7 +119,7 @@ impl DummyManager<Server> {
 
             if let Err(fail) = self.antarc.on_received(raw_received) {
                 error!("Server: encountered error on received {:#?}.", fail);
-                self.antarc.events.api.push(AntarcEvent::Fail(fail));
+                self.antarc.service.api.push(AntarcEvent::Fail(fail));
             }
         }
 
@@ -164,58 +161,55 @@ impl DummyManager<Client> {
         self.antarc.connect(remote_address)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ClientEvent>> {
         info!("Client: dummy poll");
 
-        for scheduled in self.antarc.scheduler().drain(..) {
-            match scheduled {
-                ScheduleEvent::ConnectionRequest { scheduled } => {
-                    debug!("Client: preparing to send {:#?}.", scheduled);
-                    let packet = self.antarc.create_connection_request(scheduled);
-                    debug!("Client: ready to send {:#?}", packet);
+        for scheduled in self
+            .antarc
+            .service
+            .drain_connection_request(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_connection_request(scheduled);
+            debug!("Client: ready to send {:#?}", packet);
 
-                    // NOTE(alex): Dummy send.
-                    {
-                        let raw_packet = packet.as_raw::<Client>();
-                        info!(
-                            "Client: sent {:#?} bytes to {:#?}",
-                            raw_packet.bytes.len(),
-                            raw_packet.address
-                        );
-                        self.dummy_sender.push(raw_packet.bytes);
-                    }
-
-                    self.antarc.sent_connection_request(packet);
-                }
-                ScheduleEvent::ConnectionAccepted { scheduled } => {
-                    warn!("Client: invalid packet type {:#?} scheduled.", scheduled);
-                    self.antarc
-                        .events
-                        .api
-                        .push(ProtocolError::ScheduledInvalidPeer(scheduled.packet_id).into());
-                }
-                ScheduleEvent::ReliableDataTransfer { .. } => todo!(),
-                ScheduleEvent::ReliableFragment { .. } => todo!(),
-                ScheduleEvent::UnreliableDataTransfer { scheduled } => {
-                    debug!("Client: preparing to send {:#?}.", scheduled);
-                    let packet = self.antarc.create_unreliable_data_transfer(scheduled);
-                    debug!("Client: ready to send {:#?}.", packet);
-
-                    // NOTE(alex): Dummy send.
-                    {
-                        let raw_packet = packet.as_raw::<Client>();
-                        info!(
-                            "Client: sent {:#?} bytes to {:#?}.",
-                            raw_packet.bytes.len(),
-                            raw_packet.address
-                        );
-                        self.dummy_sender.push(raw_packet.bytes);
-                    }
-
-                    self.antarc.sent_data_transfer(packet);
-                }
-                ScheduleEvent::UnreliableFragment { .. } => todo!(),
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
             }
+
+            self.antarc.sent_connection_request(packet);
+        }
+
+        for scheduled in self
+            .antarc
+            .service
+            .drain_unreliable_data_transfer(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_unreliable_data_transfer(scheduled);
+            debug!("Client: ready to send {:#?}.", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}.",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc.sent_data_transfer(packet);
         }
 
         // NOTE(alex): Dummy receive.
@@ -223,7 +217,7 @@ impl DummyManager<Client> {
             let raw_received = RawPacket::new("127.0.0.1:7777".parse().unwrap(), received);
             if let Err(fail) = self.antarc.on_received(raw_received) {
                 error!("Client: encountered error on received {:#?}.", fail);
-                self.antarc.events.api.push(AntarcEvent::Fail(fail));
+                self.antarc.service.api.push(AntarcEvent::Fail(fail));
             }
         }
 

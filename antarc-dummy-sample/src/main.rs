@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use antarc_dummy::{AntarcEvent, DummyManager, ReliabilityType, SendTo};
+use antarc_dummy::{AntarcEvent, ClientEvent, DummyManager, ReliabilityType, SendTo, ServerEvent};
 use log::*;
 
 fn main() {
@@ -30,22 +30,17 @@ fn server_main() {
         for event in server.poll().collect::<Vec<_>>().drain(..) {
             match event {
                 AntarcEvent::Fail(fail) => error!("{:#?}", fail),
-                AntarcEvent::ConnectionRequest {
-                    connection_id,
-                    remote,
-                } => {
-                    info!(
-                        "Server -> received a connection request from {:#?} with id {:#?}",
-                        remote, connection_id
-                    );
-                }
-                AntarcEvent::ConnectionAccepted { .. } => {
-                    // TODO(alex) [low] 2021-08-01: How do I make this impossible event disappear?
-                    // I would need to separate `ClientEvent` and `ServerEvent`, so the
-                    // `EventSystem` will be different for `Antarc<Client>` and `Antarc<Server>`.
-                    warn!("Server -> cannot handle connection accepted.");
-                    continue;
-                }
+                AntarcEvent::ServiceEvent(service_event) => match service_event {
+                    ServerEvent::ConnectionRequest {
+                        connection_id,
+                        remote,
+                    } => {
+                        info!(
+                            "Server -> received a connection request from {:#?} with id {:#?}",
+                            remote, connection_id
+                        );
+                    }
+                },
                 AntarcEvent::DataTransfer {
                     connection_id,
                     payload,
@@ -70,22 +65,17 @@ fn server_main() {
         for event in client.poll().collect::<Vec<_>>().drain(..) {
             match event {
                 AntarcEvent::Fail(fail) => error!("{:#?}", fail),
-                AntarcEvent::ConnectionRequest { .. } => {
-                    // TODO(alex) [low] 2021-08-01: How do I make this impossible event disappear?
-                    // I would need to separate `ClientEvent` and `ServerEvent`, so the
-                    // `EventSystem` will be different for `Antarc<Client>` and `Antarc<Server>`.
-                    warn!("Client -> cannot handle connection request.");
-                    continue;
-                }
-                AntarcEvent::ConnectionAccepted { connection_id } => {
-                    info!(
-                        "Client -> received connection accepted from {:#?}.",
-                        connection_id
-                    );
+                AntarcEvent::ServiceEvent(service_event) => match service_event {
+                    ClientEvent::ConnectionAccepted { connection_id } => {
+                        info!(
+                            "Client -> received connection accepted from {:#?}.",
+                            connection_id
+                        );
 
-                    let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x3; 2]);
-                    info!("Client -> result of schedule call {:#?}", scheduled);
-                }
+                        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x3; 2]);
+                        info!("Client -> result of schedule call {:#?}", scheduled);
+                    }
+                },
                 AntarcEvent::DataTransfer {
                     connection_id,
                     payload,

@@ -1,7 +1,9 @@
+use core::ops::RangeBounds;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     time::{Duration, Instant},
+    vec::Drain,
 };
 
 use log::{debug, warn};
@@ -10,8 +12,54 @@ use crate::{
     events::*,
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
-    EventSystem, Protocol,
+    EventSystem, Protocol, Servicer,
 };
+
+#[derive(Debug)]
+pub(crate) struct ServerSchedule {
+    list_scheduled_connection_accepted: Vec<Scheduled<Reliable, ConnectionAccepted>>,
+    list_scheduled_reliable_data_transfer: Vec<Scheduled<Reliable, DataTransfer>>,
+    list_scheduled_unreliable_data_transfer: Vec<Scheduled<Unreliable, DataTransfer>>,
+    list_scheduled_reliable_fragment: Vec<Scheduled<Reliable, Fragment>>,
+    list_scheduled_unreliable_fragment: Vec<Scheduled<Unreliable, Fragment>>,
+}
+
+impl ServerSchedule {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            list_scheduled_connection_accepted: Vec::with_capacity(capacity),
+            list_scheduled_reliable_data_transfer: Vec::with_capacity(capacity),
+            list_scheduled_unreliable_data_transfer: Vec::with_capacity(capacity),
+            list_scheduled_reliable_fragment: Vec::with_capacity(capacity),
+            list_scheduled_unreliable_fragment: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub(crate) fn connection_accepted(
+        &mut self,
+        scheduled: Scheduled<Reliable, ConnectionAccepted>,
+    ) {
+        self.list_scheduled_connection_accepted.push(scheduled);
+    }
+}
+
+impl ServiceScheduler for ServerSchedule {
+    fn reliable_fragment(&mut self, scheduled: Scheduled<Reliable, Fragment>) {
+        self.list_scheduled_reliable_fragment.push(scheduled);
+    }
+
+    fn unreliable_fragment(&mut self, scheduled: Scheduled<Unreliable, Fragment>) {
+        self.list_scheduled_unreliable_fragment.push(scheduled);
+    }
+
+    fn reliable_data_transfer(&mut self, scheduled: Scheduled<Reliable, DataTransfer>) {
+        self.list_scheduled_reliable_data_transfer.push(scheduled);
+    }
+
+    fn unreliable_data_transfer(&mut self, scheduled: Scheduled<Unreliable, DataTransfer>) {
+        self.list_scheduled_unreliable_data_transfer.push(scheduled);
+    }
+}
 
 #[derive(Debug)]
 pub struct Server {
@@ -21,6 +69,31 @@ pub struct Server {
     pub awaiting_connection_ack: HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
     pub connected: HashMap<ConnectionId, Peer<Connected>>,
     pub ban_list: Vec<SocketAddr>,
+
+    pub(crate) server_schedule: ServerSchedule,
+    pub api: Vec<AntarcEvent<ServerEvent>>,
+}
+
+impl Servicer for Server {}
+
+impl Server {
+    pub fn drain_connection_accepted<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Reliable, ConnectionAccepted>> {
+        self.server_schedule
+            .list_scheduled_connection_accepted
+            .drain(range)
+    }
+
+    pub fn drain_unreliable_data_transfer<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Unreliable, DataTransfer>> {
+        self.server_schedule
+            .list_scheduled_unreliable_data_transfer
+            .drain(range)
+    }
 }
 
 impl Protocol<Server> {
@@ -32,6 +105,9 @@ impl Protocol<Server> {
             awaiting_connection_ack: HashMap::with_capacity(32),
             connected: HashMap::with_capacity(32),
             ban_list: Vec::with_capacity(32),
+
+            server_schedule: ServerSchedule::new(32),
+            api: Vec::with_capacity(32),
         };
 
         Self {
@@ -120,7 +196,7 @@ impl Protocol<Server> {
 
                     self.service.connected.insert(connection_id, connected);
 
-                    self.events.api.push(AntarcEvent::DataTransfer {
+                    self.service.api.push(AntarcEvent::DataTransfer {
                         connection_id,
                         payload,
                     });
@@ -190,7 +266,7 @@ impl Protocol<Server> {
             .awaiting_connection_ack
             .get(&scheduled.message.connection_id)
             .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
-            .unwrap();
+            .expect("Creating a packet (connection accepted) should never fail!");
 
         let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
         packet
@@ -206,7 +282,7 @@ impl Protocol<Server> {
             .connected
             .get(&scheduled.message.connection_id)
             .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
-            .unwrap();
+            .expect("Creating a packet (unreliable data transfer) should never fail!");
 
         let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
         packet
@@ -234,14 +310,18 @@ impl Protocol<Server> {
                 },
                 connection_id,
             };
-            let scheduled = Scheduled {
+            let connection_accepted = Scheduled {
                 packet_id: self.packet_id_tracker,
                 address: peer.address,
                 time: self.timer.elapsed(),
                 reliability: Reliable {},
                 message,
             };
-            self.events.scheduler.push(scheduled.into());
+
+            self.service
+                .server_schedule
+                .connection_accepted(connection_accepted);
+
             self.packet_id_tracker += 1;
 
             let awaiting_connection_ack = peer.await_connection_ack(self.timer.elapsed());
@@ -249,7 +329,7 @@ impl Protocol<Server> {
                 .awaiting_connection_ack
                 .insert(connection_id, awaiting_connection_ack);
         } else {
-            self.events
+            self.service
                 .api
                 .push(ProtocolError::NotFound(connection_id).into());
         }
@@ -278,40 +358,34 @@ impl Protocol<Server> {
 
                 let fragment_total = fragments.len();
 
-                let mut schedule_events = fragments
-                    .into_iter()
-                    .map(|(fragment_index, payload)| {
-                        debug!(
-                            "server: schedule fragment {:?}/{:?}.",
-                            fragment_index, fragment_total
-                        );
-                        let schedule_event = reliability.as_fragment_event(
-                            packet_id,
-                            connection_id,
-                            payload.clone(),
-                            fragment_index,
-                            fragment_total,
-                            self.timer.elapsed(),
-                            peer.address,
-                        );
+                for (fragment_index, payload) in fragments.into_iter() {
+                    debug!(
+                        "server: schedule fragment {:?}/{:?}.",
+                        fragment_index, fragment_total
+                    );
 
-                        schedule_event
-                    })
-                    .collect::<Vec<_>>();
-
-                self.events.scheduler.append(&mut schedule_events);
+                    reliability.schedule_fragment(
+                        &mut self.service.server_schedule,
+                        packet_id,
+                        connection_id,
+                        payload.clone(),
+                        fragment_index,
+                        fragment_total,
+                        self.timer.elapsed(),
+                        peer.address.clone(),
+                    );
+                }
             } else {
                 debug!("server: schedule non-fragment.");
 
-                let schedule_event = reliability.as_data_transfer_event(
+                reliability.schedule_data_transfer(
+                    &mut self.service.server_schedule,
                     packet_id,
                     connection_id,
                     payload.clone(),
                     self.timer.elapsed(),
                     peer.address,
                 );
-
-                self.events.scheduler.push(schedule_event);
             }
 
             Ok(packet_id)
@@ -351,21 +425,16 @@ impl Protocol<Server> {
             SendTo::Single { connection_id } => {
                 debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
 
-                let old_scheduler_length = self.events.scheduler.len();
-
                 let packet_id =
                     self.schedule_for_connected_peer(payload, reliability, connection_id)?;
 
-                if self.events.scheduler.len() > old_scheduler_length {
-                    self.packet_id_tracker += 1;
-                }
+                self.packet_id_tracker += 1;
 
                 Ok(packet_id)
             }
             SendTo::Broadcast => {
                 debug!("server: SendTo::Broadcast scheduler.");
 
-                let old_scheduler_length = self.events.scheduler.len();
                 let packet_id = self.packet_id_tracker;
 
                 let connection_ids = self
@@ -381,9 +450,7 @@ impl Protocol<Server> {
                         .expect("Scheduling a broadcast should be infallible!");
                 }
 
-                if self.events.scheduler.len() > old_scheduler_length {
-                    self.packet_id_tracker += 1;
-                }
+                self.packet_id_tracker += 1;
 
                 Ok(packet_id)
             }
@@ -401,7 +468,7 @@ impl Protocol<Server> {
             || connected.values().any(|peer| peer.address == *address)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent> {
+    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ServerEvent>> {
         // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
         // The network will check if socket is ready, then call a `make_packet` that will take some
         // scheduled from the scheduler pipe, but how does it handle reliability?
@@ -414,6 +481,6 @@ impl Protocol<Server> {
         // a secondary `send_non_acked` function, that runs before the common `send`, and it takes
         // a packet from this reliable list and re-sends it, with updated time.
 
-        self.events.api.drain(..)
+        self.service.api.drain(..)
     }
 }

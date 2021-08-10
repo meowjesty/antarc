@@ -52,9 +52,11 @@ pub type ProtocolId = NonZeroU32;
 pub const PROTOCOL_ID: ProtocolId = unsafe { ProtocolId::new_unchecked(0xbabedad) };
 pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
 
+pub trait Servicer {}
+
 /// NOTE(alex): `Service` may be either a `Client` or a `Server`.
 #[derive(Debug)]
-pub struct Protocol<Service> {
+pub struct Protocol<Service: Servicer> {
     pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub service: Service,
@@ -62,12 +64,12 @@ pub struct Protocol<Service> {
     pub receiver_pipe: Vec<RawPacket<Service>>,
 }
 
-impl<Service> Protocol<Service> {
+impl<Service: Servicer> Protocol<Service> {
     pub fn cancel_packet(&mut self, _packet_id: PacketId) -> bool {
         todo!()
     }
 
-    pub fn scheduler(&mut self) -> Vec<ScheduleEvent> {
+    pub fn scheduler(&mut self) -> Vec<ScheduleTransfer> {
         self.events.scheduler.drain(..).collect()
     }
 }
@@ -75,21 +77,18 @@ impl<Service> Protocol<Service> {
 #[derive(Debug)]
 pub struct EventSystem {
     pub receiver: Vec<ReceiverEvent>,
-    pub scheduler: Vec<ScheduleEvent>,
+    pub scheduler: Vec<ScheduleTransfer>,
     pub reliable_sent: Vec<ReliableSentEvent>,
-    pub api: Vec<AntarcEvent>,
 }
 
 impl EventSystem {
     pub fn new() -> Self {
         let receiver = Vec::with_capacity(1024);
-        let api = Vec::with_capacity(1024);
         let scheduler = Vec::with_capacity(1024);
         let reliable_sent = Vec::with_capacity(1024);
 
         Self {
             receiver,
-            api,
             scheduler,
             reliable_sent,
         }

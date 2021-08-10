@@ -10,11 +10,8 @@ use crc32fast::Hasher;
 use log::{debug, error, warn};
 
 use crate::{
-    client::Client,
-    events::{ProtocolError, ScheduleEvent},
-    read_buffer_inc,
-    server::Server,
-    ProtocolId, PROTOCOL_ID, PROTOCOL_ID_BYTES,
+    client::Client, events::ProtocolError, read_buffer_inc, server::Server, ProtocolId,
+    PROTOCOL_ID, PROTOCOL_ID_BYTES,
 };
 
 pub type PacketId = u64;
@@ -653,9 +650,17 @@ pub enum ReliabilityType {
     Unreliable,
 }
 
+pub(crate) trait ServiceScheduler {
+    fn reliable_fragment(&mut self, scheduled: Scheduled<Reliable, Fragment>);
+    fn unreliable_fragment(&mut self, scheduled: Scheduled<Unreliable, Fragment>);
+    fn reliable_data_transfer(&mut self, scheduled: Scheduled<Reliable, DataTransfer>);
+    fn unreliable_data_transfer(&mut self, scheduled: Scheduled<Unreliable, DataTransfer>);
+}
+
 impl ReliabilityType {
-    pub(crate) fn as_fragment_event(
+    pub(crate) fn schedule_fragment<ServiceSchedule: ServiceScheduler>(
         self,
+        service_schedule: &mut ServiceSchedule,
         packet_id: PacketId,
         connection_id: ConnectionId,
         payload: Payload,
@@ -663,7 +668,7 @@ impl ReliabilityType {
         fragment_total: usize,
         time: Duration,
         address: SocketAddr,
-    ) -> ScheduleEvent {
+    ) {
         // TODO(alex) [mid] 2021-08-08: This and the data transfer part are
         // finnicky, if I call the wrong `new` function, we could end up with both
         // sides creating the same `ScheduleEvent`.
@@ -683,7 +688,7 @@ impl ReliabilityType {
                     address,
                 );
 
-                scheduled.into()
+                service_schedule.reliable_fragment(scheduled);
             }
             ReliabilityType::Unreliable => {
                 let scheduled: Scheduled<Unreliable, Fragment> = Scheduled::new_unreliable_fragment(
@@ -696,22 +701,20 @@ impl ReliabilityType {
                     address,
                 );
 
-                scheduled.into()
+                service_schedule.unreliable_fragment(scheduled);
             }
         }
     }
 
-    pub(crate) fn as_data_transfer_event(
+    pub(crate) fn schedule_data_transfer<ServiceSchedule: ServiceScheduler>(
         self,
+        service_schedule: &mut ServiceSchedule,
         packet_id: PacketId,
         connection_id: ConnectionId,
         payload: Payload,
         time: Duration,
         address: SocketAddr,
-    ) -> ScheduleEvent {
-        // TODO(alex) [mid] 2021-08-08: This and the fragment part are finnicky, if I call
-        // the wrong `new` function, we could end up with both sides creating the same
-        // `ScheduleEvent`.
+    ) {
         match self {
             ReliabilityType::Reliable => {
                 let scheduled: Scheduled<Reliable, DataTransfer> =
@@ -723,7 +726,7 @@ impl ReliabilityType {
                         address,
                     );
 
-                scheduled.into()
+                service_schedule.reliable_data_transfer(scheduled);
             }
             ReliabilityType::Unreliable => {
                 let scheduled: Scheduled<Unreliable, DataTransfer> =
@@ -735,7 +738,7 @@ impl ReliabilityType {
                         address,
                     );
 
-                scheduled.into()
+                service_schedule.unreliable_data_transfer(scheduled);
             }
         }
     }
