@@ -15,6 +15,9 @@ use crate::{
     EventSystem, Protocol, Servicer,
 };
 
+// TODO(alex) [high] 2021-08-10: It works, but there is a big overlap of scheduled packets here and
+// on `ClientSchedule` (data transfers, and fragments), so this implies we need to abstract it one
+// level higher, to some `Scheduler<Service>` (would be ideal).
 #[derive(Debug)]
 pub(crate) struct ServerSchedule {
     list_scheduled_connection_accepted: Vec<Scheduled<Reliable, ConnectionAccepted>>,

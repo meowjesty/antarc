@@ -148,6 +148,10 @@ pub enum ScheduleTransfer {
 
 pub trait ServiceEvent {}
 
+// TODO(alex) [high] 2021-08-10: I would like to use `S: Servicer`, instead of this `ServiceEvent`
+// trait. Not neccessarely the `Servicer` we have right now, but it would be ideal to put every
+// `Server` specific implementation under the same umbrella (same for `Client`), instead of creating
+// these new (and very similar) traits.
 #[derive(Debug)]
 pub enum AntarcEvent<S: ServiceEvent> {
     Fail(ProtocolError),
