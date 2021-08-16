@@ -12,55 +12,31 @@ use crate::{
     events::*,
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
-    EventSystem, Protocol, Servicer,
+    EventSystem, Protocol, Scheduler, Service, ServiceScheduler,
 };
 
 // TODO(alex) [high] 2021-08-10: It works, but there is a big overlap of scheduled packets here and
 // on `ClientSchedule` (data transfers, and fragments), so this implies we need to abstract it one
 // level higher, to some `Scheduler<Service>` (would be ideal).
 #[derive(Debug)]
-pub(crate) struct ServerSchedule {
+pub(crate) struct ServerScheduler {
     list_scheduled_connection_accepted: Vec<Scheduled<Reliable, ConnectionAccepted>>,
-    list_scheduled_reliable_data_transfer: Vec<Scheduled<Reliable, DataTransfer>>,
-    list_scheduled_unreliable_data_transfer: Vec<Scheduled<Unreliable, DataTransfer>>,
-    list_scheduled_reliable_fragment: Vec<Scheduled<Reliable, Fragment>>,
-    list_scheduled_unreliable_fragment: Vec<Scheduled<Unreliable, Fragment>>,
 }
 
-impl ServerSchedule {
-    pub(crate) fn new(capacity: usize) -> Self {
+impl ServiceScheduler for ServerScheduler {
+    fn new(capacity: usize) -> Self {
         Self {
             list_scheduled_connection_accepted: Vec::with_capacity(capacity),
-            list_scheduled_reliable_data_transfer: Vec::with_capacity(capacity),
-            list_scheduled_unreliable_data_transfer: Vec::with_capacity(capacity),
-            list_scheduled_reliable_fragment: Vec::with_capacity(capacity),
-            list_scheduled_unreliable_fragment: Vec::with_capacity(capacity),
         }
     }
+}
 
+impl ServerScheduler {
     pub(crate) fn connection_accepted(
         &mut self,
         scheduled: Scheduled<Reliable, ConnectionAccepted>,
     ) {
         self.list_scheduled_connection_accepted.push(scheduled);
-    }
-}
-
-impl ServiceScheduler for ServerSchedule {
-    fn reliable_fragment(&mut self, scheduled: Scheduled<Reliable, Fragment>) {
-        self.list_scheduled_reliable_fragment.push(scheduled);
-    }
-
-    fn unreliable_fragment(&mut self, scheduled: Scheduled<Unreliable, Fragment>) {
-        self.list_scheduled_unreliable_fragment.push(scheduled);
-    }
-
-    fn reliable_data_transfer(&mut self, scheduled: Scheduled<Reliable, DataTransfer>) {
-        self.list_scheduled_reliable_data_transfer.push(scheduled);
-    }
-
-    fn unreliable_data_transfer(&mut self, scheduled: Scheduled<Unreliable, DataTransfer>) {
-        self.list_scheduled_unreliable_data_transfer.push(scheduled);
     }
 }
 
@@ -73,18 +49,19 @@ pub struct Server {
     pub connected: HashMap<ConnectionId, Peer<Connected>>,
     pub ban_list: Vec<SocketAddr>,
 
-    pub(crate) server_schedule: ServerSchedule,
+    pub(crate) scheduler: Scheduler<ServerScheduler>,
     pub api: Vec<AntarcEvent<ServerEvent>>,
 }
 
-impl Servicer for Server {}
+impl Service for Server {}
 
 impl Server {
     pub fn drain_connection_accepted<R: RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Drain<Scheduled<Reliable, ConnectionAccepted>> {
-        self.server_schedule
+        self.scheduler
+            .service
             .list_scheduled_connection_accepted
             .drain(range)
     }
@@ -93,7 +70,7 @@ impl Server {
         &mut self,
         range: R,
     ) -> Drain<Scheduled<Unreliable, DataTransfer>> {
-        self.server_schedule
+        self.scheduler
             .list_scheduled_unreliable_data_transfer
             .drain(range)
     }
@@ -109,7 +86,7 @@ impl Protocol<Server> {
             connected: HashMap::with_capacity(32),
             ban_list: Vec::with_capacity(32),
 
-            server_schedule: ServerSchedule::new(32),
+            scheduler: Scheduler::new(32),
             api: Vec::with_capacity(32),
         };
 
@@ -322,7 +299,8 @@ impl Protocol<Server> {
             };
 
             self.service
-                .server_schedule
+                .scheduler
+                .service
                 .connection_accepted(connection_accepted);
 
             self.packet_id_tracker += 1;
@@ -367,8 +345,8 @@ impl Protocol<Server> {
                         fragment_index, fragment_total
                     );
 
-                    reliability.schedule_fragment(
-                        &mut self.service.server_schedule,
+                    self.service.scheduler.schedule_fragment(
+                        reliability,
                         packet_id,
                         connection_id,
                         payload.clone(),
@@ -381,8 +359,8 @@ impl Protocol<Server> {
             } else {
                 debug!("server: schedule non-fragment.");
 
-                reliability.schedule_data_transfer(
-                    &mut self.service.server_schedule,
+                self.service.scheduler.schedule_data_transfer(
+                    reliability,
                     packet_id,
                     connection_id,
                     payload.clone(),

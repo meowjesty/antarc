@@ -10,12 +10,12 @@ pub use antarc_protocol::{
     server::Server,
     Protocol,
 };
-use antarc_protocol::{events::*, packets::*, Servicer};
+use antarc_protocol::{events::*, packets::*, Service};
 use log::*;
 
 #[derive(Debug)]
-pub struct DummyManager<Service: Servicer> {
-    antarc: Protocol<Service>,
+pub struct DummyManager<S: Service> {
+    antarc: Protocol<S>,
     address: SocketAddr,
     pub dummy_sender: Vec<Vec<u8>>,
     pub dummy_receiver: Vec<Vec<u8>>,
