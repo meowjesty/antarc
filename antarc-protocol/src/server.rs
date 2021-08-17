@@ -58,6 +58,14 @@ impl Protocol<Server> {
             .create_unreliable_data_transfer(scheduled, self.timer.elapsed())
     }
 
+    pub fn create_reliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Reliable, DataTransfer>,
+    ) -> Packet<ToSend, DataTransfer> {
+        self.service
+            .create_reliable_data_transfer(scheduled, self.timer.elapsed())
+    }
+
     pub fn sent_data_transfer(
         &mut self,
         packet: Packet<ToSend, DataTransfer>,

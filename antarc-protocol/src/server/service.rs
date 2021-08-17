@@ -319,6 +319,21 @@ impl Server {
         packet
     }
 
+    pub(crate) fn create_reliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Reliable, DataTransfer>,
+        time: Duration,
+    ) -> Packet<ToSend, DataTransfer> {
+        let (sequence, ack) = self
+            .connected
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (reliable data transfer) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, time);
+        packet
+    }
+
     pub(crate) fn sent_data_transfer(
         &mut self,
         packet: Packet<ToSend, DataTransfer>,
@@ -332,12 +347,10 @@ impl Server {
             connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
         }
 
-        match reliability {
-            ReliabilityType::Reliable => self
-                .reliability_handler
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
                 .list_sent_reliable_data_transfer
-                .push(sent),
-            ReliabilityType::Unreliable => {}
+                .push(sent);
         }
     }
 
@@ -494,6 +507,15 @@ impl Server {
     ) -> Drain<Scheduled<Unreliable, DataTransfer>> {
         self.scheduler
             .list_scheduled_unreliable_data_transfer
+            .drain(range)
+    }
+
+    pub fn drain_reliable_data_transfer<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Reliable, DataTransfer>> {
+        self.scheduler
+            .list_scheduled_reliable_data_transfer
             .drain(range)
     }
 

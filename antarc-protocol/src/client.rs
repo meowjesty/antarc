@@ -43,9 +43,21 @@ impl Protocol<Client> {
             .create_unreliable_data_transfer(scheduled, self.timer.elapsed())
     }
 
-    pub fn sent_data_transfer(&mut self, packet: Packet<ToSend, DataTransfer>) {
+    pub fn create_reliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Reliable, DataTransfer>,
+    ) -> Packet<ToSend, DataTransfer> {
         self.service
-            .sent_data_transfer(packet, self.timer.elapsed())
+            .create_reliable_data_transfer(scheduled, self.timer.elapsed())
+    }
+
+    pub fn sent_data_transfer(
+        &mut self,
+        packet: Packet<ToSend, DataTransfer>,
+        reliability: ReliabilityType,
+    ) {
+        self.service
+            .sent_data_transfer(packet, self.timer.elapsed(), reliability)
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
@@ -79,6 +91,22 @@ impl Protocol<Client> {
         self.packet_id_tracker += 1;
 
         Ok(packet_id)
+    }
+
+    pub fn resend_reliable_connection_request(
+        &mut self,
+    ) -> Option<Packet<ToSend, ConnectionRequest>> {
+        self.service
+            .resend_reliable_connection_request(self.timer.elapsed())
+    }
+
+    pub fn resend_reliable_data_transfer(&mut self) -> Option<Packet<ToSend, DataTransfer>> {
+        self.service
+            .resend_reliable_data_transfer(self.timer.elapsed())
+    }
+
+    pub fn resend_reliable_fragment(&mut self) -> Option<Packet<ToSend, Fragment>> {
+        self.service.resend_reliable_fragment(self.timer.elapsed())
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {

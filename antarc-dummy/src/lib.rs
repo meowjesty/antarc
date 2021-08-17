@@ -142,6 +142,31 @@ impl DummyManager<Server> {
                 .sent_data_transfer(packet, ReliabilityType::Unreliable);
         }
 
+        for scheduled in self
+            .antarc
+            .service
+            .drain_reliable_data_transfer(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Server: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_reliable_data_transfer(scheduled);
+            debug!("Server: ready to send {:#?}", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Server>();
+                info!(
+                    "Server: sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_data_transfer(packet, ReliabilityType::Reliable);
+        }
+
         // NOTE(alex): Dummy receive.
         for received in self.dummy_receiver.drain(..) {
             let raw_received = RawPacket::new("127.0.0.1:8888".parse().unwrap(), received);
@@ -193,6 +218,41 @@ impl DummyManager<Client> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {
         info!("Client: dummy poll");
 
+        if let Some(reliable_packet) = self.antarc.resend_reliable_connection_request() {
+            debug!("Client: ready to re-send {:#?}", reliable_packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = reliable_packet.as_raw::<Server>();
+                info!(
+                    "Client: re-sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc.sent_connection_request(reliable_packet);
+        }
+
+        if let Some(reliable_packet) = self.antarc.resend_reliable_data_transfer() {
+            debug!("Client: ready to re-send {:#?}", reliable_packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = reliable_packet.as_raw::<Server>();
+                info!(
+                    "Client: re-sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_data_transfer(reliable_packet, ReliabilityType::Reliable);
+        }
+
         for scheduled in self
             .antarc
             .service
@@ -238,7 +298,44 @@ impl DummyManager<Client> {
                 self.dummy_sender.push(raw_packet.bytes);
             }
 
-            self.antarc.sent_data_transfer(packet);
+            self.antarc
+                .sent_data_transfer(packet, ReliabilityType::Unreliable);
+        }
+
+        for scheduled in self
+            .antarc
+            .service
+            .drain_reliable_data_transfer(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            // TODO(alex) [high] 2021-08-17: The whole chain for this function is filled with
+            // unneccesary duplication. Creation of unreliable / reliable packets are equal, the
+            // only differences in reliability come AFTER the packet is sent.
+            //
+            // This means that these `create_` functions could take `<R: Reliability>` or something
+            // generic like that, to avoid the need for 2 distinct function definitions.
+            //
+            // The duplication also applies to other `create_x` functions that are basically the
+            // same for both Client and Server, but right now are completely separated.
+            //
+            // Most `drain_x` functions could be done at `impl<S: Service> Protocol<S>`.
+            let packet = self.antarc.create_reliable_data_transfer(scheduled);
+            debug!("Client: ready to send {:#?}.", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}.",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_data_transfer(packet, ReliabilityType::Reliable);
         }
 
         // NOTE(alex): Dummy receive.

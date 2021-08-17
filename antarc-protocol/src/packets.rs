@@ -754,6 +754,31 @@ impl Scheduled<Unreliable, DataTransfer> {
     }
 }
 
+impl Scheduled<Reliable, DataTransfer> {
+    pub fn into_packet(
+        self,
+        sequence: Sequence,
+        ack: Ack,
+        time: Duration,
+    ) -> Packet<ToSend, DataTransfer> {
+        let delivery = ToSend {
+            id: self.packet_id,
+            meta: MetaDelivery {
+                time,
+                address: self.address,
+            },
+        };
+        let packet = Packet {
+            delivery,
+            sequence,
+            ack,
+            message: self.message,
+        };
+
+        packet
+    }
+}
+
 impl Scheduled<Unreliable, Fragment> {
     pub(crate) fn new_unreliable_fragment(
         packet_id: PacketId,

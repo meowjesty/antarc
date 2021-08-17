@@ -44,6 +44,37 @@ impl ClientReliabilityHandler {
     pub(crate) fn connection_request(&mut self, packet: Packet<Sent, ConnectionRequest>) {
         self.list_sent_connection_request.push(packet);
     }
+
+    fn resend_reliable_connection_request(
+        &mut self,
+        now: Duration,
+    ) -> Option<Packet<ToSend, ConnectionRequest>> {
+        if let Some(packet) = self.list_sent_connection_request.pop() {
+            if packet.delivery.meta.time + now > Duration::from_secs(1000) {
+                let meta = MetaDelivery {
+                    time: now,
+                    address: packet.delivery.meta.address,
+                };
+                let delivery = ToSend {
+                    id: packet.delivery.id,
+                    meta,
+                };
+                let message = ConnectionRequest {
+                    meta: packet.message.meta,
+                };
+                let result = Packet {
+                    delivery,
+                    sequence: packet.sequence,
+                    ack: packet.ack,
+                    message,
+                };
+
+                return Some(result);
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -127,10 +158,26 @@ impl Client {
         packet
     }
 
+    pub(crate) fn create_reliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Reliable, DataTransfer>,
+        time: Duration,
+    ) -> Packet<ToSend, DataTransfer> {
+        let (sequence, ack) = self
+            .connected
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (unreliable data transfer) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, time);
+        packet
+    }
+
     pub(crate) fn sent_data_transfer(
         &mut self,
         packet: Packet<ToSend, DataTransfer>,
         time: Duration,
+        reliability: ReliabilityType,
     ) {
         let sent = packet.sent(time);
         let address = sent.delivery.meta.address;
@@ -143,6 +190,12 @@ impl Client {
 
         if let Some(connected) = self.connected.get_mut(&connection_id) {
             connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_data_transfer
+                .push(sent);
         }
     }
 
@@ -380,5 +433,37 @@ impl Client {
         self.scheduler
             .list_scheduled_unreliable_data_transfer
             .drain(range)
+    }
+
+    pub fn drain_reliable_data_transfer<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Reliable, DataTransfer>> {
+        self.scheduler
+            .list_scheduled_reliable_data_transfer
+            .drain(range)
+    }
+
+    pub(crate) fn resend_reliable_connection_request(
+        &mut self,
+        time: Duration,
+    ) -> Option<Packet<ToSend, ConnectionRequest>> {
+        self.reliability_handler
+            .service
+            .resend_reliable_connection_request(time)
+    }
+
+    pub(crate) fn resend_reliable_data_transfer(
+        &mut self,
+        time: Duration,
+    ) -> Option<Packet<ToSend, DataTransfer>> {
+        self.reliability_handler.resend_reliable_data_transfer(time)
+    }
+
+    pub(crate) fn resend_reliable_fragment(
+        &mut self,
+        time: Duration,
+    ) -> Option<Packet<ToSend, Fragment>> {
+        self.reliability_handler.resend_reliable_fragment(time)
     }
 }
