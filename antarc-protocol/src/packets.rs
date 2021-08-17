@@ -366,6 +366,7 @@ pub struct ToSend {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sent {
+    pub id: PacketId,
     pub meta: MetaDelivery,
 }
 
@@ -376,6 +377,7 @@ pub struct Received {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Acked {
+    pub id: PacketId,
     pub meta: MetaDelivery,
 }
 
@@ -583,6 +585,7 @@ where
     pub fn sent(self, time: Duration) -> Packet<Sent, Message> {
         let packet = Packet {
             delivery: Sent {
+                id: self.delivery.id,
                 meta: MetaDelivery {
                     time,
                     address: self.delivery.meta.address,

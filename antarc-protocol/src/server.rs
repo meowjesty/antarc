@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 
 use crate::{errors::*, events::*, packets::*, peers::*, Protocol};
 
@@ -31,6 +31,15 @@ impl Protocol<Server> {
         Ok(())
     }
 
+    // REGION(alex): Connection Accepted
+    pub fn create_connection_accepted(
+        &self,
+        scheduled: Scheduled<Reliable, ConnectionAccepted>,
+    ) -> Packet<ToSend, ConnectionAccepted> {
+        self.service
+            .create_connection_accepted(scheduled, self.timer.elapsed())
+    }
+
     // TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
     // If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
     //
@@ -38,14 +47,6 @@ impl Protocol<Server> {
     pub fn sent_connection_accepted(&mut self, packet: Packet<ToSend, ConnectionAccepted>) {
         self.service
             .sent_connection_accepted(packet, self.timer.elapsed());
-    }
-
-    pub fn create_connection_accepted(
-        &self,
-        scheduled: Scheduled<Reliable, ConnectionAccepted>,
-    ) -> Packet<ToSend, ConnectionAccepted> {
-        self.service
-            .create_connection_accepted(scheduled, self.timer.elapsed())
     }
 
     // REGION(alex): Data Transfer
@@ -57,9 +58,13 @@ impl Protocol<Server> {
             .create_unreliable_data_transfer(scheduled, self.timer.elapsed())
     }
 
-    pub fn sent_data_transfer(&mut self, packet: Packet<ToSend, DataTransfer>) {
+    pub fn sent_data_transfer(
+        &mut self,
+        packet: Packet<ToSend, DataTransfer>,
+        reliability: ReliabilityType,
+    ) {
         self.service
-            .sent_data_transfer(packet, self.timer.elapsed())
+            .sent_data_transfer(packet, self.timer.elapsed(), reliability)
     }
 
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
@@ -96,6 +101,22 @@ impl Protocol<Server> {
         self.packet_id_tracker += 1;
 
         Ok(packet_id)
+    }
+
+    pub fn resend_reliable_connection_accepted(
+        &mut self,
+    ) -> Option<Packet<ToSend, ConnectionAccepted>> {
+        self.service
+            .resend_reliable_connection_accepted(self.timer.elapsed())
+    }
+
+    pub fn resend_reliable_data_transfer(&mut self) -> Option<Packet<ToSend, DataTransfer>> {
+        self.service
+            .resend_reliable_data_transfer(self.timer.elapsed())
+    }
+
+    pub fn resend_reliable_fragment(&mut self) -> Option<Packet<ToSend, Fragment>> {
+        self.service.resend_reliable_fragment(self.timer.elapsed())
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {

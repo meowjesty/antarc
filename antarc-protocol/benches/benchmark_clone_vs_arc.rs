@@ -19,7 +19,7 @@ fn bench_clone_vs_arc(c: &mut Criterion) {
     let medium_data_vec: Vec<u8> = MEDIUM_RANGE.into_iter().map(|val| val as u8).collect();
     let small_data_vec: Vec<u8> = SMALL_RANGE.into_iter().map(|val| val as u8).collect();
 
-    let big_data_arc: Arc<Vec<u8>> = Arc::new(big_data_vec.clone());
+    let _big_data_arc: Arc<Vec<u8>> = Arc::new(big_data_vec.clone());
     let medium_data_arc: Arc<Vec<u8>> = Arc::new(medium_data_vec.clone());
     let small_data_arc: Arc<Vec<u8>> = Arc::new(small_data_vec.clone());
 

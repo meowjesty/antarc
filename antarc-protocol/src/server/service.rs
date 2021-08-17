@@ -44,6 +44,38 @@ impl ServerReliabilityHandler {
     pub(crate) fn connection_accepted(&mut self, packet: Packet<Sent, ConnectionAccepted>) {
         self.list_sent_connection_accepted.push(packet);
     }
+
+    fn resend_reliable_connection_accepted(
+        &mut self,
+        now: Duration,
+    ) -> Option<Packet<ToSend, ConnectionAccepted>> {
+        if let Some(packet) = self.list_sent_connection_accepted.pop() {
+            if packet.delivery.meta.time + now > Duration::from_secs(1000) {
+                let meta = MetaDelivery {
+                    time: now,
+                    address: packet.delivery.meta.address,
+                };
+                let delivery = ToSend {
+                    id: packet.delivery.id,
+                    meta,
+                };
+                let message = ConnectionAccepted {
+                    meta: packet.message.meta,
+                    connection_id: packet.message.connection_id,
+                };
+                let result = Packet {
+                    delivery,
+                    sequence: packet.sequence,
+                    ack: packet.ack,
+                    message,
+                };
+
+                return Some(result);
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -217,6 +249,13 @@ impl Server {
 
                     self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
+
+                        // TODO(alex) [low] 2021-08-16: Right now this is completely safe, as the
+                        // decoded packet is the only owner of this `Arc<Payload>`. Only the sending
+                        // side has to deal with shared ownership.
+                        //
+                        // This means that `Arc<Payload>` here doesn't actually make any sense, it
+                        // should be the only owner.
                         payload: Arc::try_unwrap(payload).unwrap(),
                     });
                 }
@@ -284,12 +323,21 @@ impl Server {
         &mut self,
         packet: Packet<ToSend, DataTransfer>,
         time: Duration,
+        reliability: ReliabilityType,
     ) {
         let sent = packet.sent(time);
         let connection_id = sent.message.connection_id;
 
         if let Some(connected) = self.connected.get_mut(&connection_id) {
             connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        match reliability {
+            ReliabilityType::Reliable => self
+                .reliability_handler
+                .list_sent_reliable_data_transfer
+                .push(sent),
+            ReliabilityType::Unreliable => {}
         }
     }
 
@@ -447,5 +495,28 @@ impl Server {
         self.scheduler
             .list_scheduled_unreliable_data_transfer
             .drain(range)
+    }
+
+    pub(crate) fn resend_reliable_connection_accepted(
+        &mut self,
+        time: Duration,
+    ) -> Option<Packet<ToSend, ConnectionAccepted>> {
+        self.reliability_handler
+            .service
+            .resend_reliable_connection_accepted(time)
+    }
+
+    pub(crate) fn resend_reliable_data_transfer(
+        &mut self,
+        time: Duration,
+    ) -> Option<Packet<ToSend, DataTransfer>> {
+        self.reliability_handler.resend_reliable_data_transfer(time)
+    }
+
+    pub(crate) fn resend_reliable_fragment(
+        &mut self,
+        time: Duration,
+    ) -> Option<Packet<ToSend, Fragment>> {
+        self.reliability_handler.resend_reliable_fragment(time)
     }
 }

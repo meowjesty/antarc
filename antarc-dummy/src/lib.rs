@@ -45,6 +45,41 @@ impl DummyManager<Server> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
         debug!("Server: dummy poll");
 
+        if let Some(reliable_packet) = self.antarc.resend_reliable_connection_accepted() {
+            debug!("Server: ready to re-send {:#?}", reliable_packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = reliable_packet.as_raw::<Server>();
+                info!(
+                    "Server: re-sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc.sent_connection_accepted(reliable_packet);
+        }
+
+        if let Some(reliable_packet) = self.antarc.resend_reliable_data_transfer() {
+            debug!("Server: ready to re-send {:#?}", reliable_packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = reliable_packet.as_raw::<Server>();
+                info!(
+                    "Server: re-sent {:#?} bytes to {:#?}",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_data_transfer(reliable_packet, ReliabilityType::Reliable);
+        }
+
         for scheduled in self
             .antarc
             .service
@@ -103,7 +138,8 @@ impl DummyManager<Server> {
                 self.dummy_sender.push(raw_packet.bytes);
             }
 
-            self.antarc.sent_data_transfer(packet);
+            self.antarc
+                .sent_data_transfer(packet, ReliabilityType::Unreliable);
         }
 
         // NOTE(alex): Dummy receive.

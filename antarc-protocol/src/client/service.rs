@@ -224,6 +224,13 @@ impl Client {
 
                     self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
+
+                        // TODO(alex) [low] 2021-08-16: Right now this is completely safe, as the
+                        // decoded packet is the only owner of this `Arc<Payload>`. Only the sending
+                        // side has to deal with shared ownership.
+                        //
+                        // This means that `Arc<Payload>` here doesn't actually make any sense, it
+                        // should be the only owner.
                         payload: Arc::try_unwrap(payload).unwrap(),
                     });
                 }

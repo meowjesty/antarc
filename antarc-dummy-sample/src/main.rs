@@ -1,6 +1,8 @@
 use std::{env, time::Duration};
 
-use antarc_dummy::{ProtocolEvent, ClientEvent, DummyManager, ReliabilityType, SendTo, ServerEvent};
+use antarc_dummy::{
+    ClientEvent, DummyManager, ProtocolEvent, ReliabilityType, SendTo, ServerEvent,
+};
 use log::*;
 
 fn main() {
@@ -97,6 +99,9 @@ fn server_main() {
 
         let scheduled =
             server.schedule(ReliabilityType::Unreliable, SendTo::Broadcast, vec![0x2; 2]);
+        info!("Server -> result of schedule call {:#?}", scheduled);
+
+        let scheduled = server.schedule(ReliabilityType::Reliable, SendTo::Broadcast, vec![0x6; 2]);
         info!("Server -> result of schedule call {:#?}", scheduled);
 
         server.dummy_receiver = client.dummy_sender.clone();
