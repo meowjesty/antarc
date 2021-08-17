@@ -6,20 +6,16 @@
 // #![feature(const_try)]
 
 use core::mem::size_of;
-use std::{
-    net::SocketAddr,
-    num::NonZeroU32,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::{Duration, Instant}};
 
 use packets::*;
 
 pub mod client;
+pub mod errors;
 pub mod events;
 pub mod packets;
 pub mod peers;
 pub mod server;
-pub mod errors;
 
 #[macro_export]
 macro_rules! read_buffer_inc {
@@ -144,19 +140,12 @@ impl<S: ServiceScheduler> Scheduler<S> {
         reliability: ReliabilityType,
         packet_id: PacketId,
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         fragment_index: usize,
         fragment_total: usize,
         time: Duration,
         address: SocketAddr,
     ) {
-        // TODO(alex) [mid] 2021-08-08: This and the data transfer part are
-        // finnicky, if I call the wrong `new` function, we could end up with both
-        // sides creating the same `ScheduleEvent`.
-        //
-        // Maybe one simple way of solving this would be to put the `Reliable` and
-        // `Unreliable` types inside the `ReliabilityType::Reliable(Reliable)` for
-        // example, and pass it into the `new` functions.
         match reliability {
             ReliabilityType::Reliable => {
                 let scheduled: Scheduled<Reliable, Fragment> = Scheduled::new_reliable_fragment(
@@ -192,7 +181,7 @@ impl<S: ServiceScheduler> Scheduler<S> {
         reliability: ReliabilityType,
         packet_id: PacketId,
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         time: Duration,
         address: SocketAddr,
     ) {

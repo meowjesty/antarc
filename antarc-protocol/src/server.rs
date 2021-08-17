@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use crate::{errors::*, events::*, packets::*, peers::*, Protocol};
 

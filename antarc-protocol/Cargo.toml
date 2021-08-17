@@ -10,3 +10,11 @@ antarc-macro = { path = "../antarc-macro" }
 crc32fast = { version = "*", features = ["std", "nightly"] }
 log = { version = "*" }
 thiserror = "*"
+
+[dev-dependencies]
+criterion = "*"
+rand = "*"
+
+[[bench]]
+name = "benchmark_clone_vs_arc"
+harness = false

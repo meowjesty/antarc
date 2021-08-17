@@ -1,5 +1,5 @@
 use core::{ops::RangeBounds, time::Duration};
-use std::{collections::HashMap, net::SocketAddr, vec::Drain};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, vec::Drain};
 
 use log::*;
 
@@ -224,7 +224,7 @@ impl Client {
 
                     self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
-                        payload,
+                        payload: Arc::try_unwrap(payload).unwrap(),
                     });
                 }
 
@@ -297,7 +297,7 @@ impl Client {
     pub(crate) fn schedule(
         &mut self,
         reliability: ReliabilityType,
-        payload: Payload,
+        payload: Arc<Payload>,
         packet_id: PacketId,
         time: Duration,
     ) -> Result<PacketId, ProtocolError> {
@@ -315,7 +315,7 @@ impl Client {
                 let fragments = payload
                     .chunks(MAX_FRAGMENT_SIZE)
                     .enumerate()
-                    .map(|(index, chunk)| (index, chunk.to_vec()))
+                    .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
                     .collect::<Vec<_>>();
 
                 let fragment_total = fragments.len();
@@ -330,7 +330,7 @@ impl Client {
                         reliability,
                         packet_id,
                         connection_id,
-                        payload.clone(),
+                        payload,
                         fragment_index,
                         fragment_total,
                         time,
@@ -344,7 +344,7 @@ impl Client {
                     reliability,
                     packet_id,
                     connection_id,
-                    payload.clone(),
+                    payload,
                     time,
                     peer.address,
                 );

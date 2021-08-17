@@ -217,7 +217,7 @@ impl Server {
 
                     self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
-                        payload,
+                        payload: Arc::try_unwrap(payload).unwrap(),
                     });
                 }
 
@@ -299,7 +299,7 @@ impl Server {
     /// it's possible. Leaving it with low priority for now though.
     fn schedule_for_connected_peer(
         &mut self,
-        payload: Payload,
+        payload: Arc<Payload>,
         reliability: ReliabilityType,
         connection_id: ConnectionId,
         packet_id: PacketId,
@@ -311,7 +311,7 @@ impl Server {
                 let fragments = payload
                     .chunks(MAX_FRAGMENT_SIZE)
                     .enumerate()
-                    .map(|(index, chunk)| (index, chunk.to_vec()))
+                    .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
                     .collect::<Vec<_>>();
 
                 let fragment_total = fragments.len();
@@ -326,7 +326,7 @@ impl Server {
                         reliability,
                         packet_id,
                         connection_id,
-                        payload.clone(),
+                        payload,
                         fragment_index,
                         fragment_total,
                         time,
@@ -340,7 +340,7 @@ impl Server {
                     reliability,
                     packet_id,
                     connection_id,
-                    payload.clone(),
+                    payload,
                     time,
                     peer.address,
                 );
@@ -381,12 +381,14 @@ impl Server {
             return Err(ProtocolError::NoPeersConnected);
         }
 
+        let payload = Arc::new(payload);
+
         match send_to {
             SendTo::Single { connection_id } => {
                 debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
 
                 let packet_id = self.schedule_for_connected_peer(
-                    payload,
+                    payload.clone(),
                     reliability,
                     connection_id,
                     packet_id,

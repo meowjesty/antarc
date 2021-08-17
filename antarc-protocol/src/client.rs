@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Instant};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use crate::{errors::*, events::*, packets::*, Protocol};
 
@@ -68,6 +68,7 @@ impl Protocol<Client> {
         reliability: ReliabilityType,
         payload: Payload,
     ) -> Result<PacketId, ProtocolError> {
+        let payload = Arc::new(payload);
         let packet_id = self.service.schedule(
             reliability,
             payload,

@@ -4,6 +4,7 @@ use std::{
     marker::PhantomData,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
+    sync::Arc,
 };
 
 use crc32fast::Hasher;
@@ -143,7 +144,7 @@ impl RawPacket<Server> {
                 let message = DataTransfer {
                     meta: MetaMessage { packet_type },
                     connection_id: read_connection_id.try_into()?,
-                    payload: read_payload,
+                    payload: Arc::new(read_payload),
                 };
 
                 let packet = Packet {
@@ -228,7 +229,7 @@ impl RawPacket<Client> {
                 let message = DataTransfer {
                     meta: MetaMessage { packet_type },
                     connection_id: read_connection_id.try_into()?,
-                    payload: read_payload,
+                    payload: Arc::new(read_payload),
                 };
 
                 let packet = Packet {
@@ -407,7 +408,7 @@ pub struct ConnectionAccepted {
 pub struct DataTransfer {
     pub meta: MetaMessage,
     pub connection_id: ConnectionId,
-    pub payload: Payload,
+    pub payload: Arc<Payload>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -416,13 +417,13 @@ pub struct Fragment {
     pub connection_id: ConnectionId,
     pub index: u8,
     pub total: u8,
-    pub payload: Payload,
+    pub payload: Arc<Payload>,
 }
 
 impl Fragment {
     pub(crate) fn new(
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         fragment_index: usize,
         fragment_total: usize,
     ) -> Self {
@@ -442,7 +443,7 @@ impl Fragment {
 }
 
 impl DataTransfer {
-    pub(crate) fn new(connection_id: ConnectionId, payload: Payload) -> Self {
+    pub(crate) fn new(connection_id: ConnectionId, payload: Arc<Payload>) -> Self {
         let meta = MetaMessage {
             packet_type: Self::PACKET_TYPE,
         };
@@ -537,9 +538,9 @@ impl Encoder for DataTransfer {
     fn encoded(&self) -> Vec<u8> {
         let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
         let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
-        let payload = self.payload.clone();
+        let payload = &self.payload;
 
-        let encoded = vec![packet_type_bytes, connection_id_bytes, payload].concat();
+        let encoded = vec![packet_type_bytes, connection_id_bytes, payload.to_vec()].concat();
         encoded
     }
 }
@@ -754,7 +755,7 @@ impl Scheduled<Unreliable, Fragment> {
     pub(crate) fn new_unreliable_fragment(
         packet_id: PacketId,
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         fragment_index: usize,
         fragment_total: usize,
         time: Duration,
@@ -776,7 +777,7 @@ impl Scheduled<Reliable, Fragment> {
     pub(crate) fn new_reliable_fragment(
         packet_id: PacketId,
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         fragment_index: usize,
         fragment_total: usize,
         time: Duration,
@@ -798,7 +799,7 @@ impl Scheduled<Unreliable, DataTransfer> {
     pub(crate) fn new_unreliable_data_transfer(
         packet_id: PacketId,
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         time: Duration,
         address: SocketAddr,
     ) -> Self {
@@ -818,7 +819,7 @@ impl Scheduled<Reliable, DataTransfer> {
     pub(crate) fn new_reliable_data_transfer(
         packet_id: PacketId,
         connection_id: ConnectionId,
-        payload: Payload,
+        payload: Arc<Payload>,
         time: Duration,
         address: SocketAddr,
     ) -> Self {
