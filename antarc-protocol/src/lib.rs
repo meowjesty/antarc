@@ -58,10 +58,6 @@ pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().t
 
 pub trait Service {}
 
-pub(crate) trait ServiceScheduler {
-    fn new(capacity: usize) -> Self;
-}
-
 /// NOTE(alex): `Service` may be either a `Client` or a `Server`.
 #[derive(Debug)]
 pub struct Protocol<S: Service> {
@@ -99,6 +95,10 @@ impl EventSystem {
     }
 }
 
+pub(crate) trait ServiceScheduler {
+    fn new(capacity: usize) -> Self;
+}
+
 #[derive(Debug)]
 pub(crate) struct Scheduler<S: ServiceScheduler> {
     list_scheduled_reliable_data_transfer: Vec<Scheduled<Reliable, DataTransfer>>,
@@ -107,6 +107,28 @@ pub(crate) struct Scheduler<S: ServiceScheduler> {
     list_scheduled_unreliable_fragment: Vec<Scheduled<Unreliable, Fragment>>,
 
     service: S,
+}
+
+pub(crate) trait ServiceReliability {
+    fn new(capacity: usize) -> Self;
+}
+
+#[derive(Debug)]
+pub(crate) struct ReliabilityHandler<S: ServiceReliability> {
+    list_sent_reliable_data_transfer: Vec<Packet<Sent, DataTransfer>>,
+    list_sent_reliable_fragment: Vec<Packet<Sent, Fragment>>,
+
+    service: S,
+}
+
+impl<S: ServiceReliability> ReliabilityHandler<S> {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            list_sent_reliable_data_transfer: Vec::with_capacity(capacity),
+            list_sent_reliable_fragment: Vec::with_capacity(capacity),
+            service: S::new(capacity),
+        }
+    }
 }
 
 impl<S: ServiceScheduler> Scheduler<S> {

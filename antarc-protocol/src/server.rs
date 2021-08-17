@@ -36,29 +36,9 @@ impl Protocol<Server> {
     // If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
     //
     // Check the `client.rs` file that contains a comment with this possible function.
-    ///
-    /// TODO(alex) [mid] 2021-08-16: To refactor this similarly to `create_connection_request`, we
-    /// must have some way of passing `self.events` down, as the `Server` service can't own this
-    /// common component.
     pub fn sent_connection_accepted(&mut self, packet: Packet<ToSend, ConnectionAccepted>) {
-        let sent = packet.sent(self.timer.elapsed());
-
-        if let Some(peer) = self
-            .service
-            .awaiting_connection_ack
-            .get_mut(&sent.message.connection_id)
-        {
-            peer.sequence_tracker = peer.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        self.events.reliable_sent.push(sent.into());
-        // TODO(alex) [mid] 2021-08-02: There is one difference between this and the `Client`'s
-        // version of "after send" handler. The server already put the `Peer` into
-        // `AwaitingConnectionAck` when it received the initial connection request. So we don't
-        // have to update anything here.
-        //
-        // The `Peer<AwaitingConnectionAck>` will change to `Peer<Connected>` when we receive an
-        // ack for this reliable packet.
+        self.service
+            .sent_connection_accepted(packet, self.timer.elapsed());
     }
 
     pub fn create_connection_accepted(

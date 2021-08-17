@@ -3,7 +3,10 @@ use std::{collections::HashMap, net::SocketAddr, vec::Drain};
 
 use log::*;
 
-use crate::{events::*, packets::*, peers::*, Scheduler, Service, ServiceScheduler};
+use crate::{
+    events::*, packets::*, peers::*, ReliabilityHandler, Scheduler, Service, ServiceReliability,
+    ServiceScheduler,
+};
 
 #[derive(Debug)]
 pub(crate) struct ClientScheduler {
@@ -25,14 +28,34 @@ impl ServiceScheduler for ClientScheduler {
 }
 
 #[derive(Debug)]
+pub(crate) struct ClientReliabilityHandler {
+    list_sent_connection_request: Vec<Packet<Sent, ConnectionRequest>>,
+}
+
+impl ServiceReliability for ClientReliabilityHandler {
+    fn new(capacity: usize) -> Self {
+        Self {
+            list_sent_connection_request: Vec::with_capacity(capacity),
+        }
+    }
+}
+
+impl ClientReliabilityHandler {
+    pub(crate) fn connection_request(&mut self, packet: Packet<Sent, ConnectionRequest>) {
+        self.list_sent_connection_request.push(packet);
+    }
+}
+
+#[derive(Debug)]
 pub struct Client {
-    pub last_sent_time: Duration,
-    pub requesting_connection: HashMap<SocketAddr, Peer<RequestingConnection>>,
-    pub awaiting_connection_ack: HashMap<SocketAddr, Peer<AwaitingConnectionAck>>,
-    pub connected: HashMap<ConnectionId, Peer<Connected>>,
+    pub api: Vec<AntarcEvent<ClientEvent>>,
+    pub(crate) last_sent_time: Duration,
+    pub(crate) requesting_connection: HashMap<SocketAddr, Peer<RequestingConnection>>,
+    pub(crate) awaiting_connection_ack: HashMap<SocketAddr, Peer<AwaitingConnectionAck>>,
+    pub(crate) connected: HashMap<ConnectionId, Peer<Connected>>,
 
     pub(crate) scheduler: Scheduler<ClientScheduler>,
-    pub api: Vec<AntarcEvent<ClientEvent>>,
+    pub(crate) reliability_handler: ReliabilityHandler<ClientReliabilityHandler>,
 }
 
 impl Service for Client {}
@@ -40,13 +63,15 @@ impl Service for Client {}
 impl Client {
     pub(crate) fn new() -> Self {
         let service = Client {
+            api: Vec::with_capacity(32),
+
             last_sent_time: Duration::default(),
             requesting_connection: HashMap::with_capacity(32),
             awaiting_connection_ack: HashMap::with_capacity(32),
             connected: HashMap::with_capacity(32),
 
             scheduler: Scheduler::new(32),
-            api: Vec::with_capacity(32),
+            reliability_handler: ReliabilityHandler::new(32),
         };
 
         service
@@ -66,6 +91,24 @@ impl Client {
 
         let packet = scheduled.into_packet(sequence, ack, time);
         packet
+    }
+
+    /// TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
+    /// If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
+    pub fn sent_connection_request(
+        &mut self,
+        packet: Packet<ToSend, ConnectionRequest>,
+        time: Duration,
+    ) {
+        let sent = packet.sent(time);
+        let address = sent.delivery.meta.address;
+
+        let mut peer = self.requesting_connection.remove(&address).unwrap();
+        peer.sequence_tracker = peer.sequence_tracker.checked_add(1).unwrap();
+
+        self.reliability_handler.service.connection_request(sent);
+        self.awaiting_connection_ack
+            .insert(address, peer.await_connection_ack(time));
     }
 
     // REGION(alex): Data Transfer

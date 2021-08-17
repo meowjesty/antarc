@@ -31,20 +31,8 @@ impl Protocol<Client> {
     /// TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
     /// If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
     ///
-    /// TODO(alex) [mid] 2021-08-16: To refactor this similarly to `create_connection_request`, we
-    /// must have some way of passing `self.events` down, as the `Client` service can't own this
-    /// common component.
     pub fn sent_connection_request(&mut self, packet: Packet<ToSend, ConnectionRequest>) {
-        let sent = packet.sent(self.timer.elapsed());
-        let address = sent.delivery.meta.address;
-
-        let mut peer = self.service.requesting_connection.remove(&address).unwrap();
-        peer.sequence_tracker = peer.sequence_tracker.checked_add(1).unwrap();
-
-        self.events.reliable_sent.push(sent.into());
-        self.service
-            .awaiting_connection_ack
-            .insert(address, peer.await_connection_ack(self.timer.elapsed()));
+        self.service.sent_connection_request(packet, self.timer.elapsed());
     }
 
     // REGION(alex): Data Transfer

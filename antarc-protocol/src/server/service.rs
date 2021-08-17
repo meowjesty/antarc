@@ -7,12 +7,9 @@ use crate::{
     events::*,
     packets::*,
     peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
-    Scheduler, Service, ServiceScheduler,
+    ReliabilityHandler, Scheduler, Service, ServiceReliability, ServiceScheduler,
 };
 
-// TODO(alex) [high] 2021-08-10: It works, but there is a big overlap of scheduled packets here and
-// on `ClientSchedule` (data transfers, and fragments), so this implies we need to abstract it one
-// level higher, to some `Scheduler<Service>` (would be ideal).
 #[derive(Debug)]
 pub(crate) struct ServerScheduler {
     list_scheduled_connection_accepted: Vec<Scheduled<Reliable, ConnectionAccepted>>,
@@ -36,16 +33,36 @@ impl ServerScheduler {
 }
 
 #[derive(Debug)]
+pub(crate) struct ServerReliabilityHandler {
+    list_sent_connection_accepted: Vec<Packet<Sent, ConnectionAccepted>>,
+}
+
+impl ServiceReliability for ServerReliabilityHandler {
+    fn new(capacity: usize) -> Self {
+        Self {
+            list_sent_connection_accepted: Vec::with_capacity(capacity),
+        }
+    }
+}
+
+impl ServerReliabilityHandler {
+    pub(crate) fn connection_accepted(&mut self, packet: Packet<Sent, ConnectionAccepted>) {
+        self.list_sent_connection_accepted.push(packet);
+    }
+}
+
+#[derive(Debug)]
 pub struct Server {
-    pub last_antarc_schedule_check: Duration,
-    pub connection_id_tracker: ConnectionId,
-    pub requesting_connection: HashMap<ConnectionId, Peer<RequestingConnection>>,
-    pub awaiting_connection_ack: HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
-    pub connected: HashMap<ConnectionId, Peer<Connected>>,
-    pub ban_list: Vec<SocketAddr>,
+    pub api: Vec<AntarcEvent<ServerEvent>>,
+    pub(crate) last_antarc_schedule_check: Duration,
+    pub(crate) connection_id_tracker: ConnectionId,
+    pub(crate) requesting_connection: HashMap<ConnectionId, Peer<RequestingConnection>>,
+    pub(crate) awaiting_connection_ack: HashMap<ConnectionId, Peer<AwaitingConnectionAck>>,
+    pub(crate) connected: HashMap<ConnectionId, Peer<Connected>>,
+    pub(crate) ban_list: Vec<SocketAddr>,
 
     pub(crate) scheduler: Scheduler<ServerScheduler>,
-    pub api: Vec<AntarcEvent<ServerEvent>>,
+    pub(crate) reliability_handler: ReliabilityHandler<ServerReliabilityHandler>,
 }
 
 impl Service for Server {}
@@ -53,6 +70,7 @@ impl Service for Server {}
 impl Server {
     pub fn new() -> Self {
         Self {
+            api: Vec::with_capacity(32),
             last_antarc_schedule_check: Duration::default(),
             connection_id_tracker: ConnectionId::new(1).unwrap(),
             requesting_connection: HashMap::with_capacity(32),
@@ -61,7 +79,7 @@ impl Server {
             ban_list: Vec::with_capacity(32),
 
             scheduler: Scheduler::new(32),
-            api: Vec::with_capacity(32),
+            reliability_handler: ReliabilityHandler::new(32),
         }
     }
 
@@ -115,6 +133,35 @@ impl Server {
         } else {
             self.api.push(ProtocolError::NotFound(connection_id).into());
         }
+    }
+
+    // TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
+    // If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
+    //
+    // Check the `client.rs` file that contains a comment with this possible function.
+    pub fn sent_connection_accepted(
+        &mut self,
+        packet: Packet<ToSend, ConnectionAccepted>,
+        time: Duration,
+    ) {
+        let sent = packet.sent(time);
+
+        if let Some(peer) = self
+            .awaiting_connection_ack
+            .get_mut(&sent.message.connection_id)
+        {
+            peer.sequence_tracker = peer.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        self.reliability_handler.service.connection_accepted(sent);
+
+        // TODO(alex) [mid] 2021-08-02: There is one difference between this and the `Client`'s
+        // version of "after send" handler. The server already put the `Peer` into
+        // `AwaitingConnectionAck` when it received the initial connection request. So we don't
+        // have to update anything here.
+        //
+        // The `Peer<AwaitingConnectionAck>` will change to `Peer<Connected>` when we receive an
+        // ack for this reliable packet.
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
