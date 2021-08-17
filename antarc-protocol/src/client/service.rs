@@ -4,8 +4,8 @@ use std::{collections::HashMap, net::SocketAddr, vec::Drain};
 use log::*;
 
 use crate::{
-    events::*, packets::*, peers::*, ReliabilityHandler, Scheduler, Service, ServiceReliability,
-    ServiceScheduler,
+    errors::*, events::*, packets::*, peers::*, ReliabilityHandler, Scheduler, Service,
+    ServiceReliability, ServiceScheduler,
 };
 
 #[derive(Debug)]
@@ -48,7 +48,7 @@ impl ClientReliabilityHandler {
 
 #[derive(Debug)]
 pub struct Client {
-    pub api: Vec<AntarcEvent<ClientEvent>>,
+    pub api: Vec<ProtocolEvent<ClientEvent>>,
     pub(crate) last_sent_time: Duration,
     pub(crate) requesting_connection: HashMap<SocketAddr, Peer<RequestingConnection>>,
     pub(crate) awaiting_connection_ack: HashMap<SocketAddr, Peer<AwaitingConnectionAck>>,
@@ -95,7 +95,7 @@ impl Client {
 
     /// TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
     /// If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
-    pub fn sent_connection_request(
+    pub(crate) fn sent_connection_request(
         &mut self,
         packet: Packet<ToSend, ConnectionRequest>,
         time: Duration,
@@ -147,7 +147,7 @@ impl Client {
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
-    pub fn on_received(
+    pub(crate) fn on_received(
         &mut self,
         raw_packet: RawPacket<Client>,
         time: Duration,
@@ -222,7 +222,7 @@ impl Client {
 
                     self.connected.insert(connection_id, connected);
 
-                    self.api.push(AntarcEvent::DataTransfer {
+                    self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
                         payload,
                     });
@@ -294,7 +294,7 @@ impl Client {
     }
 
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
-    pub fn schedule(
+    pub(crate) fn schedule(
         &mut self,
         reliability: ReliabilityType,
         payload: Payload,
@@ -303,7 +303,7 @@ impl Client {
     ) -> Result<PacketId, ProtocolError> {
         if self.connected.is_empty() {
             self.api
-                .push(AntarcEvent::Fail(ProtocolError::NoPeersConnected));
+                .push(ProtocolEvent::Fail(ProtocolError::NoPeersConnected));
         }
 
         let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;

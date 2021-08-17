@@ -1,16 +1,9 @@
 use std::net::SocketAddr;
 
+use antarc_protocol::Service;
 // TODO(alex) [mid] 2021-07-31: Create a dummy network manager implementation, that just uses
 // buffers to move data, no sockets involved!
-pub use antarc_protocol::{
-    client::Client,
-    events::{AntarcEvent, ClientEvent, ServerEvent},
-    packets::{ConnectionId, Payload, ReliabilityType},
-    peers::SendTo,
-    server::Server,
-    Protocol,
-};
-use antarc_protocol::{events::*, packets::*, Service};
+pub use antarc_protocol::{client::*, errors::*, events::*, packets::*, peers::*, server::*, *};
 use log::*;
 
 #[derive(Debug)]
@@ -49,7 +42,7 @@ impl DummyManager<Server> {
         self.antarc.schedule(reliability, send_to, payload)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ServerEvent>> {
+    pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
         debug!("Server: dummy poll");
 
         for scheduled in self
@@ -119,7 +112,7 @@ impl DummyManager<Server> {
 
             if let Err(fail) = self.antarc.on_received(raw_received) {
                 error!("Server: encountered error on received {:#?}.", fail);
-                self.antarc.service.api.push(AntarcEvent::Fail(fail));
+                self.antarc.service.api.push(ProtocolEvent::Fail(fail));
             }
         }
 
@@ -161,7 +154,7 @@ impl DummyManager<Client> {
         self.antarc.connect(remote_address)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ClientEvent>> {
+    pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {
         info!("Client: dummy poll");
 
         for scheduled in self
@@ -217,7 +210,7 @@ impl DummyManager<Client> {
             let raw_received = RawPacket::new("127.0.0.1:7777".parse().unwrap(), received);
             if let Err(fail) = self.antarc.on_received(raw_received) {
                 error!("Client: encountered error on received {:#?}.", fail);
-                self.antarc.service.api.push(AntarcEvent::Fail(fail));
+                self.antarc.service.api.push(ProtocolEvent::Fail(fail));
             }
         }
 

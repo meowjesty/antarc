@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use antarc_dummy::{AntarcEvent, ClientEvent, DummyManager, ReliabilityType, SendTo, ServerEvent};
+use antarc_dummy::{ProtocolEvent, ClientEvent, DummyManager, ReliabilityType, SendTo, ServerEvent};
 use log::*;
 
 fn main() {
@@ -29,8 +29,8 @@ fn server_main() {
         // Server:
         for event in server.poll().collect::<Vec<_>>().drain(..) {
             match event {
-                AntarcEvent::Fail(fail) => error!("{:#?}", fail),
-                AntarcEvent::ServiceEvent(service_event) => match service_event {
+                ProtocolEvent::Fail(fail) => error!("{:#?}", fail),
+                ProtocolEvent::ServiceEvent(service_event) => match service_event {
                     ServerEvent::ConnectionRequest {
                         connection_id,
                         remote,
@@ -41,7 +41,7 @@ fn server_main() {
                         );
                     }
                 },
-                AntarcEvent::DataTransfer {
+                ProtocolEvent::DataTransfer {
                     connection_id,
                     payload,
                 } => {
@@ -64,8 +64,8 @@ fn server_main() {
         // Client:
         for event in client.poll().collect::<Vec<_>>().drain(..) {
             match event {
-                AntarcEvent::Fail(fail) => error!("{:#?}", fail),
-                AntarcEvent::ServiceEvent(service_event) => match service_event {
+                ProtocolEvent::Fail(fail) => error!("{:#?}", fail),
+                ProtocolEvent::ServiceEvent(service_event) => match service_event {
                     ClientEvent::ConnectionAccepted { connection_id } => {
                         info!(
                             "Client -> received connection accepted from {:#?}.",
@@ -76,7 +76,7 @@ fn server_main() {
                         info!("Client -> result of schedule call {:#?}", scheduled);
                     }
                 },
-                AntarcEvent::DataTransfer {
+                ProtocolEvent::DataTransfer {
                     connection_id,
                     payload,
                 } => {

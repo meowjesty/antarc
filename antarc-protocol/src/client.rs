@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, time::Instant};
 
-use crate::{events::*, packets::*, EventSystem, Protocol};
+use crate::{errors::*, events::*, packets::*, Protocol};
 
 pub(crate) mod service;
 
@@ -14,7 +14,6 @@ impl Protocol<Client> {
             packet_id_tracker: 0,
             timer: Instant::now(),
             service,
-            events: EventSystem::new(),
             receiver_pipe: Vec::with_capacity(32),
         }
     }
@@ -30,9 +29,9 @@ impl Protocol<Client> {
 
     /// TODO(alex) [mid] 2021-08-02: There must be a way to have a generic version of this function.
     /// If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
-    ///
     pub fn sent_connection_request(&mut self, packet: Packet<ToSend, ConnectionRequest>) {
-        self.service.sent_connection_request(packet, self.timer.elapsed());
+        self.service
+            .sent_connection_request(packet, self.timer.elapsed());
     }
 
     // REGION(alex): Data Transfer
@@ -81,7 +80,7 @@ impl Protocol<Client> {
         Ok(packet_id)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ClientEvent>> {
+    pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {
         // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
         // The network will check if socket is ready, then call a `make_packet` that will take some
         // scheduled from the scheduler pipe, but how does it handle reliability?

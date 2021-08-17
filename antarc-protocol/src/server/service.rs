@@ -3,12 +3,7 @@ use std::{collections::HashMap, net::SocketAddr, vec::Drain};
 
 use log::{debug, warn};
 
-use crate::{
-    events::*,
-    packets::*,
-    peers::{AwaitingConnectionAck, Connected, Peer, RequestingConnection, SendTo},
-    ReliabilityHandler, Scheduler, Service, ServiceReliability, ServiceScheduler,
-};
+use crate::{errors::*, events::*, packets::*, peers::*, *};
 
 #[derive(Debug)]
 pub(crate) struct ServerScheduler {
@@ -53,7 +48,7 @@ impl ServerReliabilityHandler {
 
 #[derive(Debug)]
 pub struct Server {
-    pub api: Vec<AntarcEvent<ServerEvent>>,
+    pub api: Vec<ProtocolEvent<ServerEvent>>,
     pub(crate) last_antarc_schedule_check: Duration,
     pub(crate) connection_id_tracker: ConnectionId,
     pub(crate) requesting_connection: HashMap<ConnectionId, Peer<RequestingConnection>>,
@@ -220,7 +215,7 @@ impl Server {
 
                     self.connected.insert(connection_id, connected);
 
-                    self.api.push(AntarcEvent::DataTransfer {
+                    self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
                         payload,
                     });

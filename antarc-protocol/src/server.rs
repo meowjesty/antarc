@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::{events::*, packets::*, peers::*, EventSystem, Protocol};
+use crate::{errors::*, events::*, packets::*, peers::*, Protocol};
 
 pub mod service;
 
@@ -14,7 +14,6 @@ impl Protocol<Server> {
             packet_id_tracker: 0,
             timer: Instant::now(),
             service,
-            events: EventSystem::new(),
             receiver_pipe: Vec::with_capacity(32),
         }
     }
@@ -99,7 +98,7 @@ impl Protocol<Server> {
         Ok(packet_id)
     }
 
-    pub fn poll(&mut self) -> std::vec::Drain<AntarcEvent<ServerEvent>> {
+    pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
         // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
         // The network will check if socket is ready, then call a `make_packet` that will take some
         // scheduled from the scheduler pipe, but how does it handle reliability?

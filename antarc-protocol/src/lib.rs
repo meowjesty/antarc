@@ -12,7 +12,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use events::*;
 use packets::*;
 
 pub mod client;
@@ -20,6 +19,7 @@ pub mod events;
 pub mod packets;
 pub mod peers;
 pub mod server;
+pub mod errors;
 
 #[macro_export]
 macro_rules! read_buffer_inc {
@@ -64,7 +64,6 @@ pub struct Protocol<S: Service> {
     pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub service: S,
-    pub events: EventSystem,
     pub receiver_pipe: Vec<RawPacket<S>>,
 }
 
@@ -74,24 +73,6 @@ where
 {
     pub fn cancel_packet(&mut self, _packet_id: PacketId) -> bool {
         todo!()
-    }
-}
-
-#[derive(Debug)]
-pub struct EventSystem {
-    pub receiver: Vec<ReceiverEvent>,
-    pub reliable_sent: Vec<ReliableSentEvent>,
-}
-
-impl EventSystem {
-    pub fn new() -> Self {
-        let receiver = Vec::with_capacity(1024);
-        let reliable_sent = Vec::with_capacity(1024);
-
-        Self {
-            receiver,
-            reliable_sent,
-        }
     }
 }
 
