@@ -320,6 +320,10 @@ impl DummyManager<Client> {
             // same for both Client and Server, but right now are completely separated.
             //
             // Most `drain_x` functions could be done at `impl<S: Service> Protocol<S>`.
+            //
+            // TODO(alex) [high] 2021-08-17: Could we get rid of duplication by passing down a
+            // function callback?
+            // fn common_create_data_transfer(scheduled, fn_create_reliable_data_transfer);
             let packet = self.antarc.create_reliable_data_transfer(scheduled);
             debug!("Client: ready to send {:#?}.", packet);
 

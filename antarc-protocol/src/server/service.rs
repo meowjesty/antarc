@@ -360,56 +360,38 @@ impl Server {
     /// it's possible. Leaving it with low priority for now though.
     fn schedule_for_connected_peer(
         &mut self,
+        address: SocketAddr,
         payload: Arc<Payload>,
         reliability: ReliabilityType,
         connection_id: ConnectionId,
         packet_id: PacketId,
         time: Duration,
-    ) -> Result<PacketId, ProtocolError> {
-        if let Some(peer) = self.connected.get(&connection_id) {
-            let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;
-            if should_fragment {
-                let fragments = payload
-                    .chunks(MAX_FRAGMENT_SIZE)
-                    .enumerate()
-                    .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
-                    .collect::<Vec<_>>();
-
-                let fragment_total = fragments.len();
-
-                for (fragment_index, payload) in fragments.into_iter() {
-                    debug!(
-                        "server: schedule fragment {:?}/{:?}.",
-                        fragment_index, fragment_total
-                    );
-
-                    self.scheduler.schedule_fragment(
-                        reliability,
-                        packet_id,
-                        connection_id,
-                        payload,
-                        fragment_index,
-                        fragment_total,
-                        time,
-                        peer.address.clone(),
-                    );
-                }
-            } else {
-                debug!("server: schedule non-fragment.");
-
-                self.scheduler.schedule_data_transfer(
-                    reliability,
-                    packet_id,
-                    connection_id,
-                    payload,
-                    time,
-                    peer.address,
-                );
-            }
-
-            Ok(packet_id)
+        fragmented: bool,
+        fragment_index: usize,
+        fragment_total: usize,
+    ) {
+        if fragmented {
+            self.scheduler.schedule_fragment(
+                reliability,
+                packet_id,
+                connection_id,
+                payload,
+                fragment_index,
+                fragment_total,
+                time,
+                address,
+            );
         } else {
-            Err(ProtocolError::ScheduledNotConnected(connection_id))
+            debug!("server: schedule non-fragment.");
+
+            self.scheduler.schedule_data_transfer(
+                reliability,
+                packet_id,
+                connection_id,
+                payload,
+                time,
+                address,
+            );
         }
     }
 
@@ -442,46 +424,67 @@ impl Server {
             return Err(ProtocolError::NoPeersConnected);
         }
 
-        let payload = Arc::new(payload);
+        let fragments = payload
+            .chunks(MAX_FRAGMENT_SIZE)
+            .enumerate()
+            // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
+            // use `to_vec` here.
+            .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
+            .collect::<Vec<_>>();
 
-        match send_to {
-            SendTo::Single { connection_id } => {
-                debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
+        let fragment_total = fragments.len();
+        let fragmented = fragment_total > 1;
 
-                let packet_id = self.schedule_for_connected_peer(
-                    payload.clone(),
-                    reliability,
-                    connection_id,
-                    packet_id,
-                    time,
-                )?;
+        for (fragment_index, payload) in fragments.into_iter() {
+            match send_to {
+                SendTo::Single { connection_id } => {
+                    debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
 
-                Ok(packet_id)
-            }
-            SendTo::Broadcast => {
-                debug!("server: SendTo::Broadcast scheduler.");
+                    let address = self
+                        .connected
+                        .get(&connection_id)
+                        .map(|peer| peer.address)
+                        .ok_or(ProtocolError::ScheduledNotConnected(connection_id))?;
 
-                let connection_ids = self
-                    .connected
-                    .values()
-                    .map(|peer| peer.connection.connection_id)
-                    .collect::<Vec<_>>();
+                    self.schedule_for_connected_peer(
+                        address,
+                        payload.clone(),
+                        reliability,
+                        connection_id,
+                        packet_id,
+                        time,
+                        fragmented,
+                        fragment_index,
+                        fragment_total,
+                    );
+                }
+                SendTo::Broadcast => {
+                    debug!("server: SendTo::Broadcast scheduler.");
 
-                for connection_id in connection_ids {
-                    let _ = self
-                        .schedule_for_connected_peer(
+                    while let Some((connection_id, address)) = self
+                        .connected
+                        .iter_mut()
+                        .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+                        .next()
+                    {
+                        self.schedule_for_connected_peer(
+                            address,
                             payload.clone(),
                             reliability,
                             connection_id,
                             packet_id,
                             time,
-                        )
-                        .expect("Scheduling a broadcast should be infallible!");
+                            fragmented,
+                            fragment_index,
+                            fragment_total,
+                        );
+                    }
                 }
-
-                Ok(packet_id)
             }
         }
+
+        // packet_id.ok_or(ProtocolError::NoPeersConnected)
+        todo!()
     }
 
     fn connection_request_another_state(&self, address: &SocketAddr) -> bool {
