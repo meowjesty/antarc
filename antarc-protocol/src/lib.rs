@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use log::debug;
 use packets::*;
 
 pub mod client;
@@ -208,7 +209,44 @@ impl<S: ServiceScheduler> Scheduler<S> {
         self.list_scheduled_unreliable_data_transfer.push(scheduled);
     }
 
-    pub(crate) fn schedule_fragment(
+    pub(crate) fn schedule_for_connected_peer(
+        &mut self,
+        address: SocketAddr,
+        payload: Arc<Payload>,
+        reliability: ReliabilityType,
+        connection_id: ConnectionId,
+        packet_id: PacketId,
+        time: Duration,
+        fragmented: bool,
+        fragment_index: usize,
+        fragment_total: usize,
+    ) {
+        if fragmented {
+            debug!("protocol: scheduling fragment");
+            self.schedule_fragment(
+                reliability,
+                packet_id,
+                connection_id,
+                payload,
+                fragment_index,
+                fragment_total,
+                time,
+                address,
+            );
+        } else {
+            debug!("protocol: scheduling data transfer");
+            self.schedule_data_transfer(
+                reliability,
+                packet_id,
+                connection_id,
+                payload,
+                time,
+                address,
+            );
+        }
+    }
+
+    fn schedule_fragment(
         &mut self,
         reliability: ReliabilityType,
         packet_id: PacketId,
@@ -249,7 +287,7 @@ impl<S: ServiceScheduler> Scheduler<S> {
         }
     }
 
-    pub(crate) fn schedule_data_transfer(
+    fn schedule_data_transfer(
         &mut self,
         reliability: ReliabilityType,
         packet_id: PacketId,

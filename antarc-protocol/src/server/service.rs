@@ -354,47 +354,6 @@ impl Server {
         }
     }
 
-    /// NOTE(alex): Helper function to reduce duplication in `pub schedule`.
-    ///
-    /// TODO(alex) [low] 2021-08-08: Parts of this function could be simplified, or at least I think
-    /// it's possible. Leaving it with low priority for now though.
-    fn schedule_for_connected_peer(
-        &mut self,
-        address: SocketAddr,
-        payload: Arc<Payload>,
-        reliability: ReliabilityType,
-        connection_id: ConnectionId,
-        packet_id: PacketId,
-        time: Duration,
-        fragmented: bool,
-        fragment_index: usize,
-        fragment_total: usize,
-    ) {
-        if fragmented {
-            self.scheduler.schedule_fragment(
-                reliability,
-                packet_id,
-                connection_id,
-                payload,
-                fragment_index,
-                fragment_total,
-                time,
-                address,
-            );
-        } else {
-            debug!("server: schedule non-fragment.");
-
-            self.scheduler.schedule_data_transfer(
-                reliability,
-                packet_id,
-                connection_id,
-                payload,
-                time,
-                address,
-            );
-        }
-    }
-
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
     ///
     /// There are 2 choices:
@@ -438,7 +397,10 @@ impl Server {
         for (fragment_index, payload) in fragments.into_iter() {
             match send_to {
                 SendTo::Single { connection_id } => {
-                    debug!("server: SendTo::Single scheduler {:#?}.", connection_id);
+                    debug!(
+                        "server: SendTo::Single scheduling for {:#?}.",
+                        connection_id
+                    );
 
                     let address = self
                         .connected
@@ -446,7 +408,7 @@ impl Server {
                         .map(|peer| peer.address)
                         .ok_or(ProtocolError::ScheduledNotConnected(connection_id))?;
 
-                    self.schedule_for_connected_peer(
+                    self.scheduler.schedule_for_connected_peer(
                         address,
                         payload.clone(),
                         reliability,
@@ -459,15 +421,16 @@ impl Server {
                     );
                 }
                 SendTo::Broadcast => {
-                    debug!("server: SendTo::Broadcast scheduler.");
-
-                    while let Some((connection_id, address)) = self
+                    for (connection_id, address) in self
                         .connected
-                        .iter_mut()
+                        .iter()
                         .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
-                        .next()
                     {
-                        self.schedule_for_connected_peer(
+                        debug!(
+                            "server: SendTo::Broadcast scheduling for {:#?}.",
+                            connection_id
+                        );
+                        self.scheduler.schedule_for_connected_peer(
                             address,
                             payload.clone(),
                             reliability,
@@ -483,8 +446,7 @@ impl Server {
             }
         }
 
-        // packet_id.ok_or(ProtocolError::NoPeersConnected)
-        todo!()
+        Ok(packet_id + 1)
     }
 
     fn connection_request_another_state(&self, address: &SocketAddr) -> bool {

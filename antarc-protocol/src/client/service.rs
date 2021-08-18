@@ -362,58 +362,43 @@ impl Client {
         time: Duration,
     ) -> Result<PacketId, ProtocolError> {
         if self.connected.is_empty() {
-            self.api
-                .push(ProtocolEvent::Fail(ProtocolError::NoPeersConnected));
+            return Err(ProtocolError::NoPeersConnected);
         }
 
-        let should_fragment = payload.len() > MAX_FRAGMENT_SIZE;
+        let fragments = payload
+            .chunks(MAX_FRAGMENT_SIZE)
+            .enumerate()
+            // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
+            // use `to_vec` here.
+            .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
+            .collect::<Vec<_>>();
 
-        if let Some(peer) = self.connected.values().last() {
-            let connection_id = peer.connection.connection_id;
+        let fragment_total = fragments.len();
+        let fragmented = fragment_total > 1;
 
-            if should_fragment {
-                let fragments = payload
-                    .chunks(MAX_FRAGMENT_SIZE)
-                    .enumerate()
-                    .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
-                    .collect::<Vec<_>>();
+        for (fragment_index, payload) in fragments.into_iter() {
+            for (connection_id, address) in self
+                .connected
+                .iter()
+                .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+            {
+                debug!("client: scheduling for {:#?}.", connection_id);
 
-                let fragment_total = fragments.len();
-
-                for (fragment_index, payload) in fragments.into_iter() {
-                    debug!(
-                        "client: schedule fragment {:?}/{:?}.",
-                        fragment_index, fragment_total
-                    );
-
-                    self.scheduler.schedule_fragment(
-                        reliability,
-                        packet_id,
-                        connection_id,
-                        payload,
-                        fragment_index,
-                        fragment_total,
-                        time,
-                        peer.address,
-                    );
-                }
-            } else {
-                debug!("client: schedule non-fragment.");
-
-                self.scheduler.schedule_data_transfer(
+                self.scheduler.schedule_for_connected_peer(
+                    address,
+                    payload.clone(),
                     reliability,
-                    packet_id,
                     connection_id,
-                    payload,
+                    packet_id,
                     time,
-                    peer.address,
+                    fragmented,
+                    fragment_index,
+                    fragment_total,
                 );
             }
-
-            Ok(packet_id)
-        } else {
-            Err(ProtocolError::NoPeersConnected)
         }
+
+        Ok(packet_id + 1)
     }
 
     pub fn drain_connection_request<R: RangeBounds<usize>>(
