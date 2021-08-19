@@ -40,14 +40,12 @@ impl ServiceReliability for ClientReliabilityHandler {
     }
 
     fn poll(&mut self, now: Duration) {
-        if let Some((time_sent, ttl)) = self
+        if let Some(_) = self
             .list_sent_connection_request
             .first()
-            .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
+            .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
         {
-            if time_sent + ttl > now {
-                self.list_sent_connection_request.remove(0);
-            }
+            self.list_sent_connection_request.remove(0);
         }
     }
 }

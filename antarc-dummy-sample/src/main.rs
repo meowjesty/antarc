@@ -19,117 +19,143 @@ fn server_main() {
     let mut client = DummyManager::new_client(client_addr);
     client.connect(server_addr).unwrap();
 
-    loop {
-        // TODO(alex) [low] 2021-08-01: To avoid allocating events over and over, the user may pass
-        // an events vector or register some global event list:
-        // let events = Vec::with_capacity(1024);
-        // server.register(events);
-        //
-        // ADD(alex) [low] 2021-08-01: I've tried returning the `DrainIter` from `poll`, but it
-        // ends up borrowing `server` twice, here and in `schedule`.
-        //
-        // Server:
-        for event in server.poll().collect::<Vec<_>>().drain(..) {
-            match event {
-                ProtocolEvent::Fail(fail) => error!("{:#?}", fail),
-                ProtocolEvent::ServiceEvent(service_event) => match service_event {
-                    ServerEvent::ConnectionRequest {
+    let (client_tx, client_rx) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
+    let (server_tx, server_rx) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
+
+    let client_thread = std::thread::Builder::new()
+        .name("Client thread".to_string())
+        .spawn(move || loop {
+            // Client:
+            for event in client.poll().collect::<Vec<_>>().drain(..) {
+                match event {
+                    ProtocolEvent::Fail(fail) => error!("{:#?}", fail),
+                    ProtocolEvent::ServiceEvent(service_event) => match service_event {
+                        ClientEvent::ConnectionAccepted { connection_id } => {
+                            info!(
+                                "Client -> received connection accepted from {:#?}.",
+                                connection_id
+                            );
+
+                            let scheduled =
+                                client.schedule(ReliabilityType::Unreliable, vec![0x3; 2]);
+                            info!("Client -> result of schedule call {:#?}", scheduled);
+                        }
+                    },
+                    ProtocolEvent::DataTransfer {
                         connection_id,
-                        remote,
+                        payload,
                     } => {
                         info!(
-                            "Server -> received a connection request from {:#?} with id {:#?}",
-                            remote, connection_id
-                        );
-                    }
-                },
-                ProtocolEvent::DataTransfer {
-                    connection_id,
-                    payload,
-                } => {
-                    info!(
-                        "Server -> received {:#?} from {:#?}.",
-                        payload.len(),
-                        connection_id
-                    );
-
-                    let scheduled = server.schedule(
-                        ReliabilityType::Unreliable,
-                        SendTo::Single { connection_id },
-                        vec![0x1; 2],
-                    );
-                    info!("Server -> result of schedule call {:#?}", scheduled);
-                }
-            }
-        }
-
-        // Client:
-        for event in client.poll().collect::<Vec<_>>().drain(..) {
-            match event {
-                ProtocolEvent::Fail(fail) => error!("{:#?}", fail),
-                ProtocolEvent::ServiceEvent(service_event) => match service_event {
-                    ClientEvent::ConnectionAccepted { connection_id } => {
-                        info!(
-                            "Client -> received connection accepted from {:#?}.",
+                            "Client -> received {:#?} from {:#?}.",
+                            payload.len(),
                             connection_id
                         );
 
-                        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x3; 2]);
+                        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x4; 2]);
                         info!("Client -> result of schedule call {:#?}", scheduled);
                     }
-                },
-                ProtocolEvent::DataTransfer {
-                    connection_id,
-                    payload,
-                } => {
-                    info!(
-                        "Client -> received {:#?} from {:#?}.",
-                        payload.len(),
-                        connection_id
-                    );
-
-                    let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x4; 2]);
-                    info!("Client -> result of schedule call {:#?}", scheduled);
                 }
             }
-        }
 
-        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x5; 2]);
-        info!("Client -> result of schedule call {:#?}", scheduled);
+            let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x5; 2]);
+            info!("Client -> result of schedule call {:#?}", scheduled);
 
-        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x7; 1600]);
-        info!("Client -> result of schedule call {:#?}", scheduled);
+            let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x7; 1600]);
+            info!("Client -> result of schedule call {:#?}", scheduled);
 
-        let scheduled = client.schedule(ReliabilityType::Reliable, vec![0x8; 1600]);
-        info!("Client -> result of schedule call {:#?}", scheduled);
+            let scheduled = client.schedule(ReliabilityType::Reliable, vec![0x8; 1600]);
+            info!("Client -> result of schedule call {:#?}", scheduled);
 
-        let scheduled =
-            server.schedule(ReliabilityType::Unreliable, SendTo::Broadcast, vec![0x2; 2]);
-        info!("Server -> result of schedule call {:#?}", scheduled);
+            let _ = client_tx.send(client.dummy_sender.clone());
+            if let Ok(packets) = server_rx.try_recv() {
+                client.dummy_receiver = packets;
+            }
 
-        let scheduled = server.schedule(ReliabilityType::Reliable, SendTo::Broadcast, vec![0x6; 2]);
-        info!("Server -> result of schedule call {:#?}", scheduled);
+            client.dummy_sender.drain(..);
+            std::thread::sleep(Duration::from_millis(500));
+        });
 
-        let scheduled = server.schedule(
-            ReliabilityType::Unreliable,
-            SendTo::Broadcast,
-            vec![0x9; 1600],
-        );
-        info!("Server -> result of schedule call {:#?}", scheduled);
+    let server_thread = std::thread::Builder::new()
+        .name("Server thread".to_string())
+        .spawn(move || loop {
+            // TODO(alex) [low] 2021-08-01: To avoid allocating events over and over, the user may
+            // pass an events vector or register some global event list:
+            // let events = Vec::with_capacity(1024);
+            // server.register(events);
+            //
+            // ADD(alex) [low] 2021-08-01: I've tried returning the `DrainIter` from `poll`, but it
+            // ends up borrowing `server` twice, here and in `schedule`.
+            //
+            // Server:
+            for event in server.poll().collect::<Vec<_>>().drain(..) {
+                match event {
+                    ProtocolEvent::Fail(fail) => error!("{:#?}", fail),
+                    ProtocolEvent::ServiceEvent(service_event) => match service_event {
+                        ServerEvent::ConnectionRequest {
+                            connection_id,
+                            remote,
+                        } => {
+                            info!(
+                                "Server -> received a connection request from {:#?} with id {:#?}",
+                                remote, connection_id
+                            );
+                        }
+                    },
+                    ProtocolEvent::DataTransfer {
+                        connection_id,
+                        payload,
+                    } => {
+                        info!(
+                            "Server -> received {:#?} from {:#?}.",
+                            payload.len(),
+                            connection_id
+                        );
 
-        let scheduled = server.schedule(
-            ReliabilityType::Reliable,
-            SendTo::Broadcast,
-            vec![0x10; 1600],
-        );
-        info!("Server -> result of schedule call {:#?}", scheduled);
+                        let scheduled = server.schedule(
+                            ReliabilityType::Unreliable,
+                            SendTo::Single { connection_id },
+                            vec![0x1; 2],
+                        );
+                        info!("Server -> result of schedule call {:#?}", scheduled);
+                    }
+                }
+            }
 
-        server.dummy_receiver = client.dummy_sender.clone();
-        client.dummy_receiver = server.dummy_sender.clone();
+            let scheduled =
+                server.schedule(ReliabilityType::Unreliable, SendTo::Broadcast, vec![0x2; 2]);
+            info!("Server -> result of schedule call {:#?}", scheduled);
 
-        client.dummy_sender.drain(..);
-        server.dummy_sender.drain(..);
+            let scheduled =
+                server.schedule(ReliabilityType::Reliable, SendTo::Broadcast, vec![0x6; 2]);
+            info!("Server -> result of schedule call {:#?}", scheduled);
 
-        std::thread::sleep(Duration::from_millis(500));
+            let scheduled = server.schedule(
+                ReliabilityType::Unreliable,
+                SendTo::Broadcast,
+                vec![0x9; 1600],
+            );
+            info!("Server -> result of schedule call {:#?}", scheduled);
+
+            let scheduled = server.schedule(
+                ReliabilityType::Reliable,
+                SendTo::Broadcast,
+                vec![0x10; 1600],
+            );
+            info!("Server -> result of schedule call {:#?}", scheduled);
+
+            let _ = server_tx.send(server.dummy_sender.clone());
+            if let Ok(packets) = client_rx.try_recv() {
+                server.dummy_receiver = packets;
+            }
+
+            server.dummy_sender.drain(..);
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+    loop {
+        std::thread::sleep(Duration::from_millis(1500));
     }
+
+    client_thread.unwrap().join().unwrap();
+    server_thread.unwrap().join().unwrap();
 }

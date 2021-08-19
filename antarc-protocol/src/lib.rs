@@ -247,19 +247,18 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
     }
 
     fn poll(&mut self, now: Duration) {
-        if let Some((time_sent, ttl)) = self
+        if let Some(_) = self
             .list_sent_reliable_data_transfer
             .first()
-            .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
-            .or_else(|| {
-                self.list_sent_reliable_fragment
-                    .first()
-                    .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
-            })
+            .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
         {
-            if time_sent + ttl > now {
-                self.list_sent_reliable_data_transfer.remove(0);
-            }
+            self.list_sent_reliable_data_transfer.remove(0);
+        } else if let Some(_) = self
+            .list_sent_reliable_fragment
+            .first()
+            .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
+        {
+            self.list_sent_reliable_fragment.remove(0);
         }
 
         self.service.poll(now);

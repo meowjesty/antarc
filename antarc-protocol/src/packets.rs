@@ -437,20 +437,42 @@ pub struct ConnectionAccepted {
     pub connection_id: ConnectionId,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DataTransfer {
     pub meta: MetaMessage,
     pub connection_id: ConnectionId,
     pub payload: Arc<Payload>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl core::fmt::Debug for DataTransfer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataTransfer")
+            .field("meta", &self.meta)
+            .field("connection_id", &self.connection_id)
+            .field("payload (length)", &self.payload.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub struct Fragment {
     pub meta: MetaMessage,
     pub connection_id: ConnectionId,
     pub index: u8,
     pub total: u8,
     pub payload: Arc<Payload>,
+}
+
+impl core::fmt::Debug for Fragment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Fragment")
+            .field("meta", &self.meta)
+            .field("connection_id", &self.connection_id)
+            .field("index", &self.index)
+            .field("total", &self.total)
+            .field("payload (length)", &self.payload.len())
+            .finish()
+    }
 }
 
 impl Fragment {
