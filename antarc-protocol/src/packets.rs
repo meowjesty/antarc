@@ -454,10 +454,20 @@ impl core::fmt::Debug for DataTransfer {
     }
 }
 
+/// NOTE(alex): The fragment `sequence` is used as its id, making it impossible to ack a single one.
+/// In order to ack it, a group of fragments is treated as the actual packet.
 #[derive(Clone, PartialEq)]
 pub struct Fragment {
     pub meta: MetaMessage,
     pub connection_id: ConnectionId,
+    // TODO(alex) [mid] 2021-08-19: To avoid dealing with a `fragment_id`, I'll be treating the
+    // `sequence` as its id. We're treating a group of fragments as 1 single packet, so we either
+    // receive the whole group and it becomes 1 fully formed packet (converting into a
+    // `DataTransfer`), or we discard the parts after they pass some `ttl`.
+    //
+    // This means that the sequence tracker for a `Peer` only increases after the last fragment is
+    // sent out.
+    // pub fragment_id: u64,
     pub index: u8,
     pub total: u8,
     pub payload: Arc<Payload>,
@@ -468,6 +478,7 @@ impl core::fmt::Debug for Fragment {
         f.debug_struct("Fragment")
             .field("meta", &self.meta)
             .field("connection_id", &self.connection_id)
+            // .field("id", &self.fragment_id)
             .field("index", &self.index)
             .field("total", &self.total)
             .field("payload (length)", &self.payload.len())

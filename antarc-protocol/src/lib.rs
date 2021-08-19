@@ -372,7 +372,7 @@ impl<S: ServiceScheduler> Scheduler<S> {
         fragment_index: usize,
         fragment_total: usize,
     ) {
-        if fragmented {
+        if fragment_total > 1 {
             debug!("protocol: scheduling fragment");
             self.schedule_fragment(
                 reliability,

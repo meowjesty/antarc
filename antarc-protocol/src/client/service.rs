@@ -219,7 +219,12 @@ impl Client {
                 .insert(connection_id, peer.connected(time, connection_id));
         }
 
-        if let Some(connected) = self.connected.get_mut(&connection_id) {
+        // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
+        // The fragment's `sequence` is used as a `fragment_id`.
+        if let Some(connected) = (sent.message.index == sent.message.total)
+            .then(|| ())
+            .and(self.connected.get_mut(&connection_id))
+        {
             connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
         }
 

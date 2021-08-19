@@ -305,7 +305,6 @@ impl Server {
                 debug!("server: received fragment {:#?}.", packet);
 
                 let connection_id = packet.message.connection_id;
-                let payload = packet.message.payload;
 
                 if let Some(peer) = self.connected.get_mut(&connection_id) {
                     debug!("server: peer is connected {:#?}.", peer);
@@ -335,6 +334,14 @@ impl Server {
                 //
                 // Then I need to check `sequence`, `fragment_index` and `fragment_total`, this
                 // will tell if the next packet is part of this same fragment?
+                //
+                // ADD(alex) [vhigh] 2021-08-19: This is a sketch of what should happen when
+                // handling the fragment received. Missing the ttl check (poll?), and move this into
+                // some `struct Reassembler` or `struct FragmentationHandler`.
+                let fragment_id = packet.sequence;
+                let mut fragments = HashMap::with_capacity(packet.message.total as usize);
+                fragments.insert(packet.message.index, packet);
+
                 todo!();
 
                 Ok(false)
@@ -410,7 +417,12 @@ impl Server {
         let sent = packet.sent(time, ttl);
         let connection_id = sent.message.connection_id;
 
-        if let Some(connected) = self.connected.get_mut(&connection_id) {
+        // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
+        // The fragment's `sequence` is used as a `fragment_id`.
+        if let Some(connected) = (sent.message.index == sent.message.total)
+            .then(|| ())
+            .and(self.connected.get_mut(&connection_id))
+        {
             connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
         }
 
