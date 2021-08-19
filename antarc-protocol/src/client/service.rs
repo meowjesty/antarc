@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct ClientScheduler {
+pub struct ClientScheduler {
     list_scheduled_connection_request: Vec<Scheduled<Reliable, ConnectionRequest>>,
 }
 
@@ -28,7 +28,7 @@ impl ServiceScheduler for ClientScheduler {
 }
 
 #[derive(Debug)]
-pub(crate) struct ClientReliabilityHandler {
+pub struct ClientReliabilityHandler {
     list_sent_connection_request: Vec<Packet<Sent, ConnectionRequest>>,
 }
 
@@ -89,7 +89,30 @@ pub struct Client {
     pub(crate) reliability_handler: ReliabilityHandler<ClientReliabilityHandler>,
 }
 
-impl Service for Client {}
+impl Service for Client {
+    type SchedulerType = ClientScheduler;
+    type ReliabilityHandlerType = ClientReliabilityHandler;
+
+    fn scheduler(&self) -> &Scheduler<Self::SchedulerType> {
+        &self.scheduler
+    }
+
+    fn scheduler_mut(&mut self) -> &mut Scheduler<Self::SchedulerType> {
+        &mut self.scheduler
+    }
+
+    fn reliability_handler(&self) -> &ReliabilityHandler<Self::ReliabilityHandlerType> {
+        &self.reliability_handler
+    }
+
+    fn reliability_handler_mut(&mut self) -> &mut ReliabilityHandler<Self::ReliabilityHandlerType> {
+        &mut self.reliability_handler
+    }
+
+    fn connected(&self) -> &HashMap<ConnectionId, Peer<Connected>> {
+        &self.connected
+    }
+}
 
 impl Client {
     pub(crate) fn new() -> Self {
@@ -140,37 +163,6 @@ impl Client {
         self.reliability_handler.service.connection_request(sent);
         self.awaiting_connection_ack
             .insert(address, peer.await_connection_ack(time));
-    }
-
-    // REGION(alex): Data Transfer
-    pub(crate) fn create_unreliable_data_transfer(
-        &self,
-        scheduled: Scheduled<Unreliable, DataTransfer>,
-        time: Duration,
-    ) -> Packet<ToSend, DataTransfer> {
-        let (sequence, ack) = self
-            .connected
-            .get(&scheduled.message.connection_id)
-            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
-            .expect("Creating a packet (unreliable data transfer) should never fail!");
-
-        let packet = scheduled.into_packet(sequence, ack, time);
-        packet
-    }
-
-    pub(crate) fn create_reliable_data_transfer(
-        &self,
-        scheduled: Scheduled<Reliable, DataTransfer>,
-        time: Duration,
-    ) -> Packet<ToSend, DataTransfer> {
-        let (sequence, ack) = self
-            .connected
-            .get(&scheduled.message.connection_id)
-            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
-            .expect("Creating a packet (unreliable data transfer) should never fail!");
-
-        let packet = scheduled.into_packet(sequence, ack, time);
-        packet
     }
 
     pub(crate) fn sent_data_transfer(
@@ -357,7 +349,7 @@ impl Client {
     pub(crate) fn schedule(
         &mut self,
         reliability: ReliabilityType,
-        payload: Arc<Payload>,
+        payload: Payload,
         packet_id: PacketId,
         time: Duration,
     ) -> Result<PacketId, ProtocolError> {
@@ -370,6 +362,11 @@ impl Client {
             .enumerate()
             // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
             // use `to_vec` here.
+            //
+            // ADD(alex) [low] 2021-08-18: This change has a big impact, and I don't think it's
+            // possible to remove the allocation anyway, as `Arc::from(chunk)` would involve a
+            // memcpy of `chunk`.
+            // https://github.com/rust-lang/rust/pull/42565
             .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
             .collect::<Vec<_>>();
 
@@ -411,24 +408,6 @@ impl Client {
             .drain(range)
     }
 
-    pub fn drain_unreliable_data_transfer<R: RangeBounds<usize>>(
-        &mut self,
-        range: R,
-    ) -> Drain<Scheduled<Unreliable, DataTransfer>> {
-        self.scheduler
-            .list_scheduled_unreliable_data_transfer
-            .drain(range)
-    }
-
-    pub fn drain_reliable_data_transfer<R: RangeBounds<usize>>(
-        &mut self,
-        range: R,
-    ) -> Drain<Scheduled<Reliable, DataTransfer>> {
-        self.scheduler
-            .list_scheduled_reliable_data_transfer
-            .drain(range)
-    }
-
     pub(crate) fn resend_reliable_connection_request(
         &mut self,
         time: Duration,
@@ -436,19 +415,5 @@ impl Client {
         self.reliability_handler
             .service
             .resend_reliable_connection_request(time)
-    }
-
-    pub(crate) fn resend_reliable_data_transfer(
-        &mut self,
-        time: Duration,
-    ) -> Option<Packet<ToSend, DataTransfer>> {
-        self.reliability_handler.resend_reliable_data_transfer(time)
-    }
-
-    pub(crate) fn resend_reliable_fragment(
-        &mut self,
-        time: Duration,
-    ) -> Option<Packet<ToSend, Fragment>> {
-        self.reliability_handler.resend_reliable_fragment(time)
     }
 }

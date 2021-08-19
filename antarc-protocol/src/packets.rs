@@ -633,9 +633,8 @@ where
     }
 }
 
-// TODO(alex) [low] 2021-07-31: Instead of having one master type with optional fields + bools, we
-// could have a family of `Scheduled`, much like `Packet`, and the `scheduler_pipe` would take an
-// enum of such types.
+// TODO(alex) [mid] 2021-08-19: Create a derive macro for the `into_packet` implementation, it's the
+// same for every kind of packet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheduled<R: Reliability, Message: Messager> {
     pub packet_id: PacketId,
@@ -780,6 +779,29 @@ impl Scheduled<Reliable, DataTransfer> {
 }
 
 impl Scheduled<Unreliable, Fragment> {
+    pub fn into_packet(
+        self,
+        sequence: Sequence,
+        ack: Ack,
+        time: Duration,
+    ) -> Packet<ToSend, Fragment> {
+        let delivery = ToSend {
+            id: self.packet_id,
+            meta: MetaDelivery {
+                time,
+                address: self.address,
+            },
+        };
+        let packet = Packet {
+            delivery,
+            sequence,
+            ack,
+            message: self.message,
+        };
+
+        packet
+    }
+
     pub(crate) fn new_unreliable_fragment(
         packet_id: PacketId,
         connection_id: ConnectionId,
@@ -802,6 +824,29 @@ impl Scheduled<Unreliable, Fragment> {
 }
 
 impl Scheduled<Reliable, Fragment> {
+    pub fn into_packet(
+        self,
+        sequence: Sequence,
+        ack: Ack,
+        time: Duration,
+    ) -> Packet<ToSend, Fragment> {
+        let delivery = ToSend {
+            id: self.packet_id,
+            meta: MetaDelivery {
+                time,
+                address: self.address,
+            },
+        };
+        let packet = Packet {
+            delivery,
+            sequence,
+            ack,
+            message: self.message,
+        };
+
+        packet
+    }
+
     pub(crate) fn new_reliable_fragment(
         packet_id: PacketId,
         connection_id: ConnectionId,

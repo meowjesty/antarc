@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{net::SocketAddr, time::Instant};
 
 use crate::{errors::*, events::*, packets::*, Protocol};
 
@@ -34,23 +34,6 @@ impl Protocol<Client> {
             .sent_connection_request(packet, self.timer.elapsed());
     }
 
-    // REGION(alex): Data Transfer
-    pub fn create_unreliable_data_transfer(
-        &self,
-        scheduled: Scheduled<Unreliable, DataTransfer>,
-    ) -> Packet<ToSend, DataTransfer> {
-        self.service
-            .create_unreliable_data_transfer(scheduled, self.timer.elapsed())
-    }
-
-    pub fn create_reliable_data_transfer(
-        &self,
-        scheduled: Scheduled<Reliable, DataTransfer>,
-    ) -> Packet<ToSend, DataTransfer> {
-        self.service
-            .create_reliable_data_transfer(scheduled, self.timer.elapsed())
-    }
-
     pub fn sent_data_transfer(
         &mut self,
         packet: Packet<ToSend, DataTransfer>,
@@ -80,7 +63,6 @@ impl Protocol<Client> {
         reliability: ReliabilityType,
         payload: Payload,
     ) -> Result<PacketId, ProtocolError> {
-        let payload = Arc::new(payload);
         let packet_id = self.service.schedule(
             reliability,
             payload,
@@ -98,15 +80,6 @@ impl Protocol<Client> {
     ) -> Option<Packet<ToSend, ConnectionRequest>> {
         self.service
             .resend_reliable_connection_request(self.timer.elapsed())
-    }
-
-    pub fn resend_reliable_data_transfer(&mut self) -> Option<Packet<ToSend, DataTransfer>> {
-        self.service
-            .resend_reliable_data_transfer(self.timer.elapsed())
-    }
-
-    pub fn resend_reliable_fragment(&mut self) -> Option<Packet<ToSend, Fragment>> {
-        self.service.resend_reliable_fragment(self.timer.elapsed())
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {

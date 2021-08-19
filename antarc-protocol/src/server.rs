@@ -49,23 +49,6 @@ impl Protocol<Server> {
             .sent_connection_accepted(packet, self.timer.elapsed());
     }
 
-    // REGION(alex): Data Transfer
-    pub fn create_unreliable_data_transfer(
-        &self,
-        scheduled: Scheduled<Unreliable, DataTransfer>,
-    ) -> Packet<ToSend, DataTransfer> {
-        self.service
-            .create_unreliable_data_transfer(scheduled, self.timer.elapsed())
-    }
-
-    pub fn create_reliable_data_transfer(
-        &self,
-        scheduled: Scheduled<Reliable, DataTransfer>,
-    ) -> Packet<ToSend, DataTransfer> {
-        self.service
-            .create_reliable_data_transfer(scheduled, self.timer.elapsed())
-    }
-
     pub fn sent_data_transfer(
         &mut self,
         packet: Packet<ToSend, DataTransfer>,
@@ -116,15 +99,6 @@ impl Protocol<Server> {
     ) -> Option<Packet<ToSend, ConnectionAccepted>> {
         self.service
             .resend_reliable_connection_accepted(self.timer.elapsed())
-    }
-
-    pub fn resend_reliable_data_transfer(&mut self) -> Option<Packet<ToSend, DataTransfer>> {
-        self.service
-            .resend_reliable_data_transfer(self.timer.elapsed())
-    }
-
-    pub fn resend_reliable_fragment(&mut self) -> Option<Packet<ToSend, Fragment>> {
-        self.service.resend_reliable_fragment(self.timer.elapsed())
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {

@@ -4,17 +4,22 @@
 #![feature(nonzero_ops)]
 // #![feature(const_generics)]
 // #![feature(const_try)]
+// #![feature(array_chunks)]
 
 use core::mem::size_of;
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     num::NonZeroU32,
+    ops::RangeBounds,
     sync::Arc,
     time::{Duration, Instant},
+    vec::Drain,
 };
 
 use log::debug;
 use packets::*;
+use peers::{Connected, Peer};
 
 pub mod client;
 pub mod errors;
@@ -58,11 +63,25 @@ pub type ProtocolId = NonZeroU32;
 pub const PROTOCOL_ID: ProtocolId = unsafe { ProtocolId::new_unchecked(0xbabedad) };
 pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().to_be_bytes();
 
-pub trait Service {}
+pub trait Service {
+    type SchedulerType: ServiceScheduler;
+    type ReliabilityHandlerType: ServiceReliability;
+
+    fn scheduler(&self) -> &Scheduler<Self::SchedulerType>;
+    fn scheduler_mut(&mut self) -> &mut Scheduler<Self::SchedulerType>;
+
+    fn reliability_handler(&self) -> &ReliabilityHandler<Self::ReliabilityHandlerType>;
+    fn reliability_handler_mut(&mut self) -> &mut ReliabilityHandler<Self::ReliabilityHandlerType>;
+
+    fn connected(&self) -> &HashMap<ConnectionId, Peer<Connected>>;
+}
 
 /// NOTE(alex): `Service` may be either a `Client` or a `Server`.
 #[derive(Debug)]
-pub struct Protocol<S: Service> {
+pub struct Protocol<S>
+where
+    S: Service,
+{
     pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub service: S,
@@ -76,14 +95,126 @@ where
     pub fn cancel_packet(&mut self, _packet_id: PacketId, _reliability: ReliabilityType) -> bool {
         todo!()
     }
+
+    pub fn create_unreliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Unreliable, DataTransfer>,
+    ) -> Packet<ToSend, DataTransfer> {
+        let (sequence, ack) = self
+            .service
+            .connected()
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (unreliable data transfer) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
+    pub fn create_reliable_data_transfer(
+        &self,
+        scheduled: Scheduled<Reliable, DataTransfer>,
+    ) -> Packet<ToSend, DataTransfer> {
+        let (sequence, ack) = self
+            .service
+            .connected()
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (unreliable data transfer) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
+    pub fn drain_unreliable_data_transfer<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Unreliable, DataTransfer>> {
+        self.service
+            .scheduler_mut()
+            .list_scheduled_unreliable_data_transfer
+            .drain(range)
+    }
+
+    pub fn drain_reliable_data_transfer<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Reliable, DataTransfer>> {
+        self.service
+            .scheduler_mut()
+            .list_scheduled_reliable_data_transfer
+            .drain(range)
+    }
+
+    pub fn retry_reliable_data_transfer(&mut self) -> Option<Packet<ToSend, DataTransfer>> {
+        self.service
+            .reliability_handler_mut()
+            .retry_reliable_data_transfer(self.timer.elapsed())
+    }
+
+    pub fn create_unreliable_fragment(
+        &self,
+        scheduled: Scheduled<Unreliable, Fragment>,
+    ) -> Packet<ToSend, Fragment> {
+        let (sequence, ack) = self
+            .service
+            .connected()
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (unreliable data transfer) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
+    pub fn create_reliable_fragment(
+        &self,
+        scheduled: Scheduled<Reliable, Fragment>,
+    ) -> Packet<ToSend, Fragment> {
+        let (sequence, ack) = self
+            .service
+            .connected()
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (unreliable data transfer) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
+    pub fn drain_unreliable_fragment<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Unreliable, Fragment>> {
+        self.service
+            .scheduler_mut()
+            .list_scheduled_unreliable_fragment
+            .drain(range)
+    }
+
+    pub fn drain_reliable_fragment<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Reliable, Fragment>> {
+        self.service
+            .scheduler_mut()
+            .list_scheduled_reliable_fragment
+            .drain(range)
+    }
+
+    pub fn retry_reliable_fragment(&mut self) -> Option<Packet<ToSend, Fragment>> {
+        self.service
+            .reliability_handler_mut()
+            .retry_reliable_fragment(self.timer.elapsed())
+    }
 }
 
-pub(crate) trait ServiceScheduler {
+pub trait ServiceScheduler {
     fn new(capacity: usize) -> Self;
 }
 
 #[derive(Debug)]
-pub(crate) struct Scheduler<S: ServiceScheduler> {
+pub struct Scheduler<S: ServiceScheduler> {
     list_scheduled_reliable_data_transfer: Vec<Scheduled<Reliable, DataTransfer>>,
     list_scheduled_unreliable_data_transfer: Vec<Scheduled<Unreliable, DataTransfer>>,
     list_scheduled_reliable_fragment: Vec<Scheduled<Reliable, Fragment>>,
@@ -92,12 +223,12 @@ pub(crate) struct Scheduler<S: ServiceScheduler> {
     service: S,
 }
 
-pub(crate) trait ServiceReliability {
+pub trait ServiceReliability {
     fn new(capacity: usize) -> Self;
 }
 
 #[derive(Debug)]
-pub(crate) struct ReliabilityHandler<S: ServiceReliability> {
+pub struct ReliabilityHandler<S: ServiceReliability> {
     list_sent_reliable_data_transfer: Vec<Packet<Sent, DataTransfer>>,
     list_sent_reliable_fragment: Vec<Packet<Sent, Fragment>>,
 
@@ -113,7 +244,7 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
         }
     }
 
-    pub(crate) fn resend_reliable_data_transfer(
+    pub(crate) fn retry_reliable_data_transfer(
         &mut self,
         now: Duration,
     ) -> Option<Packet<ToSend, DataTransfer>> {
@@ -146,7 +277,7 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
         None
     }
 
-    pub(crate) fn resend_reliable_fragment(
+    pub(crate) fn retry_reliable_fragment(
         &mut self,
         now: Duration,
     ) -> Option<Packet<ToSend, Fragment>> {

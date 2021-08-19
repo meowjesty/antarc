@@ -62,7 +62,7 @@ impl DummyManager<Server> {
             self.antarc.sent_connection_accepted(reliable_packet);
         }
 
-        if let Some(reliable_packet) = self.antarc.resend_reliable_data_transfer() {
+        if let Some(reliable_packet) = self.antarc.retry_reliable_data_transfer() {
             debug!("Server: ready to re-send {:#?}", reliable_packet);
 
             // NOTE(alex): Dummy send.
@@ -106,7 +106,6 @@ impl DummyManager<Server> {
 
         for scheduled in self
             .antarc
-            .service
             .drain_unreliable_data_transfer(..)
             .collect::<Vec<_>>()
         {
@@ -144,7 +143,6 @@ impl DummyManager<Server> {
 
         for scheduled in self
             .antarc
-            .service
             .drain_reliable_data_transfer(..)
             .collect::<Vec<_>>()
         {
@@ -235,7 +233,7 @@ impl DummyManager<Client> {
             self.antarc.sent_connection_request(reliable_packet);
         }
 
-        if let Some(reliable_packet) = self.antarc.resend_reliable_data_transfer() {
+        if let Some(reliable_packet) = self.antarc.retry_reliable_data_transfer() {
             debug!("Client: ready to re-send {:#?}", reliable_packet);
 
             // NOTE(alex): Dummy send.
@@ -279,7 +277,6 @@ impl DummyManager<Client> {
 
         for scheduled in self
             .antarc
-            .service
             .drain_unreliable_data_transfer(..)
             .collect::<Vec<_>>()
         {
@@ -304,7 +301,6 @@ impl DummyManager<Client> {
 
         for scheduled in self
             .antarc
-            .service
             .drain_reliable_data_transfer(..)
             .collect::<Vec<_>>()
         {
