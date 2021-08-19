@@ -97,11 +97,31 @@ fn server_main() {
         let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x5; 2]);
         info!("Client -> result of schedule call {:#?}", scheduled);
 
+        let scheduled = client.schedule(ReliabilityType::Unreliable, vec![0x7; 1600]);
+        info!("Client -> result of schedule call {:#?}", scheduled);
+
+        let scheduled = client.schedule(ReliabilityType::Reliable, vec![0x8; 1600]);
+        info!("Client -> result of schedule call {:#?}", scheduled);
+
         let scheduled =
             server.schedule(ReliabilityType::Unreliable, SendTo::Broadcast, vec![0x2; 2]);
         info!("Server -> result of schedule call {:#?}", scheduled);
 
         let scheduled = server.schedule(ReliabilityType::Reliable, SendTo::Broadcast, vec![0x6; 2]);
+        info!("Server -> result of schedule call {:#?}", scheduled);
+
+        let scheduled = server.schedule(
+            ReliabilityType::Unreliable,
+            SendTo::Broadcast,
+            vec![0x9; 1600],
+        );
+        info!("Server -> result of schedule call {:#?}", scheduled);
+
+        let scheduled = server.schedule(
+            ReliabilityType::Reliable,
+            SendTo::Broadcast,
+            vec![0x10; 1600],
+        );
         info!("Server -> result of schedule call {:#?}", scheduled);
 
         server.dummy_receiver = client.dummy_sender.clone();

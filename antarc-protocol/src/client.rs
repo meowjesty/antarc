@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::{net::SocketAddr, time::Instant};
 
 use crate::{errors::*, events::*, packets::*, Protocol};
@@ -15,6 +16,7 @@ impl Protocol<Client> {
             timer: Instant::now(),
             service,
             receiver_pipe: Vec::with_capacity(32),
+            reliable_ttl: Duration::from_secs(2),
         }
     }
 
@@ -31,7 +33,7 @@ impl Protocol<Client> {
     /// If `Messager` or some other `Packet` trait implements an `Into<SentEvent>` it would work.
     pub fn sent_connection_request(&mut self, packet: Packet<ToSend, ConnectionRequest>) {
         self.service
-            .sent_connection_request(packet, self.timer.elapsed());
+            .sent_connection_request(packet, self.timer.elapsed(), self.reliable_ttl);
     }
 
     pub fn sent_data_transfer(
@@ -39,8 +41,21 @@ impl Protocol<Client> {
         packet: Packet<ToSend, DataTransfer>,
         reliability: ReliabilityType,
     ) {
+        self.service.sent_data_transfer(
+            packet,
+            self.timer.elapsed(),
+            reliability,
+            self.reliable_ttl,
+        )
+    }
+
+    pub fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        reliability: ReliabilityType,
+    ) {
         self.service
-            .sent_data_transfer(packet, self.timer.elapsed(), reliability)
+            .sent_fragment(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
@@ -83,17 +98,7 @@ impl Protocol<Client> {
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {
-        // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
-        // The network will check if socket is ready, then call a `make_packet` that will take some
-        // scheduled from the scheduler pipe, but how does it handle reliability?
-        //
-        // ADD(alex) [mid] 2021-08-01: After sending a reliable packet, it should be put in a list
-        // of `SentReliable` or whatever packets, and these packets are checked via their
-        // `meta.time` and resent after some time has passed, and they've not been acked yet.
-        //
-        // No need to convert such a packet into a `Scheduled`, the easier approach would be to have
-        // a secondary `send_non_acked` function, that runs before the common `send`, and it takes
-        // a packet from this reliable list and re-sends it, with updated time.
+        self.service.reliability_handler.poll(self.timer.elapsed());
 
         self.service.api.drain(..)
     }

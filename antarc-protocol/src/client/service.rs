@@ -38,6 +38,18 @@ impl ServiceReliability for ClientReliabilityHandler {
             list_sent_connection_request: Vec::with_capacity(capacity),
         }
     }
+
+    fn poll(&mut self, now: Duration) {
+        if let Some((time_sent, ttl)) = self
+            .list_sent_connection_request
+            .first()
+            .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
+        {
+            if time_sent + ttl > now {
+                self.list_sent_connection_request.remove(0);
+            }
+        }
+    }
 }
 
 impl ClientReliabilityHandler {
@@ -153,8 +165,9 @@ impl Client {
         &mut self,
         packet: Packet<ToSend, ConnectionRequest>,
         time: Duration,
+        ttl: Duration,
     ) {
-        let sent = packet.sent(time);
+        let sent = packet.sent(time, ttl);
         let address = sent.delivery.meta.address;
 
         let mut peer = self.requesting_connection.remove(&address).unwrap();
@@ -170,8 +183,9 @@ impl Client {
         packet: Packet<ToSend, DataTransfer>,
         time: Duration,
         reliability: ReliabilityType,
+        ttl: Duration,
     ) {
-        let sent = packet.sent(time);
+        let sent = packet.sent(time, ttl);
         let address = sent.delivery.meta.address;
         let connection_id = sent.message.connection_id;
 
@@ -187,6 +201,33 @@ impl Client {
         if let ReliabilityType::Reliable = reliability {
             self.reliability_handler
                 .list_sent_reliable_data_transfer
+                .push(sent);
+        }
+    }
+
+    pub(crate) fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let address = sent.delivery.meta.address;
+        let connection_id = sent.message.connection_id;
+
+        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
+            self.connected
+                .insert(connection_id, peer.connected(time, connection_id));
+        }
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_fragment
                 .push(sent);
         }
     }

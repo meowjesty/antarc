@@ -86,6 +86,7 @@ where
     pub timer: Instant,
     pub service: S,
     pub receiver_pipe: Vec<RawPacket<S>>,
+    pub reliable_ttl: Duration,
 }
 
 impl<S> Protocol<S>
@@ -225,6 +226,7 @@ pub struct Scheduler<S: ServiceScheduler> {
 
 pub trait ServiceReliability {
     fn new(capacity: usize) -> Self;
+    fn poll(&mut self, now: Duration);
 }
 
 #[derive(Debug)]
@@ -242,6 +244,25 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
             list_sent_reliable_fragment: Vec::with_capacity(capacity),
             service: S::new(capacity),
         }
+    }
+
+    fn poll(&mut self, now: Duration) {
+        if let Some((time_sent, ttl)) = self
+            .list_sent_reliable_data_transfer
+            .first()
+            .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
+            .or_else(|| {
+                self.list_sent_reliable_fragment
+                    .first()
+                    .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
+            })
+        {
+            if time_sent + ttl > now {
+                self.list_sent_reliable_data_transfer.remove(0);
+            }
+        }
+
+        self.service.poll(now);
     }
 
     pub(crate) fn retry_reliable_data_transfer(

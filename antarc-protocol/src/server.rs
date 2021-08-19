@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::time::Instant;
 
 use crate::{errors::*, events::*, packets::*, peers::*, Protocol};
@@ -15,6 +16,7 @@ impl Protocol<Server> {
             timer: Instant::now(),
             service,
             receiver_pipe: Vec::with_capacity(32),
+            reliable_ttl: Duration::from_secs(2),
         }
     }
 
@@ -46,7 +48,7 @@ impl Protocol<Server> {
     // Check the `client.rs` file that contains a comment with this possible function.
     pub fn sent_connection_accepted(&mut self, packet: Packet<ToSend, ConnectionAccepted>) {
         self.service
-            .sent_connection_accepted(packet, self.timer.elapsed());
+            .sent_connection_accepted(packet, self.timer.elapsed(), self.reliable_ttl);
     }
 
     pub fn sent_data_transfer(
@@ -54,8 +56,21 @@ impl Protocol<Server> {
         packet: Packet<ToSend, DataTransfer>,
         reliability: ReliabilityType,
     ) {
+        self.service.sent_data_transfer(
+            packet,
+            self.timer.elapsed(),
+            reliability,
+            self.reliable_ttl,
+        )
+    }
+
+    pub fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        reliability: ReliabilityType,
+    ) {
         self.service
-            .sent_data_transfer(packet, self.timer.elapsed(), reliability)
+            .sent_fragment(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
     }
 
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
@@ -66,15 +81,11 @@ impl Protocol<Server> {
     /// 2. broadcast to every peer;
     ///
     /// If the user wants to send to multiple select peers, then they must call the single version
-    /// multiple times.
+    /// multiple times. This avoids introducing a special case for when this "send batch" contains
+    /// an invalid `ConnectionId`.
     ///
     /// TODO(alex) [low] 2021-08-08: Most of the duplication problems were solved by moving into a
     /// separate helper function, a bit remains though.
-    ///
-    /// TODO(alex) [vlow] 2021-08-09: There was a `SendTo::Multiple` that took a list of connection
-    /// ids, but this function can't properly handle failure state for this variant. To schedule for
-    /// multiple peers like that, another return type must be had in case the user passes 1 or more
-    /// not-connected connection ids. This could be some sort of `schedule_batch`.
     pub fn schedule(
         &mut self,
         reliability: ReliabilityType,
@@ -94,25 +105,15 @@ impl Protocol<Server> {
         Ok(packet_id)
     }
 
-    pub fn resend_reliable_connection_accepted(
+    pub fn retry_reliable_connection_accepted(
         &mut self,
     ) -> Option<Packet<ToSend, ConnectionAccepted>> {
         self.service
-            .resend_reliable_connection_accepted(self.timer.elapsed())
+            .retry_reliable_connection_accepted(self.timer.elapsed())
     }
 
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
-        // TODO(alex) [mid] 2021-07-30: Handle `scheduler` pipe of events. But how exactly?
-        // The network will check if socket is ready, then call a `make_packet` that will take some
-        // scheduled from the scheduler pipe, but how does it handle reliability?
-        //
-        // ADD(alex) [mid] 2021-08-01: After sending a reliable packet, it should be put in a list
-        // of `SentReliable` or whatever packets, and these packets are checked via their
-        // `meta.time` and resent after some time has passed, and they've not been acked yet.
-        //
-        // No need to convert such a packet into a `Scheduled`, the easier approach would be to have
-        // a secondary `send_non_acked` function, that runs before the common `send`, and it takes
-        // a packet from this reliable list and re-sends it, with updated time.
+        self.service.reliability_handler.poll(self.timer.elapsed());
 
         self.service.api.drain(..)
     }

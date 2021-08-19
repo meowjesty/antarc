@@ -158,7 +158,33 @@ impl RawPacket<Server> {
             }
             Fragment::PACKET_TYPE => {
                 debug!("server: decoding fragment packet.");
-                todo!();
+
+                let read_fragment_index = read_buffer_inc!({ buffer, buffer_position } : u8);
+                let read_fragment_total = read_buffer_inc!({ buffer, buffer_position } : u8);
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, Fragment::HEADER_SIZE);
+
+                let read_payload = buffer[buffer_position..].to_vec();
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = Fragment {
+                    meta: MetaMessage { packet_type },
+                    index: read_fragment_index,
+                    total: read_fragment_total,
+                    connection_id: read_connection_id.try_into()?,
+                    payload: Arc::new(read_payload),
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForServer::Fragment { packet })
             }
             Heartbeat::PACKET_TYPE => {
                 debug!("server: decoding heartbeat packet.");
@@ -367,6 +393,11 @@ pub struct ToSend {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sent {
     pub id: PacketId,
+    /// NOTE(alex): The time to live helps dealing with `Reliable` packets. If there was no `ttl`,
+    /// then packets could remain "unacked" forever.
+    ///
+    /// Ignored for `Unreliable` packets, as the protocol doesn't store those.
+    pub ttl: Duration,
     pub meta: MetaDelivery,
 }
 
@@ -552,14 +583,26 @@ impl Encoder for Fragment {
         + size_of::<Sequence>()
         + size_of::<Ack>()
         + size_of::<PacketType>()
-        // TODO(alex) [mid] 2021-08-04: Missing fragmend index, fragment total sizes.
+        + size_of::<u8>()
+        + size_of::<u8>()
         + size_of::<ConnectionId>();
 
     fn encoded(&self) -> Vec<u8> {
-        todo!();
-        // let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
+        let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
+        let fragment_index_bytes = self.index.to_be_bytes().to_vec();
+        let fragment_total_bytes = self.total.to_be_bytes().to_vec();
+        let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
+        let payload = &self.payload;
 
-        // packet_type_bytes
+        let encoded = vec![
+            packet_type_bytes,
+            fragment_index_bytes,
+            fragment_total_bytes,
+            connection_id_bytes,
+            payload.to_vec(),
+        ]
+        .concat();
+        encoded
     }
 }
 impl Encoder for Heartbeat {
@@ -582,10 +625,11 @@ impl<Message> Packet<ToSend, Message>
 where
     Message: Messager + Encoder,
 {
-    pub fn sent(self, time: Duration) -> Packet<Sent, Message> {
+    pub fn sent(self, time: Duration, ttl: Duration) -> Packet<Sent, Message> {
         let packet = Packet {
             delivery: Sent {
                 id: self.delivery.id,
+                ttl,
                 meta: MetaDelivery {
                     time,
                     address: self.delivery.meta.address,

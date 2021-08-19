@@ -38,6 +38,18 @@ impl ServiceReliability for ServerReliabilityHandler {
             list_sent_connection_accepted: Vec::with_capacity(capacity),
         }
     }
+
+    fn poll(&mut self, now: Duration) {
+        if let Some((time_sent, ttl)) = self
+            .list_sent_connection_accepted
+            .first()
+            .map(|packet| (packet.delivery.meta.time, packet.delivery.ttl))
+        {
+            if time_sent + ttl > now {
+                self.list_sent_connection_accepted.remove(0);
+            }
+        }
+    }
 }
 
 impl ServerReliabilityHandler {
@@ -45,7 +57,7 @@ impl ServerReliabilityHandler {
         self.list_sent_connection_accepted.push(packet);
     }
 
-    fn resend_reliable_connection_accepted(
+    fn retry_reliable_connection_accepted(
         &mut self,
         now: Duration,
     ) -> Option<Packet<ToSend, ConnectionAccepted>> {
@@ -193,8 +205,9 @@ impl Server {
         &mut self,
         packet: Packet<ToSend, ConnectionAccepted>,
         time: Duration,
+        ttl: Duration,
     ) {
-        let sent = packet.sent(time);
+        let sent = packet.sent(time, ttl);
 
         if let Some(peer) = self
             .awaiting_connection_ack
@@ -220,6 +233,9 @@ impl Server {
         raw_packet: RawPacket<Server>,
         packet_id: PacketId,
         time: Duration,
+        /* TODO(alex) [high] 2021-08-19: This return of `bool` is a waste, it's being used to
+         * increment the packet id tracker on receive. I believe there should be a separate
+         * packet id tracker for received packets only. */
     ) -> Result<bool, ProtocolError> {
         let decoded = raw_packet.decode(time)?;
         match decoded {
@@ -269,23 +285,62 @@ impl Server {
                     let connected = peer.connected(time, connection_id);
 
                     self.connected.insert(connection_id, connected);
-
-                    self.api.push(ProtocolEvent::DataTransfer {
-                        connection_id,
-
-                        // TODO(alex) [low] 2021-08-16: Right now this is completely safe, as the
-                        // decoded packet is the only owner of this `Arc<Payload>`. Only the sending
-                        // side has to deal with shared ownership.
-                        //
-                        // This means that `Arc<Payload>` here doesn't actually make any sense, it
-                        // should be the only owner.
-                        payload: Arc::try_unwrap(payload).unwrap(),
-                    });
+                } else {
+                    return Err(ProtocolError::NoPeersConnected);
                 }
+
+                self.api.push(ProtocolEvent::DataTransfer {
+                    connection_id,
+
+                    // TODO(alex) [low] 2021-08-16: Right now this is completely safe, as the
+                    // decoded packet is the only owner of this `Arc<Payload>`. Only the sending
+                    // side has to deal with shared ownership.
+                    //
+                    // This means that `Arc<Payload>` here doesn't actually make any sense, it
+                    // should be the only owner.
+                    payload: Arc::try_unwrap(payload).unwrap(),
+                });
 
                 Ok(false)
             }
-            DecodedForServer::Fragment { .. } => todo!(),
+            DecodedForServer::Fragment { packet } => {
+                debug!("server: received fragment {:#?}.", packet);
+
+                let connection_id = packet.message.connection_id;
+                let payload = packet.message.payload;
+
+                if let Some(peer) = self.connected.get_mut(&connection_id) {
+                    debug!("server: peer is connected {:#?}.", peer);
+
+                    peer.remote_ack_tracker = packet.sequence.get();
+                    peer.local_ack_tracker = packet.ack;
+                } else if let Some(mut peer) = self.awaiting_connection_ack.remove(&connection_id) {
+                    debug!("server: peer was awaiting connection ack {:#?}.", peer);
+
+                    peer.remote_ack_tracker = packet.sequence.get();
+                    peer.local_ack_tracker = packet.ack;
+                    let connected = peer.connected(time, connection_id);
+
+                    self.connected.insert(connection_id, connected);
+                } else {
+                    return Err(ProtocolError::NoPeersConnected);
+                }
+
+                // TODO(alex) [high] 2021-08-19: How do we re-assemble a fragmented packet?
+                // I should probably have a list of `Packet<Received, Fragment>` somewhere, this
+                // will tie in with the `received_packet_id_tracker`, and a
+                // `HashMap<PacketId, Fragments>` of something like that.
+                //
+                // How to handle this though? First this must be associated with a `ConnectionId`,
+                // otherwise we could end up mixing fragments from different peers (there is a
+                // `fragment.connection_id` field).
+                //
+                // Then I need to check `sequence`, `fragment_index` and `fragment_total`, this
+                // will tell if the next packet is part of this same fragment?
+                todo!();
+
+                Ok(false)
+            }
             DecodedForServer::Heartbeat { packet } => {
                 debug!("server: received heartbeat {:#?}.", packet);
 
@@ -331,8 +386,9 @@ impl Server {
         packet: Packet<ToSend, DataTransfer>,
         time: Duration,
         reliability: ReliabilityType,
+        ttl: Duration,
     ) {
-        let sent = packet.sent(time);
+        let sent = packet.sent(time, ttl);
         let connection_id = sent.message.connection_id;
 
         if let Some(connected) = self.connected.get_mut(&connection_id) {
@@ -342,6 +398,27 @@ impl Server {
         if let ReliabilityType::Reliable = reliability {
             self.reliability_handler
                 .list_sent_reliable_data_transfer
+                .push(sent);
+        }
+    }
+
+    pub(crate) fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let connection_id = sent.message.connection_id;
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_fragment
                 .push(sent);
         }
     }
@@ -463,12 +540,12 @@ impl Server {
             .drain(range)
     }
 
-    pub(crate) fn resend_reliable_connection_accepted(
+    pub(crate) fn retry_reliable_connection_accepted(
         &mut self,
         time: Duration,
     ) -> Option<Packet<ToSend, ConnectionAccepted>> {
         self.reliability_handler
             .service
-            .resend_reliable_connection_accepted(time)
+            .retry_reliable_connection_accepted(time)
     }
 }
