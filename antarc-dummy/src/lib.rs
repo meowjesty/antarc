@@ -133,19 +133,6 @@ impl DummyManager<Server> {
             .drain_unreliable_data_transfer(..)
             .collect::<Vec<_>>()
         {
-            // TODO(alex) [high] 2021-08-05: We have a handshake of sorts, now it's time
-            // to implement the other messages.
-            //
-            // ADD(alex) [vhigh] 2021-08-09: Need to create the actual reliability
-            // mechanism, this means refactoring these `create_p` functions. I think moving
-            // them into the appropriate packet type `Packet<ToSend, DataTransfer>` is the
-            // best choice.
-            //
-            // How will reliability be handled though?
-            //
-            // Or should I tackle fragmentation / reassembly first? I think reliability is
-            // more general, as a reliable fragment won't reassemble until all of its parts
-            // have arrived.
             debug!("Server: preparing to send {:#?}.", scheduled);
             let packet = self.antarc.create_unreliable_data_transfer(scheduled);
             debug!("Server: ready to send {:#?}", packet);
@@ -198,19 +185,6 @@ impl DummyManager<Server> {
             .drain_unreliable_fragment(..)
             .collect::<Vec<_>>()
         {
-            // TODO(alex) [high] 2021-08-05: We have a handshake of sorts, now it's time
-            // to implement the other messages.
-            //
-            // ADD(alex) [vhigh] 2021-08-09: Need to create the actual reliability
-            // mechanism, this means refactoring these `create_p` functions. I think moving
-            // them into the appropriate packet type `Packet<ToSend, DataTransfer>` is the
-            // best choice.
-            //
-            // How will reliability be handled though?
-            //
-            // Or should I tackle fragmentation / reassembly first? I think reliability is
-            // more general, as a reliable fragment won't reassemble until all of its parts
-            // have arrived.
             debug!("Server: preparing to send {:#?}.", scheduled);
             let packet = self.antarc.create_unreliable_fragment(scheduled);
             debug!("Server: ready to send {:#?}", packet);
@@ -255,6 +229,7 @@ impl DummyManager<Server> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
         debug!("Server: dummy poll");
 
+        // TODO(alex) [high] 2021-08-20: Still missing `Heartbeat` packet handling.
         self.poll_retry_connection_accepted();
         self.poll_retry_data_transfer();
         self.poll_retry_fragment();
@@ -315,6 +290,7 @@ impl DummyManager<Client> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {
         info!("Client: dummy poll");
 
+        // TODO(alex) [high] 2021-08-20: Still missing `Heartbeat` packet handling.
         self.poll_retry_connection_request();
         self.poll_retry_data_transfer();
         self.poll_connection_request();
@@ -343,7 +319,7 @@ impl DummyManager<Client> {
     fn poll_reliable_fragment(&mut self) {
         for scheduled in self.antarc.drain_reliable_fragment(..).collect::<Vec<_>>() {
             debug!("Client: preparing to send {:#?}.", scheduled);
-            // TODO(alex) [high] 2021-08-17: The whole chain for this function is filled with
+            // TODO(alex) [low] 2021-08-17: The whole chain for this function is filled with
             // unneccesary duplication. Creation of unreliable / reliable packets are equal, the
             // only differences in reliability come AFTER the packet is sent.
             //
@@ -355,7 +331,7 @@ impl DummyManager<Client> {
             //
             // Most `drain_x` functions could be done at `impl<S: Service> Protocol<S>`.
             //
-            // TODO(alex) [high] 2021-08-17: Could we get rid of duplication by passing down a
+            // TODO(alex) [low] 2021-08-17: Could we get rid of duplication by passing down a
             // function callback?
             // fn common_create_data_transfer(scheduled, fn_create_reliable_data_transfer);
             let packet = self.antarc.create_reliable_fragment(scheduled);
@@ -383,7 +359,7 @@ impl DummyManager<Client> {
             .collect::<Vec<_>>()
         {
             debug!("Client: preparing to send {:#?}.", scheduled);
-            // TODO(alex) [high] 2021-08-17: The whole chain for this function is filled with
+            // TODO(alex) [low] 2021-08-17: The whole chain for this function is filled with
             // unneccesary duplication. Creation of unreliable / reliable packets are equal, the
             // only differences in reliability come AFTER the packet is sent.
             //
@@ -395,7 +371,7 @@ impl DummyManager<Client> {
             //
             // Most `drain_x` functions could be done at `impl<S: Service> Protocol<S>`.
             //
-            // TODO(alex) [high] 2021-08-17: Could we get rid of duplication by passing down a
+            // TODO(alex) [low] 2021-08-17: Could we get rid of duplication by passing down a
             // function callback?
             // fn common_create_data_transfer(scheduled, fn_create_reliable_data_transfer);
             let packet = self.antarc.create_reliable_data_transfer(scheduled);

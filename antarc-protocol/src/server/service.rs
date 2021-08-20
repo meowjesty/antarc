@@ -496,7 +496,6 @@ impl Server {
             .collect::<Vec<_>>();
 
         let fragment_total = fragments.len();
-        let fragmented = fragment_total > 1;
 
         for (fragment_index, payload) in fragments.into_iter() {
             match send_to {
@@ -519,7 +518,6 @@ impl Server {
                         connection_id,
                         packet_id,
                         time,
-                        fragmented,
                         fragment_index,
                         fragment_total,
                     );
@@ -541,7 +539,6 @@ impl Server {
                             connection_id,
                             packet_id,
                             time,
-                            fragmented,
                             fragment_index,
                             fragment_total,
                         );

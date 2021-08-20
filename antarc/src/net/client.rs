@@ -108,9 +108,9 @@ impl NetManager<Client> {
             }
         }
 
-        // TODO(alex) [high] 2021-06-06: Finally de-duplicate this code.
+        // TODO(alex) [mid] 2021-06-06: Finally de-duplicate this code.
         //
-        // ADD(alex) [high] 2021-06-08: Trimmed down some of the duplicated code, but this function
+        // ADD(alex) [mid] 2021-06-08: Trimmed down some of the duplicated code, but this function
         // is still quite big and repetitive.
         // while self.network.writable && self.protocol.events.sender.len() > 0 {
         //     for event in self.protocol.events.sender.drain(..1) {}

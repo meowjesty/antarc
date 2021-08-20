@@ -20,6 +20,7 @@ fn schedule_client<const VALUE: u8, const LEN: usize>(
     info!("Client -> result of schedule call {:#?}", scheduled);
 }
 
+#[allow(unused)]
 fn schedule_data_transfer_single(manager: &mut DummyManager<Server>, connection_id: ConnectionId) {
     let scheduled = manager.schedule(
         ReliabilityType::Unreliable,
@@ -48,6 +49,7 @@ fn run() {
     let (client_tx, client_rx) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
     let (server_tx, server_rx) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
 
+    #[allow(unused)]
     let client_thread = std::thread::Builder::new()
         .name("Client thread".to_string())
         .spawn(move || loop {
@@ -94,6 +96,7 @@ fn run() {
             std::thread::sleep(Duration::from_millis(500));
         });
 
+    #[allow(unused)]
     let server_thread = std::thread::Builder::new()
         .name("Server thread".to_string())
         .spawn(move || loop {
@@ -154,6 +157,6 @@ fn run() {
         std::thread::sleep(Duration::from_millis(1500));
     }
 
-    client_thread.unwrap().join().unwrap();
-    server_thread.unwrap().join().unwrap();
+    // client_thread.unwrap().join().unwrap();
+    // server_thread.unwrap().join().unwrap();
 }

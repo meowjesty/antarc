@@ -368,7 +368,6 @@ impl<S: ServiceScheduler> Scheduler<S> {
         connection_id: ConnectionId,
         packet_id: PacketId,
         time: Duration,
-        fragmented: bool,
         fragment_index: usize,
         fragment_total: usize,
     ) {

@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use rand::Rng;
 
 const BIG_RANGE: core::ops::Range<usize> = 0..(1500 * 10);
 const MEDIUM_RANGE: core::ops::Range<usize> = 0..(1500 * 3);
-const SMALL_RANGE: core::ops::Range<usize> = 0..(1500 * 1);
 
 fn bench_array_concat(c: &mut Criterion) {
     let mut group = c.benchmark_group("Concat lists");

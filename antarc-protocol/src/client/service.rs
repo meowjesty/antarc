@@ -469,7 +469,6 @@ impl Client {
             .collect::<Vec<_>>();
 
         let fragment_total = fragments.len();
-        let fragmented = fragment_total > 1;
 
         for (fragment_index, payload) in fragments.into_iter() {
             for (connection_id, address) in self
@@ -486,7 +485,6 @@ impl Client {
                     connection_id,
                     packet_id,
                     time,
-                    fragmented,
                     fragment_index,
                     fragment_total,
                 );
