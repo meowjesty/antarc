@@ -323,21 +323,6 @@ impl Server {
                     return Err(ProtocolError::NoPeersConnected);
                 }
 
-                // TODO(alex) [high] 2021-08-19: How do we re-assemble a fragmented packet?
-                // I should probably have a list of `Packet<Received, Fragment>` somewhere, this
-                // will tie in with the `received_packet_id_tracker`, and a
-                // `HashMap<PacketId, Fragments>` of something like that.
-                //
-                // How to handle this though? First this must be associated with a `ConnectionId`,
-                // otherwise we could end up mixing fragments from different peers (there is a
-                // `fragment.connection_id` field).
-                //
-                // Then I need to check `sequence`, `fragment_index` and `fragment_total`, this
-                // will tell if the next packet is part of this same fragment?
-                //
-                // ADD(alex) [vhigh] 2021-08-19: This is a sketch of what should happen when
-                // handling the fragment received. Missing the ttl check (poll?), and move this into
-                // some `struct Reassembler` or `struct FragmentationHandler`.
                 let peer = self
                     .connected
                     .get_mut(&connection_id)
@@ -365,9 +350,12 @@ impl Server {
                         .reassembler
                         .remove(&fragment_id)
                         .expect("Fragment must exist!");
+                    debug!("server: fragments len {:#?}.", fragments.len());
                     fragments.sort_by(|a, b| a.sequence.cmp(&b.sequence));
+                    debug!("server: fragments sorted {:#?}.", fragments);
 
                     let packet = Packet::from(fragments);
+                    debug!("server: fragment became packet {:#?}.", packet);
                     self.api.push(ProtocolEvent::DataTransfer {
                         connection_id,
                         payload: Arc::try_unwrap(packet.message.payload).expect("Only owner!"),
