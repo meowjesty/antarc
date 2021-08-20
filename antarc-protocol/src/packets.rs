@@ -239,6 +239,9 @@ impl RawPacket<Client> {
 
                 Ok(DecodedForClient::ConnectionAccepted { packet })
             }
+            // TODO(alex) [high] 2021-09-19: This and Fragment are the common for server and client,
+            // extract this handling someway, as the DecodedForClient and DecodedForServer only
+            // differ for connection packets.
             DataTransfer::PACKET_TYPE => {
                 debug!("client: decoding data transfer packet.");
 
@@ -269,7 +272,33 @@ impl RawPacket<Client> {
             }
             Fragment::PACKET_TYPE => {
                 debug!("client: decoding fragment packet.");
-                todo!();
+
+                let read_fragment_index = read_buffer_inc!({ buffer, buffer_position } : u8);
+                let read_fragment_total = read_buffer_inc!({ buffer, buffer_position } : u8);
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, Fragment::HEADER_SIZE);
+
+                let read_payload = buffer[buffer_position..].to_vec();
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = Fragment {
+                    meta: MetaMessage { packet_type },
+                    index: read_fragment_index,
+                    total: read_fragment_total,
+                    connection_id: read_connection_id.try_into()?,
+                    payload: Arc::new(read_payload),
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForClient::Fragment { packet })
             }
             Heartbeat::PACKET_TYPE => {
                 debug!("client: decoding heartbeat packet.");

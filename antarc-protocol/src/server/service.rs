@@ -481,7 +481,7 @@ impl Server {
         }
 
         let fragments = payload
-            .chunks(MAX_FRAGMENT_SIZE)
+            .chunks(MAX_FRAGMENT_SIZE - Fragment::HEADER_SIZE)
             .enumerate()
             // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
             // use `to_vec` here.

@@ -326,7 +326,61 @@ impl Client {
 
                 Ok(())
             }
-            DecodedForClient::Fragment { .. } => todo!(),
+            DecodedForClient::Fragment { packet } => {
+                debug!("client: received fragment {:#?}.", packet);
+
+                let connection_id = packet.message.connection_id;
+
+                if let Some(peer) = self.connected.get_mut(&connection_id) {
+                    debug!("client: peer is connected {:#?}.", peer);
+
+                    peer.remote_ack_tracker = packet.sequence.get();
+                    peer.local_ack_tracker = packet.ack;
+                } else {
+                    return Err(ProtocolError::NoPeersConnected);
+                }
+
+                let peer = self
+                    .connected
+                    .get_mut(&connection_id)
+                    .expect("Peer must be connected!");
+                let fragment_id = packet.sequence;
+                let fragment_total = packet.message.total as usize;
+
+                let last_fragment = match peer.connection.reassembler.get_mut(&fragment_id) {
+                    Some(fragments) => {
+                        fragments.push(packet);
+                        fragments.len() == fragment_total
+                    }
+                    None => {
+                        let mut fragments = Vec::with_capacity(fragment_total);
+                        fragments.push(packet);
+                        peer.connection.reassembler.insert(fragment_id, fragments);
+                        false
+                    }
+                };
+
+                if last_fragment {
+                    debug!("client: received last fragment.");
+                    let mut fragments = peer
+                        .connection
+                        .reassembler
+                        .remove(&fragment_id)
+                        .expect("Fragment must exist!");
+                    debug!("client: fragments len {:#?}.", fragments.len());
+                    fragments.sort_by(|a, b| a.sequence.cmp(&b.sequence));
+                    debug!("client: fragments sorted {:#?}.", fragments);
+
+                    let packet = Packet::from(fragments);
+                    debug!("client: fragment became packet {:#?}.", packet);
+                    self.api.push(ProtocolEvent::DataTransfer {
+                        connection_id,
+                        payload: Arc::try_unwrap(packet.message.payload).expect("Only owner!"),
+                    })
+                }
+
+                Ok(())
+            }
             DecodedForClient::Heartbeat { packet } => {
                 debug!("client: received heartbeat {:#?}.", packet);
 
@@ -402,7 +456,7 @@ impl Client {
         }
 
         let fragments = payload
-            .chunks(MAX_FRAGMENT_SIZE)
+            .chunks(MAX_FRAGMENT_SIZE - Fragment::HEADER_SIZE)
             .enumerate()
             // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
             // use `to_vec` here.

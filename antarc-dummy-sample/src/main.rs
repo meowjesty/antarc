@@ -81,8 +81,7 @@ fn run() {
             }
 
             // schedule_client::<0x5, 2>(&mut client, ReliabilityType::Unreliable);
-            // TODO(alex) [vhigh] 2021-08-19: Never increasing the packet_id when sending fragments.
-            // Must have some way of increasing it when the last fragment is sent.
+            // TODO(alex) [vhigh] 2021-08-19: Handle fragmentation for Client.
             schedule_client::<0x7, 1600>(&mut client, ReliabilityType::Unreliable);
             // schedule_client::<0x8, 1600>(&mut client, ReliabilityType::Reliable);
 
