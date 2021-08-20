@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use crate::packets::*;
 
@@ -50,6 +50,7 @@ pub struct Connected {
     pub meta: MetaConnection,
     pub connection_id: ConnectionId,
     pub rtt: Duration,
+    pub reassembler: HashMap<Sequence, Vec<Packet<Received, Fragment>>>,
 }
 
 impl Peer<RequestingConnection> {
@@ -107,7 +108,38 @@ impl Peer<AwaitingConnectionAck> {
                 },
                 connection_id,
                 rtt: Duration::default(),
+                reassembler: HashMap::with_capacity(2),
             },
+        }
+    }
+}
+
+impl Peer<Connected> {
+    /// NOTE(alex): Removes expired packets from the reassembler line.
+    pub(crate) fn poll(&mut self, now: Duration) {
+        let ttl = Duration::from_secs(1);
+
+        let drop_fragment = self
+            .connection
+            .reassembler
+            .values()
+            .filter_map(|fragments| {
+                let fragment = fragments.last().expect("Fragment must exist!");
+                let fragment_time = fragment.delivery.meta.time;
+
+                if fragment_time + ttl > now {
+                    Some(fragment.sequence)
+                } else {
+                    None
+                }
+            })
+            .last();
+
+        if let Some(fragment_id) = drop_fragment {
+            self.connection
+                .reassembler
+                .remove(&fragment_id)
+                .expect("Fragment must exist!");
         }
     }
 }

@@ -338,11 +338,41 @@ impl Server {
                 // ADD(alex) [vhigh] 2021-08-19: This is a sketch of what should happen when
                 // handling the fragment received. Missing the ttl check (poll?), and move this into
                 // some `struct Reassembler` or `struct FragmentationHandler`.
+                let peer = self
+                    .connected
+                    .get_mut(&connection_id)
+                    .expect("Peer must be connected!");
                 let fragment_id = packet.sequence;
-                let mut fragments = HashMap::with_capacity(packet.message.total as usize);
-                fragments.insert(packet.message.index, packet);
+                let fragment_total = packet.message.total as usize;
 
-                todo!();
+                let last_fragment = match peer.connection.reassembler.get_mut(&fragment_id) {
+                    Some(fragments) => {
+                        fragments.push(packet);
+                        fragments.len() == fragment_total
+                    }
+                    None => {
+                        let mut fragments = Vec::with_capacity(fragment_total);
+                        fragments.push(packet);
+                        peer.connection.reassembler.insert(fragment_id, fragments);
+                        false
+                    }
+                };
+
+                if last_fragment {
+                    debug!("server: received last fragment.");
+                    let mut fragments = peer
+                        .connection
+                        .reassembler
+                        .remove(&fragment_id)
+                        .expect("Fragment must exist!");
+                    fragments.sort_by(|a, b| a.sequence.cmp(&b.sequence));
+
+                    let packet = Packet::from(fragments);
+                    self.api.push(ProtocolEvent::DataTransfer {
+                        connection_id,
+                        payload: Arc::try_unwrap(packet.message.payload).expect("Only owner!"),
+                    })
+                }
 
                 Ok(false)
             }

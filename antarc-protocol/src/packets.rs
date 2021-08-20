@@ -508,6 +508,41 @@ impl Fragment {
     }
 }
 
+impl From<Vec<Packet<Received, Fragment>>> for Packet<Received, DataTransfer> {
+    fn from(mut fragments: Vec<Packet<Received, Fragment>>) -> Self {
+        let last_fragment = fragments.pop().expect("Fragment must exist!");
+
+        let delivery = Received {
+            meta: last_fragment.delivery.meta,
+        };
+        let message = DataTransfer {
+            meta: MetaMessage {
+                packet_type: DataTransfer::PACKET_TYPE,
+            },
+            connection_id: last_fragment.message.connection_id,
+            payload: Arc::new(fragments.into_iter().fold(
+                Vec::with_capacity(last_fragment.message.total as usize * 1500),
+                |payload, fragment| {
+                    vec![
+                        payload,
+                        Arc::try_unwrap(fragment.message.payload).expect("Only owner!"),
+                    ]
+                    .concat()
+                },
+            )),
+        };
+
+        let packet = Packet {
+            delivery,
+            sequence: last_fragment.sequence,
+            ack: last_fragment.ack,
+            message,
+        };
+
+        packet
+    }
+}
+
 impl DataTransfer {
     pub(crate) fn new(connection_id: ConnectionId, payload: Arc<Payload>) -> Self {
         let meta = MetaMessage {

@@ -115,6 +115,13 @@ impl Protocol<Server> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
         self.service.reliability_handler.poll(self.timer.elapsed());
 
+        // NOTE(alex): Iterate over connected peers and call `poll` on each to remove dead packets
+        // in reassembler.
+        let now = self.timer.elapsed();
+        for peer in self.service.connected.values_mut() {
+            peer.poll(now);
+        }
+
         self.service.api.drain(..)
     }
 }
