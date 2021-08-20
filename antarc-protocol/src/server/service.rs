@@ -437,7 +437,7 @@ impl Server {
 
         // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
         // The fragment's `sequence` is used as a `fragment_id`.
-        if let Some(connected) = (sent.message.index == sent.message.total)
+        if let Some(connected) = (sent.message.index == sent.message.total - 1)
             .then(|| ())
             .and(self.connected.get_mut(&connection_id))
         {
