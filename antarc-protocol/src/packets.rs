@@ -321,6 +321,8 @@ impl<T> RawPacket<T> {
         }
     }
 
+    /// TODO(alex) [mid] 2021-08-20: Investigate using the crc32 for Header + a small slice of the
+    /// payload, instead of the full thing.
     pub(crate) fn inner_decode(self) -> Result<PartialDecode, ProtocolError> {
         let mut hasher = Hasher::new();
 
@@ -650,10 +652,12 @@ impl Encoder for ConnectionAccepted {
         + size_of::<ConnectionId>();
 
     fn encoded(&self) -> Vec<u8> {
-        let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
-        let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
+        let packet_type_bytes = Self::PACKET_TYPE_BYTES.as_ref();
+        let connection_id_bytes = self.connection_id.get().to_be_bytes();
 
-        let encoded = vec![packet_type_bytes, connection_id_bytes].concat();
+        let encoded = [packet_type_bytes, connection_id_bytes.as_ref()].concat();
+        debug_assert_eq!(encoded.len(), Self::HEADER_SIZE);
+
         encoded
     }
 }
@@ -666,11 +670,18 @@ impl Encoder for DataTransfer {
         + size_of::<ConnectionId>();
 
     fn encoded(&self) -> Vec<u8> {
-        let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
-        let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
-        let payload = &self.payload;
+        let packet_type_bytes = Self::PACKET_TYPE_BYTES.as_ref();
+        let connection_id_bytes = self.connection_id.get().to_be_bytes();
+        let payload = self.payload.as_slice();
 
-        let encoded = vec![packet_type_bytes, connection_id_bytes, payload.to_vec()].concat();
+        // TODO(alex) [mid] 2021-08-20: Decreased number of allocations, and hopefully increased
+        // performance, according to benchmarks this is the fastest way to concatenate into a vec.
+        //
+        // Now the question is, do I need to return `Vec<u8>`, or could I return `&[u8]`?
+        // The enconding function needs this as a vec?
+        let encoded = [packet_type_bytes, connection_id_bytes.as_ref(), payload].concat();
+        debug_assert_eq!(encoded.len(), Self::HEADER_SIZE + payload.len());
+
         encoded
     }
 }
@@ -685,20 +696,22 @@ impl Encoder for Fragment {
         + size_of::<ConnectionId>();
 
     fn encoded(&self) -> Vec<u8> {
-        let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
-        let fragment_index_bytes = self.index.to_be_bytes().to_vec();
-        let fragment_total_bytes = self.total.to_be_bytes().to_vec();
-        let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
-        let payload = &self.payload;
+        let packet_type_bytes = Self::PACKET_TYPE_BYTES.as_ref();
+        let fragment_index_bytes = self.index.to_be_bytes();
+        let fragment_total_bytes = self.total.to_be_bytes();
+        let connection_id_bytes = self.connection_id.get().to_be_bytes();
+        let payload = self.payload.as_slice();
 
-        let encoded = vec![
+        let encoded = [
             packet_type_bytes,
-            fragment_index_bytes,
-            fragment_total_bytes,
-            connection_id_bytes,
-            payload.to_vec(),
+            fragment_index_bytes.as_ref(),
+            fragment_total_bytes.as_ref(),
+            connection_id_bytes.as_ref(),
+            payload,
         ]
         .concat();
+        debug_assert_eq!(encoded.len(), Self::HEADER_SIZE + payload.len());
+
         encoded
     }
 }
@@ -710,10 +723,12 @@ impl Encoder for Heartbeat {
         + size_of::<ConnectionId>();
 
     fn encoded(&self) -> Vec<u8> {
-        let packet_type_bytes = Self::PACKET_TYPE_BYTES.to_vec();
-        let connection_id_bytes = self.connection_id.get().to_be_bytes().to_vec();
+        let packet_type_bytes = Self::PACKET_TYPE_BYTES.as_ref();
+        let connection_id_bytes = self.connection_id.get().to_be_bytes();
 
-        let encoded = vec![packet_type_bytes, connection_id_bytes].concat();
+        let encoded = [packet_type_bytes, connection_id_bytes.as_ref()].concat();
+        debug_assert_eq!(encoded.len(), Self::HEADER_SIZE);
+
         encoded
     }
 }
@@ -741,17 +756,17 @@ where
     }
 
     pub fn as_raw<T>(&self) -> RawPacket<T> {
-        let sequence_bytes = self.sequence.get().to_be_bytes().to_vec();
-        let ack_bytes = self.ack.to_be_bytes().to_vec();
+        let sequence_bytes = self.sequence.get().to_be_bytes();
+        let ack_bytes = self.ack.to_be_bytes();
 
         let encoded_message = self.message.encoded();
 
         let mut hasher = Hasher::new();
-        let mut bytes = vec![
-            PROTOCOL_ID_BYTES.to_vec(),
-            sequence_bytes,
-            ack_bytes,
-            encoded_message,
+        let mut bytes = [
+            PROTOCOL_ID_BYTES.as_ref(),
+            sequence_bytes.as_ref(),
+            ack_bytes.as_ref(),
+            &encoded_message,
         ]
         .concat();
 

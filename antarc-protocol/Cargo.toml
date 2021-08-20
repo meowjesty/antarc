@@ -18,3 +18,7 @@ rand = "*"
 [[bench]]
 name = "benchmark_clone_vs_arc"
 harness = false
+
+[[bench]]
+name = "benchmark_array_concat"
+harness = false

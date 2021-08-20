@@ -400,6 +400,8 @@ impl Server {
             .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
             .expect("Creating a packet (connection accepted) should never fail!");
 
+        // TODO(alex): [low] 2021-08-20: Instead of storing only the reliable packet, we could store
+        // a pair with `(Packet, bytes)` to avoid re-encoding a reliable packet.
         let packet = scheduled.into_packet(sequence, ack, time);
         packet
     }
