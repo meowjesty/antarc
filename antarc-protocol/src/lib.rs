@@ -183,6 +183,36 @@ where
         packet
     }
 
+    pub fn create_unreliable_heartbeat(
+        &self,
+        scheduled: Scheduled<Unreliable, Heartbeat>,
+    ) -> Packet<ToSend, Heartbeat> {
+        let (sequence, ack) = self
+            .service
+            .connected()
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (heartbeat) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
+    pub fn create_reliable_heartbeat(
+        &self,
+        scheduled: Scheduled<Reliable, Heartbeat>,
+    ) -> Packet<ToSend, Heartbeat> {
+        let (sequence, ack) = self
+            .service
+            .connected()
+            .get(&scheduled.message.connection_id)
+            .map(|peer| (peer.sequence_tracker, peer.remote_ack_tracker))
+            .expect("Creating a packet (heartbeat) should never fail!");
+
+        let packet = scheduled.into_packet(sequence, ack, self.timer.elapsed());
+        packet
+    }
+
     pub fn drain_unreliable_fragment<R: RangeBounds<usize>>(
         &mut self,
         range: R,
@@ -203,10 +233,36 @@ where
             .drain(range)
     }
 
+    pub fn drain_reliable_heartbeat<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Reliable, Heartbeat>> {
+        self.service
+            .scheduler_mut()
+            .list_scheduled_reliable_heartbeat
+            .drain(range)
+    }
+
+    pub fn drain_unreliable_heartbeat<R: RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Drain<Scheduled<Unreliable, Heartbeat>> {
+        self.service
+            .scheduler_mut()
+            .list_scheduled_unreliable_heartbeat
+            .drain(range)
+    }
+
     pub fn retry_reliable_fragment(&mut self) -> Option<Packet<ToSend, Fragment>> {
         self.service
             .reliability_handler_mut()
             .retry_reliable_fragment(self.timer.elapsed())
+    }
+
+    pub fn retry_reliable_heartbeat(&mut self) -> Option<Packet<ToSend, Heartbeat>> {
+        self.service
+            .reliability_handler_mut()
+            .retry_reliable_heartbeat(self.timer.elapsed())
     }
 }
 
@@ -220,6 +276,8 @@ pub struct Scheduler<S: ServiceScheduler> {
     list_scheduled_unreliable_data_transfer: Vec<Scheduled<Unreliable, DataTransfer>>,
     list_scheduled_reliable_fragment: Vec<Scheduled<Reliable, Fragment>>,
     list_scheduled_unreliable_fragment: Vec<Scheduled<Unreliable, Fragment>>,
+    list_scheduled_reliable_heartbeat: Vec<Scheduled<Reliable, Heartbeat>>,
+    list_scheduled_unreliable_heartbeat: Vec<Scheduled<Unreliable, Heartbeat>>,
 
     service: S,
 }
@@ -232,6 +290,7 @@ pub trait ServiceReliability {
 #[derive(Debug)]
 pub struct ReliabilityHandler<S: ServiceReliability> {
     list_sent_reliable_data_transfer: Vec<Packet<Sent, DataTransfer>>,
+    list_sent_reliable_heartbeat: Vec<Packet<Sent, Heartbeat>>,
     list_sent_reliable_fragment: Vec<Packet<Sent, Fragment>>,
 
     service: S,
@@ -241,6 +300,7 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             list_sent_reliable_data_transfer: Vec::with_capacity(capacity),
+            list_sent_reliable_heartbeat: Vec::with_capacity(capacity),
             list_sent_reliable_fragment: Vec::with_capacity(capacity),
             service: S::new(capacity),
         }
@@ -331,6 +391,38 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
 
         None
     }
+
+    pub(crate) fn retry_reliable_heartbeat(
+        &mut self,
+        now: Duration,
+    ) -> Option<Packet<ToSend, Heartbeat>> {
+        if let Some(packet) = self.list_sent_reliable_heartbeat.pop() {
+            if packet.delivery.meta.time + now > Duration::from_secs(1000) {
+                let meta = MetaDelivery {
+                    time: now,
+                    address: packet.delivery.meta.address,
+                };
+                let delivery = ToSend {
+                    id: packet.delivery.id,
+                    meta,
+                };
+                let message = Heartbeat {
+                    meta: packet.message.meta,
+                    connection_id: packet.message.connection_id,
+                };
+                let result = Packet {
+                    delivery,
+                    sequence: packet.sequence,
+                    ack: packet.ack,
+                    message,
+                };
+
+                return Some(result);
+            }
+        }
+
+        None
+    }
 }
 
 impl<S: ServiceScheduler> Scheduler<S> {
@@ -340,6 +432,8 @@ impl<S: ServiceScheduler> Scheduler<S> {
             list_scheduled_unreliable_data_transfer: Vec::with_capacity(capacity),
             list_scheduled_reliable_fragment: Vec::with_capacity(capacity),
             list_scheduled_unreliable_fragment: Vec::with_capacity(capacity),
+            list_scheduled_reliable_heartbeat: Vec::with_capacity(capacity),
+            list_scheduled_unreliable_heartbeat: Vec::with_capacity(capacity),
             service: S::new(capacity),
         }
     }
@@ -358,6 +452,14 @@ impl<S: ServiceScheduler> Scheduler<S> {
 
     fn unreliable_data_transfer(&mut self, scheduled: Scheduled<Unreliable, DataTransfer>) {
         self.list_scheduled_unreliable_data_transfer.push(scheduled);
+    }
+
+    fn reliable_heartbeat(&mut self, scheduled: Scheduled<Reliable, Heartbeat>) {
+        self.list_scheduled_reliable_heartbeat.push(scheduled);
+    }
+
+    fn unreliable_heartbeat(&mut self, scheduled: Scheduled<Unreliable, Heartbeat>) {
+        self.list_scheduled_unreliable_heartbeat.push(scheduled);
     }
 
     pub(crate) fn schedule_for_connected_peer(
@@ -394,6 +496,18 @@ impl<S: ServiceScheduler> Scheduler<S> {
                 address,
             );
         }
+    }
+
+    pub(crate) fn heartbeat_for_connected_peer(
+        &mut self,
+        address: SocketAddr,
+        reliability: ReliabilityType,
+        connection_id: ConnectionId,
+        packet_id: PacketId,
+        time: Duration,
+    ) {
+        debug!("protocol: scheduling heartbeat");
+        self.schedule_heartbeat(reliability, packet_id, connection_id, time, address);
     }
 
     fn schedule_fragment(
@@ -470,6 +584,30 @@ impl<S: ServiceScheduler> Scheduler<S> {
                     );
 
                 self.unreliable_data_transfer(scheduled);
+            }
+        }
+    }
+
+    fn schedule_heartbeat(
+        &mut self,
+        reliability: ReliabilityType,
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        time: Duration,
+        address: SocketAddr,
+    ) {
+        match reliability {
+            ReliabilityType::Reliable => {
+                let scheduled: Scheduled<Reliable, Heartbeat> =
+                    Scheduled::new_reliable_heartbeat(packet_id, connection_id, time, address);
+
+                self.reliable_heartbeat(scheduled);
+            }
+            ReliabilityType::Unreliable => {
+                let scheduled: Scheduled<Unreliable, Heartbeat> =
+                    Scheduled::new_unreliable_heartbeat(packet_id, connection_id, time, address);
+
+                self.unreliable_heartbeat(scheduled);
             }
         }
     }

@@ -188,7 +188,28 @@ impl RawPacket<Server> {
             }
             Heartbeat::PACKET_TYPE => {
                 debug!("server: decoding heartbeat packet.");
-                todo!();
+
+                // TODO(alex) [low] 2021-08-04: Find out a way to make
+                // `from_be_bytes::<ConnectionId>` work.
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, Heartbeat::HEADER_SIZE);
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = Heartbeat {
+                    meta: MetaMessage { packet_type },
+                    connection_id: read_connection_id.try_into()?,
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForServer::Heartbeat { packet })
             }
             invalid => {
                 error!("server: decoding invalid packet type {:#?}.", invalid);
@@ -302,7 +323,28 @@ impl RawPacket<Client> {
             }
             Heartbeat::PACKET_TYPE => {
                 debug!("client: decoding heartbeat packet.");
-                todo!();
+
+                // TODO(alex) [low] 2021-08-04: Find out a way to make
+                // `from_be_bytes::<ConnectionId>` work.
+                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                debug_assert_eq!(buffer_position, Heartbeat::HEADER_SIZE);
+
+                let delivery = Received {
+                    meta: MetaDelivery { time, address },
+                };
+                let message = Heartbeat {
+                    meta: MetaMessage { packet_type },
+                    connection_id: read_connection_id.try_into()?,
+                };
+
+                let packet = Packet {
+                    delivery,
+                    sequence,
+                    ack,
+                    message,
+                };
+
+                Ok(DecodedForClient::Heartbeat { packet })
             }
             invalid => {
                 error!("client: decoding invalid packet type {:#?}.", invalid);
@@ -312,7 +354,7 @@ impl RawPacket<Client> {
     }
 }
 
-impl<T> RawPacket<T> {
+impl<S: Service> RawPacket<S> {
     pub fn new(address: SocketAddr, bytes: Vec<u8>) -> Self {
         Self {
             address,
@@ -595,6 +637,20 @@ pub struct Heartbeat {
     pub connection_id: ConnectionId,
 }
 
+impl Heartbeat {
+    pub(crate) fn new(connection_id: ConnectionId) -> Self {
+        let meta = MetaMessage {
+            packet_type: Self::PACKET_TYPE,
+        };
+        let heartbeat = Self {
+            meta,
+            connection_id,
+        };
+
+        heartbeat
+    }
+}
+
 pub const CONNECTION_REQUEST: PacketType = 0x1;
 pub const CONNECTION_ACCEPTED: PacketType = 0x2;
 pub const DATA_TRANSFER: PacketType = 0x3;
@@ -729,6 +785,7 @@ impl Encoder for Fragment {
         encoded
     }
 }
+
 impl Encoder for Heartbeat {
     const HEADER_SIZE: usize = size_of::<ProtocolId>()
         + size_of::<Sequence>()
@@ -1041,6 +1098,56 @@ impl Scheduled<Reliable, Fragment> {
     }
 }
 
+impl Scheduled<Unreliable, Heartbeat> {
+    pub fn into_packet(
+        self,
+        sequence: Sequence,
+        ack: Ack,
+        time: Duration,
+    ) -> Packet<ToSend, Heartbeat> {
+        let delivery = ToSend {
+            id: self.packet_id,
+            meta: MetaDelivery {
+                time,
+                address: self.address,
+            },
+        };
+        let packet = Packet {
+            delivery,
+            sequence,
+            ack,
+            message: self.message,
+        };
+
+        packet
+    }
+}
+
+impl Scheduled<Reliable, Heartbeat> {
+    pub fn into_packet(
+        self,
+        sequence: Sequence,
+        ack: Ack,
+        time: Duration,
+    ) -> Packet<ToSend, Heartbeat> {
+        let delivery = ToSend {
+            id: self.packet_id,
+            meta: MetaDelivery {
+                time,
+                address: self.address,
+            },
+        };
+        let packet = Packet {
+            delivery,
+            sequence,
+            ack,
+            message: self.message,
+        };
+
+        packet
+    }
+}
+
 impl Scheduled<Unreliable, DataTransfer> {
     pub(crate) fn new_unreliable_data_transfer(
         packet_id: PacketId,
@@ -1075,6 +1182,44 @@ impl Scheduled<Reliable, DataTransfer> {
             time,
             reliability: Reliable {},
             message: DataTransfer::new(connection_id, payload),
+        };
+
+        scheduled
+    }
+}
+
+impl Scheduled<Unreliable, Heartbeat> {
+    pub(crate) fn new_unreliable_heartbeat(
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        time: Duration,
+        address: SocketAddr,
+    ) -> Self {
+        let scheduled = Self {
+            packet_id,
+            address,
+            time,
+            reliability: Unreliable {},
+            message: Heartbeat::new(connection_id),
+        };
+
+        scheduled
+    }
+}
+
+impl Scheduled<Reliable, Heartbeat> {
+    pub(crate) fn new_reliable_heartbeat(
+        packet_id: PacketId,
+        connection_id: ConnectionId,
+        time: Duration,
+        address: SocketAddr,
+    ) -> Self {
+        let scheduled = Self {
+            packet_id,
+            address,
+            time,
+            reliability: Reliable {},
+            message: Heartbeat::new(connection_id),
         };
 
         scheduled

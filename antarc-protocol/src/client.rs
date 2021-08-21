@@ -49,6 +49,15 @@ impl Protocol<Client> {
         )
     }
 
+    pub fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        reliability: ReliabilityType,
+    ) {
+        self.service
+            .sent_heartbeat(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
+    }
+
     pub fn sent_fragment(
         &mut self,
         packet: Packet<ToSend, Fragment>,
@@ -84,6 +93,16 @@ impl Protocol<Client> {
             self.packet_id_tracker,
             self.timer.elapsed(),
         )?;
+
+        self.packet_id_tracker += 1;
+
+        Ok(packet_id)
+    }
+
+    pub fn heartbeat(&mut self, reliability: ReliabilityType) -> Result<PacketId, ProtocolError> {
+        let packet_id =
+            self.service
+                .heartbeat(reliability, self.packet_id_tracker, self.timer.elapsed())?;
 
         self.packet_id_tracker += 1;
 

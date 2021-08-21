@@ -453,6 +453,27 @@ impl Server {
         }
     }
 
+    pub(crate) fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let connection_id = sent.message.connection_id;
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_heartbeat
+                .push(sent);
+        }
+    }
+
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
     ///
     /// There are 2 choices:
@@ -543,6 +564,62 @@ impl Server {
                             fragment_total,
                         );
                     }
+                }
+            }
+        }
+
+        Ok(packet_id + 1)
+    }
+
+    pub(crate) fn heartbeat(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+        packet_id: PacketId,
+        time: Duration,
+    ) -> Result<PacketId, ProtocolError> {
+        if self.connected.is_empty() {
+            return Err(ProtocolError::NoPeersConnected);
+        }
+
+        match send_to {
+            SendTo::Single { connection_id } => {
+                debug!(
+                    "server: SendTo::Single scheduling for {:#?}.",
+                    connection_id
+                );
+
+                let address = self
+                    .connected
+                    .get(&connection_id)
+                    .map(|peer| peer.address)
+                    .ok_or(ProtocolError::ScheduledNotConnected(connection_id))?;
+
+                self.scheduler.heartbeat_for_connected_peer(
+                    address,
+                    reliability,
+                    connection_id,
+                    packet_id,
+                    time,
+                );
+            }
+            SendTo::Broadcast => {
+                for (connection_id, address) in self
+                    .connected
+                    .iter()
+                    .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+                {
+                    debug!(
+                        "server: SendTo::Broadcast scheduling for {:#?}.",
+                        connection_id
+                    );
+                    self.scheduler.heartbeat_for_connected_peer(
+                        address,
+                        reliability,
+                        connection_id,
+                        packet_id,
+                        time,
+                    );
                 }
             }
         }

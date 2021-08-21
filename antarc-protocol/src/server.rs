@@ -73,6 +73,15 @@ impl Protocol<Server> {
             .sent_fragment(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
     }
 
+    pub fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        reliability: ReliabilityType,
+    ) {
+        self.service
+            .sent_heartbeat(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
+    }
+
     /// NOTE(alex): API function for scheduling data transfers only, called by the user.
     ///
     /// There are 2 choices:
@@ -96,6 +105,23 @@ impl Protocol<Server> {
             reliability,
             send_to,
             payload,
+            self.packet_id_tracker,
+            self.timer.elapsed(),
+        )?;
+
+        self.packet_id_tracker += 1;
+
+        Ok(packet_id)
+    }
+
+    pub fn heartbeat(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+    ) -> Result<PacketId, ProtocolError> {
+        let packet_id = self.service.heartbeat(
+            reliability,
+            send_to,
             self.packet_id_tracker,
             self.timer.elapsed(),
         )?;

@@ -203,6 +203,33 @@ impl Client {
         }
     }
 
+    pub(crate) fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let address = sent.delivery.meta.address;
+        let connection_id = sent.message.connection_id;
+
+        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
+            self.connected
+                .insert(connection_id, peer.connected(time, connection_id));
+        }
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_heartbeat
+                .push(sent);
+        }
+    }
+
     pub(crate) fn sent_fragment(
         &mut self,
         packet: Packet<ToSend, Fragment>,
@@ -489,6 +516,35 @@ impl Client {
                     fragment_total,
                 );
             }
+        }
+
+        Ok(packet_id + 1)
+    }
+
+    pub(crate) fn heartbeat(
+        &mut self,
+        reliability: ReliabilityType,
+        packet_id: PacketId,
+        time: Duration,
+    ) -> Result<PacketId, ProtocolError> {
+        if self.connected.is_empty() {
+            return Err(ProtocolError::NoPeersConnected);
+        }
+
+        for (connection_id, address) in self
+            .connected
+            .iter()
+            .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+        {
+            debug!("client: scheduling for {:#?}.", connection_id);
+
+            self.scheduler.heartbeat_for_connected_peer(
+                address,
+                reliability,
+                connection_id,
+                packet_id,
+                time,
+            );
         }
 
         Ok(packet_id + 1)

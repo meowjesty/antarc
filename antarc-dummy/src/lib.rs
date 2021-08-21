@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
 
 use antarc_protocol::Service;
-// TODO(alex) [mid] 2021-07-31: Create a dummy network manager implementation, that just uses
-// buffers to move data, no sockets involved!
 pub use antarc_protocol::{client::*, errors::*, events::*, packets::*, peers::*, server::*, *};
 use log::*;
 
@@ -40,6 +38,19 @@ impl DummyManager<Server> {
             send_to,
         );
         self.antarc.schedule(reliability, send_to, payload)
+    }
+
+    pub fn heartbeat(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+    ) -> Result<PacketId, ProtocolError> {
+        info!(
+            "Server: scheduling heartbeat, is reliable {:#?}, to {:#?}.",
+            reliability, send_to,
+        );
+
+        self.antarc.heartbeat(reliability, send_to)
     }
 
     fn poll_retry_connection_accepted(&mut self) {
@@ -229,7 +240,6 @@ impl DummyManager<Server> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ServerEvent>> {
         debug!("Server: dummy poll");
 
-        // TODO(alex) [high] 2021-08-20: Still missing `Heartbeat` packet handling.
         self.poll_retry_connection_accepted();
         self.poll_retry_data_transfer();
         self.poll_retry_fragment();
@@ -238,6 +248,8 @@ impl DummyManager<Server> {
         self.poll_reliable_data_transfer();
         self.poll_unreliable_fragment();
         self.poll_reliable_fragment();
+        self.poll_unreliable_heartbeat();
+        self.poll_reliable_heartbeat();
 
         // NOTE(alex): Dummy receive.
         for received in self.dummy_receiver.drain(..) {
@@ -250,6 +262,54 @@ impl DummyManager<Server> {
         }
 
         self.antarc.poll()
+    }
+
+    fn poll_unreliable_heartbeat(&mut self) {
+        for scheduled in self
+            .antarc
+            .drain_unreliable_heartbeat(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_unreliable_heartbeat(scheduled);
+            debug!("Client: ready to send {:#?}.", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}.",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_heartbeat(packet, ReliabilityType::Unreliable);
+        }
+    }
+
+    fn poll_reliable_heartbeat(&mut self) {
+        for scheduled in self.antarc.drain_reliable_heartbeat(..).collect::<Vec<_>>() {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_reliable_heartbeat(scheduled);
+            debug!("Client: ready to send {:#?}.", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}.",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_heartbeat(packet, ReliabilityType::Reliable);
+        }
     }
 }
 
@@ -266,8 +326,6 @@ impl DummyManager<Client> {
         }
     }
 
-    // TODO(alex) [mid] 2021-08-02: Remember to return a `PacketId` from scheduling functions, so
-    // that the user may cancel a packet.
     pub fn schedule(
         &mut self,
         reliability: ReliabilityType,
@@ -282,6 +340,15 @@ impl DummyManager<Client> {
         self.antarc.schedule(reliability, payload)
     }
 
+    pub fn heartbeat(&mut self, reliability: ReliabilityType) -> Result<PacketId, ProtocolError> {
+        info!(
+            "Client: scheduling hearbeat, is reliable {:#?}.",
+            reliability
+        );
+
+        self.antarc.heartbeat(reliability)
+    }
+
     pub fn connect(&mut self, remote_address: SocketAddr) -> Result<(), ProtocolError> {
         info!("Client: connect to {:#?}.", remote_address);
         self.antarc.connect(remote_address)
@@ -290,7 +357,6 @@ impl DummyManager<Client> {
     pub fn poll(&mut self) -> std::vec::Drain<ProtocolEvent<ClientEvent>> {
         info!("Client: dummy poll");
 
-        // TODO(alex) [high] 2021-08-20: Still missing `Heartbeat` packet handling.
         self.poll_retry_connection_request();
         self.poll_retry_data_transfer();
         self.poll_connection_request();
@@ -298,6 +364,8 @@ impl DummyManager<Client> {
         self.poll_reliable_data_transfer();
         self.poll_unreliable_fragment();
         self.poll_reliable_fragment();
+        self.poll_unreliable_heartbeat();
+        self.poll_reliable_heartbeat();
 
         // NOTE(alex): Dummy receive.
         for received in self.dummy_receiver.drain(..) {
@@ -307,11 +375,6 @@ impl DummyManager<Client> {
                 self.antarc.service.api.push(ProtocolEvent::Fail(fail));
             }
         }
-
-        // TODO(alex) [vhigh] 2021-08-02: We have the handshake completed, but our dummy here
-        // doesn't actually implement message passing, so the client and server do not communicate.
-        //
-        // I need a way of passing data between the two.
 
         self.antarc.poll()
     }
@@ -507,6 +570,54 @@ impl DummyManager<Client> {
             }
 
             self.antarc.sent_connection_request(reliable_packet);
+        }
+    }
+
+    fn poll_unreliable_heartbeat(&mut self) {
+        for scheduled in self
+            .antarc
+            .drain_unreliable_heartbeat(..)
+            .collect::<Vec<_>>()
+        {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_unreliable_heartbeat(scheduled);
+            debug!("Client: ready to send {:#?}.", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}.",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_heartbeat(packet, ReliabilityType::Unreliable);
+        }
+    }
+
+    fn poll_reliable_heartbeat(&mut self) {
+        for scheduled in self.antarc.drain_reliable_heartbeat(..).collect::<Vec<_>>() {
+            debug!("Client: preparing to send {:#?}.", scheduled);
+            let packet = self.antarc.create_reliable_heartbeat(scheduled);
+            debug!("Client: ready to send {:#?}.", packet);
+
+            // NOTE(alex): Dummy send.
+            {
+                let raw_packet = packet.as_raw::<Client>();
+                info!(
+                    "Client: sent {:#?} bytes to {:#?}.",
+                    raw_packet.bytes.len(),
+                    raw_packet.address
+                );
+                self.dummy_sender.push(raw_packet.bytes);
+            }
+
+            self.antarc
+                .sent_heartbeat(packet, ReliabilityType::Reliable);
         }
     }
 }

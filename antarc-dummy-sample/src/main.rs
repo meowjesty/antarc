@@ -64,7 +64,8 @@ fn run() {
                                 connection_id
                             );
 
-                            schedule_client::<0x3, 2>(&mut client, ReliabilityType::Unreliable);
+                            // schedule_client::<0x3, 2>(&mut client, ReliabilityType::Unreliable);
+                            client.heartbeat(ReliabilityType::Unreliable);
                         }
                     },
                     ProtocolEvent::DataTransfer {
@@ -84,8 +85,10 @@ fn run() {
 
             // schedule_client::<0x5, 2>(&mut client, ReliabilityType::Unreliable);
             // TODO(alex) [vhigh] 2021-08-19: Handle fragmentation for Client.
-            schedule_client::<0x7, 1600>(&mut client, ReliabilityType::Unreliable);
+            // schedule_client::<0x7, 1600>(&mut client, ReliabilityType::Unreliable);
             // schedule_client::<0x8, 1600>(&mut client, ReliabilityType::Reliable);
+            client.heartbeat(ReliabilityType::Unreliable);
+            client.heartbeat(ReliabilityType::Reliable);
 
             let _ = client_tx.send(client.dummy_sender.clone());
             if let Ok(packets) = server_rx.try_recv() {
@@ -138,9 +141,11 @@ fn run() {
                 }
             }
 
+            server.heartbeat(ReliabilityType::Unreliable, SendTo::Broadcast);
+            server.heartbeat(ReliabilityType::Reliable, SendTo::Broadcast);
             // schedule_server::<0x2, 2>(&mut server, ReliabilityType::Unreliable);
             // schedule_server::<0x6, 2>(&mut server, ReliabilityType::Reliable);
-            schedule_server::<0x9, 1600>(&mut server, ReliabilityType::Unreliable);
+            // schedule_server::<0x9, 1600>(&mut server, ReliabilityType::Unreliable);
             // schedule_server::<0x10, 1600>(&mut server, ReliabilityType::Reliable);
 
             let _ = server_tx.send(server.dummy_sender.clone());
