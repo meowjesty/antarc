@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::net::SocketAddr;
 
 use antarc_protocol::Service;
@@ -13,8 +14,8 @@ pub struct DummyManager<S: Service> {
 }
 
 impl DummyManager<Server> {
-    pub fn new_server(address: SocketAddr) -> Self {
-        let antarc = Protocol::new_server();
+    pub fn new_server(address: SocketAddr, capacity: usize, reliable_ttl: Duration) -> Self {
+        let antarc = Protocol::new_server(capacity, reliable_ttl);
         let dummy_sender = Vec::with_capacity(100);
         let dummy_receiver = Vec::with_capacity(100);
         Self {

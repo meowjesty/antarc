@@ -8,15 +8,15 @@ pub mod service;
 pub use service::*;
 
 impl Protocol<Server> {
-    pub fn new_server() -> Self {
-        let service = Server::new();
+    pub fn new_server(capacity: usize, reliable_ttl: Duration) -> Self {
+        let service = Server::new(capacity);
 
         Self {
             packet_id_tracker: 0,
             timer: Instant::now(),
             service,
-            receiver_pipe: Vec::with_capacity(32),
-            reliable_ttl: Duration::from_secs(2),
+            receiver_pipe: Vec::with_capacity(capacity),
+            reliable_ttl,
         }
     }
 

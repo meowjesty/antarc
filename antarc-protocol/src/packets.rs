@@ -37,8 +37,6 @@ pub struct RawPacket<T> {
     pub phantom: PhantomData<T>,
 }
 
-// TODO(alex) [vlow] 2021-08-05: Maybe renaming the connection packets to some handshake-y name
-// would make things clearer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decoded {
     ConnectionRequest {
@@ -213,7 +211,7 @@ impl RawPacket<Server> {
             }
             invalid => {
                 error!("server: decoding invalid packet type {:#?}.", invalid);
-                Err(ProtocolError::InvalidPacketType(invalid).into())
+                Err(ProtocolError::InvalidPacketType(invalid))
             }
         }
     }
@@ -348,7 +346,7 @@ impl RawPacket<Client> {
             }
             invalid => {
                 error!("client: decoding invalid packet type {:#?}.", invalid);
-                Err(ProtocolError::InvalidPacketType(invalid).into())
+                Err(ProtocolError::InvalidPacketType(invalid))
             }
         }
     }
@@ -398,8 +396,7 @@ impl<S: Service> RawPacket<S> {
                 return Err(ProtocolError::InvalidProtocolId {
                     got: read_protocol_id,
                     expected: PROTOCOL_ID,
-                }
-                .into());
+                });
             }
 
             let read_sequence = read_buffer_inc!({ buffer, buffer_position } : u32);
@@ -574,7 +571,7 @@ impl Fragment {
             connection_id,
             index: fragment_index as u8,
             total: fragment_total as u8,
-            payload: payload.clone(),
+            payload,
         };
 
         fragment
@@ -624,7 +621,7 @@ impl DataTransfer {
         let data_transfer = Self {
             meta,
             connection_id,
-            payload: payload.clone(),
+            payload,
         };
 
         data_transfer

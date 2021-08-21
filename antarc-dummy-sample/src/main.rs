@@ -12,6 +12,7 @@ fn main() {
     run();
 }
 
+#[allow(unused)]
 fn schedule_client<const VALUE: u8, const LEN: usize>(
     manager: &mut DummyManager<Client>,
     reliability: ReliabilityType,
@@ -30,6 +31,7 @@ fn schedule_data_transfer_single(manager: &mut DummyManager<Server>, connection_
     info!("Server -> result of schedule call {:#?}", scheduled);
 }
 
+#[allow(unused)]
 fn schedule_server<const VALUE: u8, const LEN: usize>(
     manager: &mut DummyManager<Server>,
     reliability: ReliabilityType,
@@ -40,7 +42,7 @@ fn schedule_server<const VALUE: u8, const LEN: usize>(
 
 fn run() {
     let server_addr = "127.0.0.1:7777".parse().unwrap();
-    let mut server = DummyManager::new_server(server_addr);
+    let mut server = DummyManager::new_server(server_addr, 32, Duration::from_secs(2));
 
     let client_addr = "127.0.0.1:8888".parse().unwrap();
     let mut client = DummyManager::new_client(client_addr);

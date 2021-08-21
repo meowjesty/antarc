@@ -5,6 +5,7 @@
 // #![feature(const_generics)]
 // #![feature(const_try)]
 // #![feature(array_chunks)]
+#![allow(clippy::let_and_return)]
 
 use core::mem::size_of;
 use std::{
@@ -307,16 +308,18 @@ impl<S: ServiceReliability> ReliabilityHandler<S> {
     }
 
     fn poll(&mut self, now: Duration) {
-        if let Some(_) = self
+        if self
             .list_sent_reliable_data_transfer
             .first()
             .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
+            .is_some()
         {
             self.list_sent_reliable_data_transfer.remove(0);
-        } else if let Some(_) = self
+        } else if self
             .list_sent_reliable_fragment
             .first()
             .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
+            .is_some()
         {
             self.list_sent_reliable_fragment.remove(0);
         }

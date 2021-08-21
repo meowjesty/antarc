@@ -40,10 +40,11 @@ impl ServiceReliability for ServerReliabilityHandler {
     }
 
     fn poll(&mut self, now: Duration) {
-        if let Some(_) = self
+        if self
             .list_sent_connection_accepted
             .first()
             .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
+            .is_some()
         {
             self.list_sent_connection_accepted.remove(0);
         }
@@ -128,18 +129,18 @@ impl Service for Server {
 }
 
 impl Server {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
-            api: Vec::with_capacity(32),
+            api: Vec::with_capacity(capacity),
             last_antarc_schedule_check: Duration::default(),
             connection_id_tracker: ConnectionId::new(1).unwrap(),
-            requesting_connection: HashMap::with_capacity(32),
-            awaiting_connection_ack: HashMap::with_capacity(32),
-            connected: HashMap::with_capacity(32),
-            ban_list: Vec::with_capacity(32),
+            requesting_connection: HashMap::with_capacity(capacity),
+            awaiting_connection_ack: HashMap::with_capacity(capacity),
+            connected: HashMap::with_capacity(capacity),
+            ban_list: Vec::with_capacity(capacity),
 
-            scheduler: Scheduler::new(32),
-            reliability_handler: ReliabilityHandler::new(32),
+            scheduler: Scheduler::new(capacity),
+            reliability_handler: ReliabilityHandler::new(capacity),
         }
     }
 
@@ -148,10 +149,10 @@ impl Server {
         // after a connection accepted/denied packet is sent.
         if self.connection_request_another_state(address) {
             warn!("server: peer {:#?} already in another state.", address);
-            Err(ProtocolError::PeerInAnotherState(address.clone()))
+            Err(ProtocolError::PeerInAnotherState(*address))
         } else if self.ban_list.contains(address) {
             warn!("server: peer {:#?} is in the ban list.", address);
-            Err(ProtocolError::Banned(address.clone()))
+            Err(ProtocolError::Banned(*address))
         } else {
             Ok(())
         }
@@ -248,7 +249,7 @@ impl Server {
                 {
                     peer.connection.attempts += 1;
 
-                    connection_id.clone()
+                    *connection_id
                 } else {
                     let new_peer =
                         Peer::new(time, packet.delivery.meta.address, packet.sequence.get());
@@ -547,7 +548,7 @@ impl Server {
                     for (connection_id, address) in self
                         .connected
                         .iter()
-                        .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+                        .map(|(connection_id, peer)| (*connection_id, peer.address))
                     {
                         debug!(
                             "server: SendTo::Broadcast scheduling for {:#?}.",
@@ -607,7 +608,7 @@ impl Server {
                 for (connection_id, address) in self
                     .connected
                     .iter()
-                    .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+                    .map(|(connection_id, peer)| (*connection_id, peer.address))
                 {
                     debug!(
                         "server: SendTo::Broadcast scheduling for {:#?}.",

@@ -40,10 +40,11 @@ impl ServiceReliability for ClientReliabilityHandler {
     }
 
     fn poll(&mut self, now: Duration) {
-        if let Some(_) = self
+        if self
             .list_sent_connection_request
             .first()
             .map(|packet| (packet.delivery.meta.time + packet.delivery.ttl > now).then(|| ()))
+            .is_some()
         {
             self.list_sent_connection_request.remove(0);
         }
@@ -435,8 +436,8 @@ impl Client {
     }
 
     fn known_peer(&self, remote_address: &SocketAddr) -> bool {
-        self.requesting_connection.contains_key(&remote_address)
-            || self.awaiting_connection_ack.contains_key(&remote_address)
+        self.requesting_connection.contains_key(remote_address)
+            || self.awaiting_connection_ack.contains_key(remote_address)
             || self
                 .connected
                 .values()
@@ -501,7 +502,7 @@ impl Client {
             for (connection_id, address) in self
                 .connected
                 .iter()
-                .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+                .map(|(connection_id, peer)| (*connection_id, peer.address))
             {
                 debug!("client: scheduling for {:#?}.", connection_id);
 
@@ -534,7 +535,7 @@ impl Client {
         for (connection_id, address) in self
             .connected
             .iter()
-            .map(|(connection_id, peer)| (*connection_id, peer.address.clone()))
+            .map(|(connection_id, peer)| (*connection_id, peer.address))
         {
             debug!("client: scheduling for {:#?}.", connection_id);
 
