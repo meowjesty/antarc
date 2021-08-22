@@ -7,6 +7,22 @@ pub const CONNECTION_TIMEOUT_THRESHOLD: Duration = Duration::new(2, 0);
 
 #[derive(Debug, Clone)]
 pub struct Peer<Connection> {
+    // TODO(alex) #1 [low] 2021-08-22: A very simple way to handle wrapping (and make sequence be an
+    // u16) would be to store a pair, such as:
+    /// ```
+    /// struct Sequence {
+    ///     sequence: NonZeroU64,
+    ///     wrap_count: NonZeroU64,
+    ///     packet_sequence: NonZeroU16,
+    /// }
+    /// struct Ack {
+    ///     ack: NonZeroU64,
+    ///     wrap_count: NonZeroU64,
+    ///     packet_ack: NonZeroU16,
+    /// }
+    /// ```
+    ///
+    /// And then use `packet_sequence * wrap_count` to get the proper sequence value.
     pub sequence_tracker: Sequence,
     pub remote_ack_tracker: Ack,
     pub local_ack_tracker: Ack,

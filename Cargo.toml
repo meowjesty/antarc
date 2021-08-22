@@ -4,7 +4,7 @@ members = [
     "antarc-protocol",
     "antarc",
     "antarc-sample",
-    "antarc-dummy",
-    "antarc-dummy-sample",
+    # "antarc-dummy",
+    # "antarc-dummy-sample",
     "antarc-macro",
 ]
