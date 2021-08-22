@@ -18,9 +18,10 @@ use std::{
     vec::Drain,
 };
 
+use errors::ProtocolError;
 use log::debug;
 use packets::*;
-use peers::{Connected, Peer};
+use peers::{Connected, Peer, SendTo};
 
 pub mod client;
 pub mod errors;
@@ -264,6 +265,125 @@ where
         self.service
             .reliability_handler_mut()
             .retry_reliable_heartbeat(self.timer.elapsed())
+    }
+
+    /// NOTE(alex): API function for scheduling data transfers only, called by the user.
+    pub fn schedule(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+        payload: Payload,
+    ) -> Result<PacketId, ProtocolError> {
+        let packet_id = self.inner_schedule(
+            reliability,
+            send_to,
+            payload,
+            self.packet_id_tracker,
+            self.timer.elapsed(),
+        )?;
+
+        self.packet_id_tracker += 1;
+
+        Ok(packet_id)
+    }
+
+    /// NOTE(alex): Helper function for scheduling data transfers only.
+    ///
+    /// There are 2 choices:
+    ///
+    /// 1. schedule to single peer;
+    /// 2. broadcast to every peer;
+    ///
+    /// If the user wants to send to multiple select peers, then they must call the single version
+    /// multiple times.
+    ///
+    /// TODO(alex) [low] 2021-08-08: Most of the duplication problems were solved by moving into a
+    /// separate helper function, a bit remains though.
+    ///
+    /// TODO(alex) [vlow] 2021-08-09: There was a `SendTo::Multiple` that took a list of connection
+    /// ids, but this function can't properly handle failure state for this variant. To schedule for
+    /// multiple peers like that, another return type must be had in case the user passes 1 or more
+    /// not-connected connection ids. This could be some sort of `schedule_batch`.
+    fn inner_schedule(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+        payload: Payload,
+        packet_id: PacketId,
+        time: Duration,
+    ) -> Result<PacketId, ProtocolError> {
+        if self.service.connected().is_empty() {
+            return Err(ProtocolError::NoPeersConnected);
+        }
+
+        let fragments = payload
+            .chunks(MAX_FRAGMENT_SIZE - Fragment::HEADER_SIZE)
+            .enumerate()
+            // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
+            // use `to_vec` here.
+            //
+            // ADD(alex) [low] 2021-08-18: This change has a big impact, and I don't think it's
+            // possible to remove the allocation anyway, as `Arc::from(chunk)` would involve a
+            // memcpy of `chunk`.
+            // https://github.com/rust-lang/rust/pull/42565
+            .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
+            .collect::<Vec<_>>();
+
+        let fragment_total = fragments.len();
+
+        for (fragment_index, payload) in fragments.into_iter() {
+            match send_to {
+                SendTo::Single { connection_id } => {
+                    debug!("SendTo::Single scheduling for {:#?}.", connection_id);
+
+                    let address = self
+                        .service
+                        .connected()
+                        .get(&connection_id)
+                        .map(|peer| peer.address)
+                        .ok_or(ProtocolError::ScheduledNotConnected(connection_id))?;
+
+                    self.service.scheduler_mut().schedule_for_connected_peer(
+                        address,
+                        payload.clone(),
+                        reliability,
+                        connection_id,
+                        packet_id,
+                        time,
+                        fragment_index,
+                        fragment_total,
+                    );
+                }
+                SendTo::Broadcast => {
+                    // TODO(alex) [mid] 2021-08-21: If I don't collect here, we end up with a double
+                    // borrow of `self.service`, even though we're borrowing fields that do not
+                    // interact.
+                    let connected = self
+                        .service
+                        .connected()
+                        .iter()
+                        .map(|(connection_id, peer)| (*connection_id, peer.address))
+                        .collect::<Vec<_>>();
+                    let scheduler = self.service.scheduler_mut();
+
+                    for (connection_id, address) in connected {
+                        debug!("SendTo::Broadcast scheduling for {:#?}.", connection_id);
+                        scheduler.schedule_for_connected_peer(
+                            address,
+                            payload.clone(),
+                            reliability,
+                            connection_id,
+                            packet_id,
+                            time,
+                            fragment_index,
+                            fragment_total,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(packet_id + 1)
     }
 }
 

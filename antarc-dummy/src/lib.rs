@@ -338,7 +338,8 @@ impl DummyManager<Client> {
             reliability
         );
 
-        self.antarc.schedule(reliability, payload)
+        self.antarc
+            .schedule(reliability, SendTo::Broadcast, payload)
     }
 
     pub fn heartbeat(&mut self, reliability: ReliabilityType) -> Result<PacketId, ProtocolError> {

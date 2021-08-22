@@ -81,24 +81,6 @@ impl Protocol<Client> {
         Ok(result)
     }
 
-    /// NOTE(alex): API function for scheduling data transfers only, called by the user.
-    pub fn schedule(
-        &mut self,
-        reliability: ReliabilityType,
-        payload: Payload,
-    ) -> Result<PacketId, ProtocolError> {
-        let packet_id = self.service.schedule(
-            reliability,
-            payload,
-            self.packet_id_tracker,
-            self.timer.elapsed(),
-        )?;
-
-        self.packet_id_tracker += 1;
-
-        Ok(packet_id)
-    }
-
     pub fn heartbeat(&mut self, reliability: ReliabilityType) -> Result<PacketId, ProtocolError> {
         let packet_id =
             self.service

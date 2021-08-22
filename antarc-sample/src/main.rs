@@ -1,11 +1,11 @@
 use std::{env, time::Duration};
-// TODO(alex) [high] 2021-09-20: Time to tackle the network part, start simple, don't care about
-// blocking, let's sketch out something usable, so that I can finally macro the heck out of this
-// protocol (and reduce code duplication tenfold).
 
-use antarc_dummy::{
-    Client, ClientEvent, ConnectionId, DummyManager, ProtocolEvent, ReliabilityType, SendTo,
-    Server, ServerEvent,
+// TODO(alex) [high] 2021-09-20: Time to tackle the network part, start simple, don't care
+// about blocking, let's sketch out something usable, so that I can finally macro the heck out
+// of this protocol (and reduce code duplication tenfold).
+use antarc::{
+    AntarcNet, Client, ClientEvent, ConnectionId, ProtocolEvent, ReliabilityType, SendTo, Server,
+    ServerEvent,
 };
 use log::*;
 
@@ -17,15 +17,15 @@ fn main() {
 
 #[allow(unused)]
 fn schedule_client<const VALUE: u8, const LEN: usize>(
-    manager: &mut DummyManager<Client>,
+    manager: &mut AntarcNet<Client>,
     reliability: ReliabilityType,
 ) {
-    let scheduled = manager.schedule(reliability, vec![VALUE; LEN]);
+    let scheduled = manager.schedule(reliability, SendTo::Broadcast, vec![VALUE; LEN]);
     info!("Client -> result of schedule call {:#?}", scheduled);
 }
 
 #[allow(unused)]
-fn schedule_data_transfer_single(manager: &mut DummyManager<Server>, connection_id: ConnectionId) {
+fn schedule_data_transfer_single(manager: &mut AntarcNet<Server>, connection_id: ConnectionId) {
     let scheduled = manager.schedule(
         ReliabilityType::Unreliable,
         SendTo::Single { connection_id },
@@ -36,7 +36,7 @@ fn schedule_data_transfer_single(manager: &mut DummyManager<Server>, connection_
 
 #[allow(unused)]
 fn schedule_server<const VALUE: u8, const LEN: usize>(
-    manager: &mut DummyManager<Server>,
+    manager: &mut AntarcNet<Server>,
     reliability: ReliabilityType,
 ) {
     let scheduled = manager.schedule(reliability, SendTo::Broadcast, vec![VALUE; LEN]);
@@ -45,10 +45,10 @@ fn schedule_server<const VALUE: u8, const LEN: usize>(
 
 fn run() {
     let server_addr = "127.0.0.1:7777".parse().unwrap();
-    let mut server = DummyManager::new_server(server_addr, 32, Duration::from_secs(2));
+    let mut server = AntarcNet::new_server(server_addr, 32, Duration::from_secs(2));
 
     let client_addr = "127.0.0.1:8888".parse().unwrap();
-    let mut client = DummyManager::new_client(client_addr);
+    let mut client = AntarcNet::new_client(client_addr);
     client.connect(server_addr).unwrap();
 
     let (client_tx, client_rx) = std::sync::mpsc::channel::<Vec<Vec<u8>>>();
@@ -70,7 +70,7 @@ fn run() {
                             );
 
                             // schedule_client::<0x3, 2>(&mut client, ReliabilityType::Unreliable);
-                            client.heartbeat(ReliabilityType::Unreliable);
+                            // client.heartbeat(ReliabilityType::Unreliable);
                         }
                     },
                     ProtocolEvent::DataTransfer {
@@ -91,15 +91,9 @@ fn run() {
             // schedule_client::<0x5, 2>(&mut client, ReliabilityType::Unreliable);
             // schedule_client::<0x7, 1600>(&mut client, ReliabilityType::Unreliable);
             // schedule_client::<0x8, 1600>(&mut client, ReliabilityType::Reliable);
-            client.heartbeat(ReliabilityType::Unreliable);
-            client.heartbeat(ReliabilityType::Reliable);
+            // client.heartbeat(ReliabilityType::Unreliable);
+            // client.heartbeat(ReliabilityType::Reliable);
 
-            let _ = client_tx.send(client.dummy_sender.clone());
-            if let Ok(packets) = server_rx.try_recv() {
-                client.dummy_receiver = packets;
-            }
-
-            client.dummy_sender.drain(..);
             std::thread::sleep(Duration::from_millis(500));
         });
 
@@ -152,12 +146,6 @@ fn run() {
             // schedule_server::<0x9, 1600>(&mut server, ReliabilityType::Unreliable);
             // schedule_server::<0x10, 1600>(&mut server, ReliabilityType::Reliable);
 
-            let _ = server_tx.send(server.dummy_sender.clone());
-            if let Ok(packets) = client_rx.try_recv() {
-                server.dummy_receiver = packets;
-            }
-
-            server.dummy_sender.drain(..);
             std::thread::sleep(Duration::from_millis(500));
         });
 

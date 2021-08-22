@@ -82,38 +82,6 @@ impl Protocol<Server> {
             .sent_heartbeat(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
     }
 
-    /// NOTE(alex): API function for scheduling data transfers only, called by the user.
-    ///
-    /// There are 2 choices:
-    ///
-    /// 1. schedule to single peer;
-    /// 2. broadcast to every peer;
-    ///
-    /// If the user wants to send to multiple select peers, then they must call the single version
-    /// multiple times. This avoids introducing a special case for when this "send batch" contains
-    /// an invalid `ConnectionId`.
-    ///
-    /// TODO(alex) [low] 2021-08-08: Most of the duplication problems were solved by moving into a
-    /// separate helper function, a bit remains though.
-    pub fn schedule(
-        &mut self,
-        reliability: ReliabilityType,
-        send_to: SendTo,
-        payload: Payload,
-    ) -> Result<PacketId, ProtocolError> {
-        let packet_id = self.service.schedule(
-            reliability,
-            send_to,
-            payload,
-            self.packet_id_tracker,
-            self.timer.elapsed(),
-        )?;
-
-        self.packet_id_tracker += 1;
-
-        Ok(packet_id)
-    }
-
     pub fn heartbeat(
         &mut self,
         reliability: ReliabilityType,
