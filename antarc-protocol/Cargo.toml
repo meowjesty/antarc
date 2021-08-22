@@ -6,7 +6,7 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/meowjesty/antarc"
 repository = "https://github.com/meowjesty/antarc"
-description = "Antarc custom procotol"
+description = "Antarc custom protocol"
 keywords = ["protocol"]
 categories = ["network-programming"]
 
