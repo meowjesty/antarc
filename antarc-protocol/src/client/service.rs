@@ -123,6 +123,94 @@ impl Service for Client {
     fn connected(&self) -> &HashMap<ConnectionId, Peer<Connected>> {
         &self.connected
     }
+
+    fn sent_data_transfer(
+        &mut self,
+        packet: Packet<ToSend, DataTransfer>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let address = sent.delivery.meta.address;
+        let connection_id = sent.message.connection_id;
+
+        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
+            self.connected
+                .insert(connection_id, peer.connected(time, connection_id));
+        }
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_data_transfer
+                .push(sent);
+        }
+    }
+
+    fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let address = sent.delivery.meta.address;
+        let connection_id = sent.message.connection_id;
+
+        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
+            self.connected
+                .insert(connection_id, peer.connected(time, connection_id));
+        }
+
+        // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
+        // The fragment's `sequence` is used as a `fragment_id`.
+        if let Some(connected) = (sent.message.index == sent.message.total - 1)
+            .then(|| ())
+            .and(self.connected.get_mut(&connection_id))
+        {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_fragment
+                .push(sent);
+        }
+    }
+
+    fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let address = sent.delivery.meta.address;
+        let connection_id = sent.message.connection_id;
+
+        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
+            self.connected
+                .insert(connection_id, peer.connected(time, connection_id));
+        }
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_heartbeat
+                .push(sent);
+        }
+    }
+
+    const DEBUG_NAME: &'static str = "Client";
 }
 
 impl Client {
@@ -175,92 +263,6 @@ impl Client {
         self.reliability_handler.service.connection_request(sent);
         self.awaiting_connection_ack
             .insert(address, peer.await_connection_ack(time));
-    }
-
-    pub(crate) fn sent_data_transfer(
-        &mut self,
-        packet: Packet<ToSend, DataTransfer>,
-        time: Duration,
-        reliability: ReliabilityType,
-        ttl: Duration,
-    ) {
-        let sent = packet.sent(time, ttl);
-        let address = sent.delivery.meta.address;
-        let connection_id = sent.message.connection_id;
-
-        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
-            self.connected
-                .insert(connection_id, peer.connected(time, connection_id));
-        }
-
-        if let Some(connected) = self.connected.get_mut(&connection_id) {
-            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        if let ReliabilityType::Reliable = reliability {
-            self.reliability_handler
-                .list_sent_reliable_data_transfer
-                .push(sent);
-        }
-    }
-
-    pub(crate) fn sent_heartbeat(
-        &mut self,
-        packet: Packet<ToSend, Heartbeat>,
-        time: Duration,
-        reliability: ReliabilityType,
-        ttl: Duration,
-    ) {
-        let sent = packet.sent(time, ttl);
-        let address = sent.delivery.meta.address;
-        let connection_id = sent.message.connection_id;
-
-        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
-            self.connected
-                .insert(connection_id, peer.connected(time, connection_id));
-        }
-
-        if let Some(connected) = self.connected.get_mut(&connection_id) {
-            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        if let ReliabilityType::Reliable = reliability {
-            self.reliability_handler
-                .list_sent_reliable_heartbeat
-                .push(sent);
-        }
-    }
-
-    pub(crate) fn sent_fragment(
-        &mut self,
-        packet: Packet<ToSend, Fragment>,
-        time: Duration,
-        reliability: ReliabilityType,
-        ttl: Duration,
-    ) {
-        let sent = packet.sent(time, ttl);
-        let address = sent.delivery.meta.address;
-        let connection_id = sent.message.connection_id;
-
-        if let Some(peer) = self.awaiting_connection_ack.remove(&address) {
-            self.connected
-                .insert(connection_id, peer.connected(time, connection_id));
-        }
-
-        // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
-        // The fragment's `sequence` is used as a `fragment_id`.
-        if let Some(connected) = (sent.message.index == sent.message.total - 1)
-            .then(|| ())
-            .and(self.connected.get_mut(&connection_id))
-        {
-            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        if let ReliabilityType::Reliable = reliability {
-            self.reliability_handler
-                .list_sent_reliable_fragment
-                .push(sent);
-        }
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
@@ -469,86 +471,6 @@ impl Client {
             .insert(remote_address, requesting_connection);
 
         Ok(())
-    }
-
-    /// NOTE(alex): API function for scheduling data transfers only, called by the user.
-    pub(crate) fn schedule(
-        &mut self,
-        reliability: ReliabilityType,
-        payload: Payload,
-        packet_id: PacketId,
-        time: Duration,
-    ) -> Result<PacketId, ProtocolError> {
-        if self.connected.is_empty() {
-            return Err(ProtocolError::NoPeersConnected);
-        }
-
-        let fragments = payload
-            .chunks(MAX_FRAGMENT_SIZE - Fragment::HEADER_SIZE)
-            .enumerate()
-            // TODO(alex) [mid] 2021-08-17: Change `Payload` to be `Arc<&[u8]>` so we don't need to
-            // use `to_vec` here.
-            //
-            // ADD(alex) [low] 2021-08-18: This change has a big impact, and I don't think it's
-            // possible to remove the allocation anyway, as `Arc::from(chunk)` would involve a
-            // memcpy of `chunk`.
-            // https://github.com/rust-lang/rust/pull/42565
-            .map(|(index, chunk)| (index, Arc::new(chunk.to_vec())))
-            .collect::<Vec<_>>();
-
-        let fragment_total = fragments.len();
-
-        for (fragment_index, payload) in fragments.into_iter() {
-            for (connection_id, address) in self
-                .connected
-                .iter()
-                .map(|(connection_id, peer)| (*connection_id, peer.address))
-            {
-                debug!("client: scheduling for {:#?}.", connection_id);
-
-                self.scheduler.schedule_for_connected_peer(
-                    address,
-                    payload.clone(),
-                    reliability,
-                    connection_id,
-                    packet_id,
-                    time,
-                    fragment_index,
-                    fragment_total,
-                );
-            }
-        }
-
-        Ok(packet_id + 1)
-    }
-
-    pub(crate) fn heartbeat(
-        &mut self,
-        reliability: ReliabilityType,
-        packet_id: PacketId,
-        time: Duration,
-    ) -> Result<PacketId, ProtocolError> {
-        if self.connected.is_empty() {
-            return Err(ProtocolError::NoPeersConnected);
-        }
-
-        for (connection_id, address) in self
-            .connected
-            .iter()
-            .map(|(connection_id, peer)| (*connection_id, peer.address))
-        {
-            debug!("client: scheduling for {:#?}.", connection_id);
-
-            self.scheduler.heartbeat_for_connected_peer(
-                address,
-                reliability,
-                connection_id,
-                packet_id,
-                time,
-            );
-        }
-
-        Ok(packet_id + 1)
     }
 
     pub fn drain_connection_request<R: RangeBounds<usize>>(

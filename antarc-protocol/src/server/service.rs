@@ -126,6 +126,76 @@ impl Service for Server {
     fn connected(&self) -> &HashMap<ConnectionId, Peer<Connected>> {
         &self.connected
     }
+
+    fn sent_data_transfer(
+        &mut self,
+        packet: Packet<ToSend, DataTransfer>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let connection_id = sent.message.connection_id;
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_data_transfer
+                .push(sent);
+        }
+    }
+
+    fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let connection_id = sent.message.connection_id;
+
+        // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
+        // The fragment's `sequence` is used as a `fragment_id`.
+        if let Some(connected) = (sent.message.index == sent.message.total - 1)
+            .then(|| ())
+            .and(self.connected.get_mut(&connection_id))
+        {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_fragment
+                .push(sent);
+        }
+    }
+
+    fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    ) {
+        let sent = packet.sent(time, ttl);
+        let connection_id = sent.message.connection_id;
+
+        if let Some(connected) = self.connected.get_mut(&connection_id) {
+            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
+        }
+
+        if let ReliabilityType::Reliable = reliability {
+            self.reliability_handler
+                .list_sent_reliable_heartbeat
+                .push(sent);
+        }
+    }
+
+    const DEBUG_NAME: &'static str = "Server";
 }
 
 impl Server {
@@ -405,130 +475,6 @@ impl Server {
         // a pair with `(Packet, bytes)` to avoid re-encoding a reliable packet.
         let packet = scheduled.into_packet(sequence, ack, time);
         packet
-    }
-
-    pub(crate) fn sent_data_transfer(
-        &mut self,
-        packet: Packet<ToSend, DataTransfer>,
-        time: Duration,
-        reliability: ReliabilityType,
-        ttl: Duration,
-    ) {
-        let sent = packet.sent(time, ttl);
-        let connection_id = sent.message.connection_id;
-
-        if let Some(connected) = self.connected.get_mut(&connection_id) {
-            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        if let ReliabilityType::Reliable = reliability {
-            self.reliability_handler
-                .list_sent_reliable_data_transfer
-                .push(sent);
-        }
-    }
-
-    pub(crate) fn sent_fragment(
-        &mut self,
-        packet: Packet<ToSend, Fragment>,
-        time: Duration,
-        reliability: ReliabilityType,
-        ttl: Duration,
-    ) {
-        let sent = packet.sent(time, ttl);
-        let connection_id = sent.message.connection_id;
-
-        // NOTE(alex): Only increase `Peer::sequence_tracker` for fragment if it's the last part.
-        // The fragment's `sequence` is used as a `fragment_id`.
-        if let Some(connected) = (sent.message.index == sent.message.total - 1)
-            .then(|| ())
-            .and(self.connected.get_mut(&connection_id))
-        {
-            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        if let ReliabilityType::Reliable = reliability {
-            self.reliability_handler
-                .list_sent_reliable_fragment
-                .push(sent);
-        }
-    }
-
-    pub(crate) fn sent_heartbeat(
-        &mut self,
-        packet: Packet<ToSend, Heartbeat>,
-        time: Duration,
-        reliability: ReliabilityType,
-        ttl: Duration,
-    ) {
-        let sent = packet.sent(time, ttl);
-        let connection_id = sent.message.connection_id;
-
-        if let Some(connected) = self.connected.get_mut(&connection_id) {
-            connected.sequence_tracker = connected.sequence_tracker.checked_add(1).unwrap();
-        }
-
-        if let ReliabilityType::Reliable = reliability {
-            self.reliability_handler
-                .list_sent_reliable_heartbeat
-                .push(sent);
-        }
-    }
-
-    pub(crate) fn heartbeat(
-        &mut self,
-        reliability: ReliabilityType,
-        send_to: SendTo,
-        packet_id: PacketId,
-        time: Duration,
-    ) -> Result<PacketId, ProtocolError> {
-        if self.connected.is_empty() {
-            return Err(ProtocolError::NoPeersConnected);
-        }
-
-        match send_to {
-            SendTo::Single { connection_id } => {
-                debug!(
-                    "server: SendTo::Single scheduling for {:#?}.",
-                    connection_id
-                );
-
-                let address = self
-                    .connected
-                    .get(&connection_id)
-                    .map(|peer| peer.address)
-                    .ok_or(ProtocolError::ScheduledNotConnected(connection_id))?;
-
-                self.scheduler.heartbeat_for_connected_peer(
-                    address,
-                    reliability,
-                    connection_id,
-                    packet_id,
-                    time,
-                );
-            }
-            SendTo::Broadcast => {
-                for (connection_id, address) in self
-                    .connected
-                    .iter()
-                    .map(|(connection_id, peer)| (*connection_id, peer.address))
-                {
-                    debug!(
-                        "server: SendTo::Broadcast scheduling for {:#?}.",
-                        connection_id
-                    );
-                    self.scheduler.heartbeat_for_connected_peer(
-                        address,
-                        reliability,
-                        connection_id,
-                        packet_id,
-                        time,
-                    );
-                }
-            }
-        }
-
-        Ok(packet_id + 1)
     }
 
     fn connection_request_another_state(&self, address: &SocketAddr) -> bool {

@@ -1,7 +1,7 @@
 use core::time::Duration;
 use std::time::Instant;
 
-use crate::{errors::*, events::*, packets::*, peers::*, Protocol};
+use crate::{errors::*, events::*, packets::*, Protocol};
 
 pub mod service;
 
@@ -49,54 +49,6 @@ impl Protocol<Server> {
     pub fn sent_connection_accepted(&mut self, packet: Packet<ToSend, ConnectionAccepted>) {
         self.service
             .sent_connection_accepted(packet, self.timer.elapsed(), self.reliable_ttl);
-    }
-
-    pub fn sent_data_transfer(
-        &mut self,
-        packet: Packet<ToSend, DataTransfer>,
-        reliability: ReliabilityType,
-    ) {
-        self.service.sent_data_transfer(
-            packet,
-            self.timer.elapsed(),
-            reliability,
-            self.reliable_ttl,
-        )
-    }
-
-    pub fn sent_fragment(
-        &mut self,
-        packet: Packet<ToSend, Fragment>,
-        reliability: ReliabilityType,
-    ) {
-        self.service
-            .sent_fragment(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
-    }
-
-    pub fn sent_heartbeat(
-        &mut self,
-        packet: Packet<ToSend, Heartbeat>,
-        reliability: ReliabilityType,
-    ) {
-        self.service
-            .sent_heartbeat(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
-    }
-
-    pub fn heartbeat(
-        &mut self,
-        reliability: ReliabilityType,
-        send_to: SendTo,
-    ) -> Result<PacketId, ProtocolError> {
-        let packet_id = self.service.heartbeat(
-            reliability,
-            send_to,
-            self.packet_id_tracker,
-            self.timer.elapsed(),
-        )?;
-
-        self.packet_id_tracker += 1;
-
-        Ok(packet_id)
     }
 
     pub fn retry_reliable_connection_accepted(

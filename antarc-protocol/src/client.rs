@@ -36,37 +36,6 @@ impl Protocol<Client> {
             .sent_connection_request(packet, self.timer.elapsed(), self.reliable_ttl);
     }
 
-    pub fn sent_data_transfer(
-        &mut self,
-        packet: Packet<ToSend, DataTransfer>,
-        reliability: ReliabilityType,
-    ) {
-        self.service.sent_data_transfer(
-            packet,
-            self.timer.elapsed(),
-            reliability,
-            self.reliable_ttl,
-        )
-    }
-
-    pub fn sent_heartbeat(
-        &mut self,
-        packet: Packet<ToSend, Heartbeat>,
-        reliability: ReliabilityType,
-    ) {
-        self.service
-            .sent_heartbeat(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
-    }
-
-    pub fn sent_fragment(
-        &mut self,
-        packet: Packet<ToSend, Fragment>,
-        reliability: ReliabilityType,
-    ) {
-        self.service
-            .sent_fragment(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
-    }
-
     /// NOTE(alex): API function that feeds the internal* event pipe.
     pub fn on_received(&mut self, raw_packet: RawPacket<Client>) -> Result<(), ProtocolError> {
         self.service.on_received(raw_packet, self.timer.elapsed())
@@ -79,16 +48,6 @@ impl Protocol<Client> {
         self.packet_id_tracker += 1;
 
         Ok(result)
-    }
-
-    pub fn heartbeat(&mut self, reliability: ReliabilityType) -> Result<PacketId, ProtocolError> {
-        let packet_id =
-            self.service
-                .heartbeat(reliability, self.packet_id_tracker, self.timer.elapsed())?;
-
-        self.packet_id_tracker += 1;
-
-        Ok(packet_id)
     }
 
     pub fn resend_reliable_connection_request(

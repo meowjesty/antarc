@@ -348,7 +348,7 @@ impl DummyManager<Client> {
             reliability
         );
 
-        self.antarc.heartbeat(reliability)
+        self.antarc.heartbeat(reliability, SendTo::Broadcast)
     }
 
     pub fn connect(&mut self, remote_address: SocketAddr) -> Result<(), ProtocolError> {

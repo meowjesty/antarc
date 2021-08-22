@@ -69,6 +69,8 @@ pub trait Service {
     type SchedulerType: ServiceScheduler;
     type ReliabilityHandlerType: ServiceReliability;
 
+    const DEBUG_NAME: &'static str;
+
     fn scheduler(&self) -> &Scheduler<Self::SchedulerType>;
     fn scheduler_mut(&mut self) -> &mut Scheduler<Self::SchedulerType>;
 
@@ -76,6 +78,30 @@ pub trait Service {
     fn reliability_handler_mut(&mut self) -> &mut ReliabilityHandler<Self::ReliabilityHandlerType>;
 
     fn connected(&self) -> &HashMap<ConnectionId, Peer<Connected>>;
+
+    fn sent_data_transfer(
+        &mut self,
+        packet: Packet<ToSend, DataTransfer>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    );
+
+    fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    );
+
+    fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        time: Duration,
+        reliability: ReliabilityType,
+        ttl: Duration,
+    );
 }
 
 /// NOTE(alex): `Service` may be either a `Client` or a `Server`.
@@ -97,6 +123,37 @@ where
 {
     pub fn cancel_packet(&mut self, _packet_id: PacketId, _reliability: ReliabilityType) -> bool {
         todo!()
+    }
+
+    pub fn sent_data_transfer(
+        &mut self,
+        packet: Packet<ToSend, DataTransfer>,
+        reliability: ReliabilityType,
+    ) {
+        self.service.sent_data_transfer(
+            packet,
+            self.timer.elapsed(),
+            reliability,
+            self.reliable_ttl,
+        )
+    }
+
+    pub fn sent_fragment(
+        &mut self,
+        packet: Packet<ToSend, Fragment>,
+        reliability: ReliabilityType,
+    ) {
+        self.service
+            .sent_fragment(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
+    }
+
+    pub fn sent_heartbeat(
+        &mut self,
+        packet: Packet<ToSend, Heartbeat>,
+        reliability: ReliabilityType,
+    ) {
+        self.service
+            .sent_heartbeat(packet, self.timer.elapsed(), reliability, self.reliable_ttl)
     }
 
     pub fn create_unreliable_data_transfer(
@@ -274,10 +331,27 @@ where
         send_to: SendTo,
         payload: Payload,
     ) -> Result<PacketId, ProtocolError> {
-        let packet_id = self.inner_schedule(
+        let packet_id = self.schedule_helper(
             reliability,
             send_to,
             payload,
+            self.packet_id_tracker,
+            self.timer.elapsed(),
+        )?;
+
+        self.packet_id_tracker += 1;
+
+        Ok(packet_id)
+    }
+
+    pub fn heartbeat(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+    ) -> Result<PacketId, ProtocolError> {
+        let packet_id = self.heartbeat_helper(
+            reliability,
+            send_to,
             self.packet_id_tracker,
             self.timer.elapsed(),
         )?;
@@ -304,7 +378,7 @@ where
     /// ids, but this function can't properly handle failure state for this variant. To schedule for
     /// multiple peers like that, another return type must be had in case the user passes 1 or more
     /// not-connected connection ids. This could be some sort of `schedule_batch`.
-    fn inner_schedule(
+    fn schedule_helper(
         &mut self,
         reliability: ReliabilityType,
         send_to: SendTo,
@@ -379,6 +453,70 @@ where
                             fragment_total,
                         );
                     }
+                }
+            }
+        }
+
+        Ok(packet_id + 1)
+    }
+
+    fn heartbeat_helper(
+        &mut self,
+        reliability: ReliabilityType,
+        send_to: SendTo,
+        packet_id: PacketId,
+        time: Duration,
+    ) -> Result<PacketId, ProtocolError> {
+        if self.service.connected().is_empty() {
+            return Err(ProtocolError::NoPeersConnected);
+        }
+
+        match send_to {
+            SendTo::Single { connection_id } => {
+                debug!(
+                    "server: SendTo::Single scheduling for {:#?}.",
+                    connection_id
+                );
+
+                let address = self
+                    .service
+                    .connected()
+                    .get(&connection_id)
+                    .map(|peer| peer.address)
+                    .ok_or(ProtocolError::ScheduledNotConnected(connection_id))?;
+
+                self.service.scheduler_mut().heartbeat_for_connected_peer(
+                    address,
+                    reliability,
+                    connection_id,
+                    packet_id,
+                    time,
+                );
+            }
+            SendTo::Broadcast => {
+                // TODO(alex) [mid] 2021-08-21: If I don't collect here, we end up with a double
+                // borrow of `self.service`, even though we're borrowing fields that do not
+                // interact.
+                let connected = self
+                    .service
+                    .connected()
+                    .iter()
+                    .map(|(connection_id, peer)| (*connection_id, peer.address))
+                    .collect::<Vec<_>>();
+                let scheduler = self.service.scheduler_mut();
+
+                for (connection_id, address) in connected {
+                    debug!(
+                        "server: SendTo::Broadcast scheduling for {:#?}.",
+                        connection_id
+                    );
+                    scheduler.heartbeat_for_connected_peer(
+                        address,
+                        reliability,
+                        connection_id,
+                        packet_id,
+                        time,
+                    );
                 }
             }
         }
