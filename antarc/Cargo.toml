@@ -1,6 +1,5 @@
 [package]
 name = "antarc"
-publish = false
 version = "0.1.0"
 authors = ["meowjesty <meowjesty_nyan@outlook.com>"]
 edition = "2018"
@@ -15,6 +14,6 @@ categories = ["network-programming"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-antarc-protocol = { path = "../antarc-protocol" }
+antarc-protocol = { version = "*", path = "../antarc-protocol" }
 log = { version = "*" }
 thiserror = "*"
