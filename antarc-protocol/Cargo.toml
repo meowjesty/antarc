@@ -1,6 +1,5 @@
 [package]
 name = "antarc-protocol"
-publish = false
 version = "0.1.0"
 authors = ["meowjesty <meowjesty_nyan@outlook.com>"]
 edition = "2018"
@@ -14,7 +13,7 @@ categories = ["network-programming"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-antarc-macro = { path = "../antarc-macro" }
+# antarc-macro = { path = "../antarc-macro" }
 crc32fast = { version = "*", features = ["std", "nightly"] }
 log = { version = "*" }
 thiserror = "*"
