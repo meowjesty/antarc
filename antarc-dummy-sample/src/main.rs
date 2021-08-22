@@ -1,7 +1,4 @@
 use std::{env, time::Duration};
-// TODO(alex) [high] 2021-09-20: Time to tackle the network part, start simple, don't care about
-// blocking, let's sketch out something usable, so that I can finally macro the heck out of this
-// protocol (and reduce code duplication tenfold).
 
 use antarc_dummy::{
     Client, ClientEvent, ConnectionId, DummyManager, ProtocolEvent, ReliabilityType, SendTo,

@@ -1,8 +1,16 @@
 [package]
 name = "antarc"
+publish = false
 version = "0.1.0"
 authors = ["meowjesty <meowjesty_nyan@outlook.com>"]
 edition = "2018"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/meowjesty/antarc"
+repository = "https://github.com/meowjesty/antarc"
+description = "Antarc: custom UDP procotol implementation"
+readme = "../README.md"
+keywords = ["udp", "protocol"]
+categories = ["network-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
