@@ -6,7 +6,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{packets::*, *};
+use crate::{packets::packet_type::PacketType, *};
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -24,6 +24,9 @@ pub enum ProtocolError {
 
     #[error("{0}")]
     IntConversion(#[from] TryFromIntError),
+
+    #[error("Failed to convert {0} into a PacketType value.")]
+    PacketTypeConversion(u8),
 
     #[error("Tried to decode a packet with invalid type code of {0}!")]
     InvalidPacketType(PacketType),

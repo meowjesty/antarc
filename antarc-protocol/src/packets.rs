@@ -1,4 +1,4 @@
-use core::{mem::size_of, ops::RangeInclusive, time::Duration};
+use core::{mem::size_of, ops::Range, time::Duration};
 use std::{
     convert::{TryFrom, TryInto},
     marker::PhantomData,
@@ -8,15 +8,18 @@ use std::{
 };
 
 use crc32fast::Hasher;
-use log::{debug, error, warn};
+use log::*;
 
+use self::packet_type::PacketType;
 use crate::{client::*, errors::*, server::*, *};
+
+pub mod packet_type;
 
 pub type PacketId = u64;
 pub type Sequence = NonZeroU32;
 pub type ConnectionId = NonZeroU16;
 pub type Ack = u32;
-pub type PacketType = u8;
+// pub type PacketType = u8;
 pub type Payload = Vec<u8>;
 
 pub const MAX_FRAGMENT_SIZE: usize = 1500;
@@ -143,8 +146,6 @@ impl TryFrom<DecodedCommon> for DecodedForClient {
     }
 }
 
-pub const PACKET_TYPE_RANGE: RangeInclusive<u8> = 0x1..=0x6;
-
 impl RawPacket<Server> {
     pub(crate) fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
         let decoded = self.inner_decode(time)?.try_into()?;
@@ -216,7 +217,7 @@ impl<S: Service> RawPacket<S> {
             let partial_decode = PartialDecode {
                 buffer,
                 buffer_position,
-                packet_type: read_packet_type,
+                packet_type: read_packet_type.try_into()?,
                 sequence: read_sequence.try_into()?,
                 ack: read_ack,
             };
@@ -606,11 +607,14 @@ impl Heartbeat {
     }
 }
 
-pub const CONNECTION_REQUEST: PacketType = 0x1;
-pub const CONNECTION_ACCEPTED: PacketType = 0x2;
-pub const DATA_TRANSFER: PacketType = 0x3;
-pub const FRAGMENT: PacketType = 0x4;
-pub const HEARTBEAT: PacketType = 0x5;
+pub const PACKET_TYPE_RANGE: Range<u8> = (PACKET_TYPE_SENTINEL_START + 1)..PACKET_TYPE_SENTINEL_END;
+pub const PACKET_TYPE_SENTINEL_START: u8 = 0x0;
+pub const CONNECTION_REQUEST: PacketType = unsafe { PacketType::new_unchecked(0x1) };
+pub const CONNECTION_ACCEPTED: PacketType = unsafe { PacketType::new_unchecked(0x2) };
+pub const DATA_TRANSFER: PacketType = unsafe { PacketType::new_unchecked(0x3) };
+pub const FRAGMENT: PacketType = unsafe { PacketType::new_unchecked(0x4) };
+pub const HEARTBEAT: PacketType = unsafe { PacketType::new_unchecked(0x5) };
+pub const PACKET_TYPE_SENTINEL_END: u8 = 0x6;
 
 impl Messager for ConnectionRequest {
     // TODO(alex) [low] 2021-08-05: Figure out a way to make this incompatible between the Message
