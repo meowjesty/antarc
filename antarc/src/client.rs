@@ -1,4 +1,4 @@
-use antarc_protocol::{client::*, errors::*, events::*, packets::*, *};
+use antarc_protocol::{client::*, errors::*, events::*, packets::raw::*, *};
 
 use crate::*;
 

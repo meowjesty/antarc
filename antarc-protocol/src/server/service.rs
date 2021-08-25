@@ -3,7 +3,13 @@ use std::{collections::HashMap, net::SocketAddr, vec::Drain};
 
 use log::{debug, warn};
 
-use crate::{errors::*, events::*, packets::*, peers::*, *};
+use crate::{
+    errors::*,
+    events::*,
+    packets::{decode::*, *},
+    scheduler::*,
+    *,
+};
 
 #[derive(Debug)]
 pub struct ServerScheduler {

@@ -6,7 +6,16 @@ use log::*;
 pub mod client;
 pub mod server;
 
-pub use antarc_protocol::{client::*, errors::*, events::*, packets::*, peers::*, server::*, *};
+pub use antarc_protocol::{
+    client::*,
+    errors::*,
+    events::*,
+    packets::{scheduled::*, *},
+    peers::*,
+    server::*,
+    service_traits::*,
+    *,
+};
 
 #[derive(Debug)]
 pub struct AntarcNet<S: Service> {
