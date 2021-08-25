@@ -39,8 +39,8 @@ pub const FRAGMENT: PacketType = unsafe { PacketType::new_unchecked(0x4) };
 pub const HEARTBEAT: PacketType = unsafe { PacketType::new_unchecked(0x5) };
 pub const PACKET_TYPE_SENTINEL_END: u8 = 0x6;
 
-pub trait Deliver {}
-pub trait Messager {
+pub trait Delivery {}
+pub trait Message {
     const PACKET_TYPE: PacketType;
     const PACKET_TYPE_BYTES: [u8; 1];
 }
@@ -51,22 +51,22 @@ pub trait Encoder {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Packet<Delivery, Message>
+pub struct Packet<D, M>
 where
-    Delivery: Deliver,
-    Message: Messager + Encoder,
+    D: Delivery,
+    M: Message + Encoder,
 {
-    pub delivery: Delivery,
+    pub delivery: D,
     pub sequence: Sequence,
     pub ack: Ack,
-    pub message: Message,
+    pub message: M,
 }
 
-impl<Message> Packet<ToSend, Message>
+impl<M> Packet<ToSend, M>
 where
-    Message: Messager + Encoder,
+    M: Message + Encoder,
 {
-    pub fn sent(self, time: Duration, ttl: Duration) -> Packet<Sent, Message> {
+    pub fn sent(self, time: Duration, ttl: Duration) -> Packet<Sent, M> {
         let packet = Packet {
             delivery: Sent {
                 id: self.delivery.id,

@@ -35,7 +35,7 @@ pub struct Acked {
     pub meta: MetaDelivery,
 }
 
-impl Deliver for ToSend {}
-impl Deliver for Sent {}
-impl Deliver for Received {}
-impl Deliver for Acked {}
+impl Delivery for ToSend {}
+impl Delivery for Sent {}
+impl Delivery for Received {}
+impl Delivery for Acked {}

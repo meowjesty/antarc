@@ -3,12 +3,12 @@ use super::*;
 // TODO(alex) [mid] 2021-08-19: Create a derive macro for the `into_packet` implementation, it's the
 // same for every kind of packet.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Scheduled<R: Reliability, Message: Messager> {
+pub struct Scheduled<R: Reliability, M: Message> {
     pub packet_id: PacketId,
     pub address: SocketAddr,
     pub time: Duration,
     pub reliability: R,
-    pub message: Message,
+    pub message: M,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
