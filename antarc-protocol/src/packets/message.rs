@@ -161,7 +161,7 @@ impl Heartbeat {
     }
 }
 
-impl Messager for ConnectionRequest {
+impl Message for ConnectionRequest {
     // TODO(alex) [low] 2021-08-05: Figure out a way to make this incompatible between the Message
     // types. Right now these constants are still programmer enforced, the compiler will happily
     // accept any when we create a packet.
@@ -172,21 +172,21 @@ impl Messager for ConnectionRequest {
     const PACKET_TYPE_BYTES: [u8; 1] = Self::PACKET_TYPE.to_be_bytes();
 }
 
-impl Messager for ConnectionAccepted {
+impl Message for ConnectionAccepted {
     const PACKET_TYPE: PacketType = CONNECTION_ACCEPTED;
     const PACKET_TYPE_BYTES: [u8; 1] = Self::PACKET_TYPE.to_be_bytes();
 }
 
-impl Messager for DataTransfer {
+impl Message for DataTransfer {
     const PACKET_TYPE: PacketType = DATA_TRANSFER;
     const PACKET_TYPE_BYTES: [u8; 1] = Self::PACKET_TYPE.to_be_bytes();
 }
 
-impl Messager for Fragment {
+impl Message for Fragment {
     const PACKET_TYPE: PacketType = FRAGMENT;
     const PACKET_TYPE_BYTES: [u8; 1] = Self::PACKET_TYPE.to_be_bytes();
 }
-impl Messager for Heartbeat {
+impl Message for Heartbeat {
     const PACKET_TYPE: PacketType = HEARTBEAT;
     const PACKET_TYPE_BYTES: [u8; 1] = Self::PACKET_TYPE.to_be_bytes();
 }

@@ -3,6 +3,7 @@
 #![feature(hash_drain_filter)]
 #![feature(nonzero_ops)]
 // #![feature(const_generics)]
+// #![feature(evaluate_checked)]
 // #![feature(const_try)]
 // #![feature(array_chunks)]
 #![allow(clippy::let_and_return)]
@@ -22,9 +23,7 @@ use packets::*;
 use peers::*;
 
 use self::{reliability::*, service_traits::*};
-use crate::{
-    packets::{delivery::*, message::*, raw::*, scheduled::*},
-};
+use crate::packets::{delivery::*, message::*, raw::*, scheduled::*};
 
 pub mod client;
 pub mod errors;

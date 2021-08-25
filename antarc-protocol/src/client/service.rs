@@ -107,6 +107,7 @@ pub struct Client {
 impl Service for Client {
     type SchedulerType = ClientScheduler;
     type ReliabilityHandlerType = ClientReliabilityHandler;
+    type ConnectionMessage = ConnectionAccepted;
 
     fn scheduler(&self) -> &Scheduler<Self::SchedulerType> {
         &self.scheduler
