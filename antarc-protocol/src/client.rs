@@ -42,7 +42,7 @@ impl Protocol<Client> {
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
-    pub fn on_received(&mut self, raw_packet: RawPacket<Client>) -> Result<(), ProtocolError> {
+    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
         self.service.on_received(raw_packet, self.timer.elapsed())
     }
 

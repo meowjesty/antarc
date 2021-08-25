@@ -22,9 +22,7 @@ use packets::*;
 use peers::*;
 
 use self::{reliability::*, service_traits::*};
-use crate::{
-    packets::{delivery::*, message::*, raw::*, scheduled::*},
-};
+use crate::packets::{delivery::*, message::*, raw::*, scheduled::*};
 
 pub mod client;
 pub mod errors;
@@ -80,7 +78,7 @@ where
     pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub service: S,
-    pub receiver_pipe: Vec<RawPacket<S>>,
+    pub receiver_pipe: Vec<RawPacket>,
     pub reliable_ttl: Duration,
 }
 

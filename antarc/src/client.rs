@@ -65,7 +65,7 @@ impl AntarcNet<Client> {
 
             // NOTE(alex): Udp send.
             {
-                let raw_packet = packet.as_raw::<Client>();
+                let raw_packet = packet.as_raw();
                 self.socket
                     .send_to(&raw_packet.bytes, raw_packet.address)
                     .unwrap();
@@ -81,7 +81,7 @@ impl AntarcNet<Client> {
 
             // NOTE(alex): Udp send.
             {
-                let raw_packet = reliable_packet.as_raw::<Client>();
+                let raw_packet = reliable_packet.as_raw();
                 self.socket
                     .send_to(&raw_packet.bytes, raw_packet.address)
                     .unwrap();

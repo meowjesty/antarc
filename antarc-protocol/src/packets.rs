@@ -1,7 +1,6 @@
 use core::{mem::size_of, ops::Range, time::Duration};
 use std::{
     convert::TryFrom,
-    marker::PhantomData,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32},
     sync::Arc,
@@ -84,7 +83,7 @@ where
         packet
     }
 
-    pub fn as_raw<T>(&self) -> RawPacket<T> {
+    pub fn as_raw(&self) -> RawPacket {
         let sequence_bytes = self.sequence.get().to_be_bytes();
         let ack_bytes = self.ack.to_be_bytes();
 
@@ -109,7 +108,6 @@ where
         let raw_packet = RawPacket {
             address: self.delivery.meta.address,
             bytes: packet_bytes,
-            phantom: PhantomData::default(),
         };
 
         // debug_assert_eq!(self, raw_packet.decode()?)

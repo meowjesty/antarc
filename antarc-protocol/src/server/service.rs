@@ -306,14 +306,14 @@ impl Server {
     /// NOTE(alex): API function that feeds the internal* event pipe.
     pub(crate) fn on_received(
         &mut self,
-        raw_packet: RawPacket<Server>,
+        raw_packet: RawPacket,
         packet_id: PacketId,
         time: Duration,
         /* TODO(alex) [high] 2021-08-19: This return of `bool` is a waste, it's being used to
          * increment the packet id tracker on receive. I believe there should be a separate
          * packet id tracker for received packets only. */
     ) -> Result<bool, ProtocolError> {
-        let decoded = raw_packet.decode(time)?;
+        let decoded = raw_packet.decode::<Server>(time)?;
         match decoded {
             DecodedForServer::ConnectionRequest { packet } => {
                 debug!("server: received connection request {:#?}.", packet);

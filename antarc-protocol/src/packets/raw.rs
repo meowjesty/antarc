@@ -1,4 +1,4 @@
-use core::{convert::TryInto, marker::PhantomData};
+use core::convert::TryInto;
 use std::net::SocketAddr;
 
 use crc32fast::Hasher;
@@ -7,10 +7,9 @@ use super::*;
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawPacket<T> {
+pub struct RawPacket {
     pub address: SocketAddr,
     pub bytes: Vec<u8>,
-    pub phantom: PhantomData<T>,
 }
 
 // impl RawPacket<Server> {
@@ -29,28 +28,25 @@ pub struct RawPacket<T> {
 
 // TODO(alex) [high] 2021-08-25: Read about what is going on here:
 // https://github.com/rust-lang/rfcs/blob/master/text/1598-generic_associated_types.md
-impl<S: Service> RawPacket<S>
-where
-    <S as service_traits::Service>::DecodedType: TryFrom<decode::DecodedCommon>,
-    errors::ProtocolError: From<
-        <<S as service_traits::Service>::DecodedType as std::convert::TryFrom<
-            packets::decode::DecodedCommon,
-        >>::Error,
-    >,
-{
-    pub(crate) fn decode(self, time: Duration) -> Result<S::DecodedType, ProtocolError> {
+impl RawPacket {
+    pub(crate) fn decode<S>(self, time: Duration) -> Result<S::DecodedType, ProtocolError>
+    where
+        S: Service,
+        <S as service_traits::Service>::DecodedType: TryFrom<decode::DecodedCommon>,
+        errors::ProtocolError: From<
+            <<S as service_traits::Service>::DecodedType as std::convert::TryFrom<
+                packets::decode::DecodedCommon,
+            >>::Error,
+        >,
+    {
         let decoded = self.inner_decode(time)?.try_into()?;
         Ok(decoded)
     }
 }
 
-impl<S: Service> RawPacket<S> {
+impl RawPacket {
     pub fn new(address: SocketAddr, bytes: Vec<u8>) -> Self {
-        Self {
-            address,
-            bytes,
-            phantom: PhantomData::default(),
-        }
+        Self { address, bytes }
     }
 
     /// TODO(alex) #3 [mid] 2021-08-20: Investigate using the crc32 for Header + a small slice of
@@ -106,7 +102,7 @@ impl<S: Service> RawPacket<S> {
                 ack: read_ack,
             };
 
-            let decoded = RawPacket::<S>::common_decode(self.address, partial_decode, time)?;
+            let decoded = RawPacket::common_decode(self.address, partial_decode, time)?;
 
             Ok(decoded)
         } else {
