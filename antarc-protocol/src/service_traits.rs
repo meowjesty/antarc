@@ -5,6 +5,7 @@ use crate::{packets::*, scheduler::*, *};
 pub trait Service {
     type SchedulerType: ServiceScheduler;
     type ReliabilityHandlerType: ServiceReliability;
+    type DecodedType;
 
     const DEBUG_NAME: &'static str;
 

@@ -13,15 +13,32 @@ pub struct RawPacket<T> {
     pub phantom: PhantomData<T>,
 }
 
-impl RawPacket<Server> {
-    pub(crate) fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
-        let decoded = self.inner_decode(time)?.try_into()?;
-        Ok(decoded)
-    }
-}
+// impl RawPacket<Server> {
+//     pub(crate) fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
+//         let decoded = self.inner_decode(time)?.try_into()?;
+//         Ok(decoded)
+//     }
+// }
 
-impl RawPacket<Client> {
-    pub(crate) fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
+// impl RawPacket<Client> {
+//     pub(crate) fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
+//         let decoded = self.inner_decode(time)?.try_into()?;
+//         Ok(decoded)
+//     }
+// }
+
+// TODO(alex) [high] 2021-08-25: Read about what is going on here:
+// https://github.com/rust-lang/rfcs/blob/master/text/1598-generic_associated_types.md
+impl<S: Service> RawPacket<S>
+where
+    <S as service_traits::Service>::DecodedType: TryFrom<decode::DecodedCommon>,
+    errors::ProtocolError: From<
+        <<S as service_traits::Service>::DecodedType as std::convert::TryFrom<
+            packets::decode::DecodedCommon,
+        >>::Error,
+    >,
+{
+    pub(crate) fn decode(self, time: Duration) -> Result<S::DecodedType, ProtocolError> {
         let decoded = self.inner_decode(time)?.try_into()?;
         Ok(decoded)
     }

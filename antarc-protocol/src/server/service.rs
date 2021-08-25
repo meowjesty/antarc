@@ -112,6 +112,7 @@ pub struct Server {
 impl Service for Server {
     type SchedulerType = ServerScheduler;
     type ReliabilityHandlerType = ServerReliabilityHandler;
+    type DecodedType = DecodedForServer;
 
     fn scheduler(&self) -> &Scheduler<Self::SchedulerType> {
         &self.scheduler

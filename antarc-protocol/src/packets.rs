@@ -11,7 +11,7 @@ use crc32fast::Hasher;
 use log::*;
 
 use self::{decode::*, packet_type::*};
-use crate::{client::*, errors::*, server::*, *};
+use crate::{errors::*, *};
 
 pub mod decode;
 pub mod delivery;
