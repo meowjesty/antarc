@@ -2,7 +2,8 @@
 #![feature(drain_filter)]
 #![feature(hash_drain_filter)]
 #![feature(nonzero_ops)]
-// #![feature(const_generics)]
+#![feature(const_generics)]
+#![feature(inherent_associated_types)]
 // #![feature(const_try)]
 // #![feature(array_chunks)]
 #![allow(clippy::let_and_return)]
@@ -10,6 +11,7 @@
 use core::mem::size_of;
 use std::{
     collections::HashMap,
+    convert::{TryFrom, TryInto},
     net::SocketAddr,
     num::NonZeroU32,
     ops::RangeBounds,
@@ -20,7 +22,7 @@ use std::{
 
 use errors::ProtocolError;
 use log::debug;
-use packets::*;
+use packets::{packet_type::*, *};
 use peers::{Connected, Peer, SendTo};
 
 pub mod client;
@@ -68,8 +70,11 @@ pub const PROTOCOL_ID_BYTES: [u8; size_of::<ProtocolId>()] = PROTOCOL_ID.get().t
 pub trait Service {
     type SchedulerType: ServiceScheduler;
     type ReliabilityHandlerType: ServiceReliability;
+    type ConnectionPacketType: Messager;
+    type DecodedPacketType: TryFrom<DecodedCommon> + core::fmt::Debug;
 
     const DEBUG_NAME: &'static str;
+    const CONNECTION_PACKET: PacketType = Self::ConnectionPacketType::PACKET_TYPE;
 
     fn scheduler(&self) -> &Scheduler<Self::SchedulerType>;
     fn scheduler_mut(&mut self) -> &mut Scheduler<Self::SchedulerType>;
@@ -113,7 +118,7 @@ where
     pub packet_id_tracker: PacketId,
     pub timer: Instant,
     pub service: S,
-    pub receiver_pipe: Vec<RawPacket<S>>,
+    pub receiver_pipe: Vec<RawPacket>,
     pub reliable_ttl: Duration,
 }
 

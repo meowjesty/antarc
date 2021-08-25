@@ -21,7 +21,7 @@ impl Protocol<Server> {
     }
 
     /// NOTE(alex): API function that feeds the internal* event pipe.
-    pub fn on_received(&mut self, raw_packet: RawPacket<Server>) -> Result<(), ProtocolError> {
+    pub fn on_received(&mut self, raw_packet: RawPacket) -> Result<(), ProtocolError> {
         let update_packet_id =
             self.service
                 .on_received(raw_packet, self.packet_id_tracker, self.timer.elapsed())?;

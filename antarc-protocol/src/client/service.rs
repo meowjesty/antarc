@@ -103,6 +103,7 @@ pub struct Client {
 impl Service for Client {
     type SchedulerType = ClientScheduler;
     type ReliabilityHandlerType = ClientReliabilityHandler;
+    type DecodedPacketType = DecodedForClient;
 
     fn scheduler(&self) -> &Scheduler<Self::SchedulerType> {
         &self.scheduler
@@ -211,6 +212,8 @@ impl Service for Client {
     }
 
     const DEBUG_NAME: &'static str = "Client";
+
+    type ConnectionPacketType = ConnectionRequest;
 }
 
 impl Client {
@@ -268,7 +271,7 @@ impl Client {
     /// NOTE(alex): API function that feeds the internal* event pipe.
     pub(crate) fn on_received(
         &mut self,
-        raw_packet: RawPacket<Client>,
+        raw_packet: RawPacket,
         time: Duration,
     ) -> Result<(), ProtocolError> {
         // TODO(alex) [low] 2021-08-01: There will be a conflict when switching up to
@@ -290,7 +293,7 @@ impl Client {
         // results.
         //
         // Plenty of packet types are compatible with both `Service`s, but how do I make it work?
-        let decoded = raw_packet.decode(time)?;
+        let decoded = raw_packet.decode::<Self>(time)?;
         match decoded {
             DecodedForClient::ConnectionAccepted { packet } => {
                 debug!("client: received connection accepted {:#?}.", packet);

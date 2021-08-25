@@ -34,30 +34,12 @@ pub struct PartialDecode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawPacket<T> {
+pub struct RawPacket {
     pub address: SocketAddr,
     pub bytes: Vec<u8>,
-    pub phantom: PhantomData<T>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Decoded {
-    ConnectionRequest {
-        packet: Packet<Received, ConnectionRequest>,
-    },
-    ConnectionAccepted {
-        packet: Packet<Received, ConnectionAccepted>,
-    },
-    DataTransfer {
-        packet: Packet<Received, DataTransfer>,
-    },
-    Fragment {
-        packet: Packet<Received, Fragment>,
-    },
-    Heartbeat {
-        packet: Packet<Received, Heartbeat>,
-    },
-}
+pub trait Decoder {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecodedForClient {
@@ -146,32 +128,31 @@ impl TryFrom<DecodedCommon> for DecodedForClient {
     }
 }
 
-impl RawPacket<Server> {
-    pub(crate) fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
-        let decoded = self.inner_decode(time)?.try_into()?;
-        Ok(decoded)
-    }
-}
+// impl RawPacket<Server> {
+//     pub(crate) fn decode(self, time: Duration) -> Result<DecodedForServer, ProtocolError> {
+//         let decoded = self.inner_decode(time)?.try_into()?;
+//         Ok(decoded)
+//     }
+// }
 
-impl RawPacket<Client> {
-    pub(crate) fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
-        let decoded = self.inner_decode(time)?.try_into()?;
-        Ok(decoded)
-    }
-}
+// impl RawPacket<Client> {
+//     pub(crate) fn decode(self, time: Duration) -> Result<DecodedForClient, ProtocolError> {
+//         let decoded = self.inner_decode(time)?.try_into()?;
+//         Ok(decoded)
+//     }
+// }
 
-impl<S: Service> RawPacket<S> {
+impl RawPacket {
     pub fn new(address: SocketAddr, bytes: Vec<u8>) -> Self {
-        Self {
-            address,
-            bytes,
-            phantom: PhantomData::default(),
-        }
+        Self { address, bytes }
     }
 
     /// TODO(alex) #3 [mid] 2021-08-20: Investigate using the crc32 for Header + a small slice of
     /// the payload, instead of the full thing.
-    pub(crate) fn inner_decode(self, time: Duration) -> Result<DecodedCommon, ProtocolError> {
+    pub(crate) fn decode<S: Service>(
+        self,
+        time: Duration,
+    ) -> Result<S::DecodedPacketType, ProtocolError> {
         let mut hasher = Hasher::new();
 
         let length = self.bytes.len();
@@ -222,9 +203,14 @@ impl<S: Service> RawPacket<S> {
                 ack: read_ack,
             };
 
-            let decoded = RawPacket::<S>::common_decode(self.address, partial_decode, time)?;
+            let decoded = RawPacket::common_decode::<
+                { S::ConnectionPacketType::PACKET_TYPE },
+                S::DecodedPacketType,
+            >(self.address, partial_decode, time)?;
 
-            Ok(decoded)
+            let service_decoded = decoded.try_into()?;
+
+            Ok(service_decoded)
         } else {
             Err(ProtocolError::InvalidCrc32 {
                 got: read_crc32,
@@ -233,11 +219,11 @@ impl<S: Service> RawPacket<S> {
         }
     }
 
-    fn common_decode(
+    fn common_decode<const CONNECTION_PACKET: PacketType, T: TryFrom<DecodedCommon>>(
         address: SocketAddr,
         partial_decode: PartialDecode,
         time: Duration,
-    ) -> Result<DecodedCommon, ProtocolError> {
+    ) -> Result<T, ProtocolError> {
         let PartialDecode {
             buffer,
             mut buffer_position,
@@ -247,6 +233,13 @@ impl<S: Service> RawPacket<S> {
         } = partial_decode;
 
         match packet_type {
+            // TODO(alex) [high] 2021-08-24: Cannot do this, investigate why:
+            // https://rust-lang.github.io/rfcs/1445-restrict-constants-in-patterns.html
+            // It would be great if we could reduce the possible packet type pattern matching here,
+            // to only accept the correct values depending on the service type.
+            CONNECTION_PACKET => {
+                todo!()
+            }
             ConnectionRequest::PACKET_TYPE => {
                 debug!("server: decoding connection request packet.");
                 debug_assert_eq!(buffer_position, ConnectionRequest::HEADER_SIZE);
@@ -264,6 +257,9 @@ impl<S: Service> RawPacket<S> {
                     ack,
                     message,
                 };
+
+                let common = DecodedCommon::ConnectionRequest { packet };
+                let decoded = T::try_from(common).unwrap();
 
                 Ok(DecodedCommon::ConnectionRequest { packet })
             }
@@ -788,7 +784,7 @@ where
         packet
     }
 
-    pub fn as_raw<T>(&self) -> RawPacket<T> {
+    pub fn as_raw<T>(&self) -> RawPacket {
         let sequence_bytes = self.sequence.get().to_be_bytes();
         let ack_bytes = self.ack.to_be_bytes();
 
@@ -813,7 +809,6 @@ where
         let raw_packet = RawPacket {
             address: self.delivery.meta.address,
             bytes: packet_bytes,
-            phantom: PhantomData::default(),
         };
 
         // debug_assert_eq!(self, raw_packet.decode()?)
