@@ -1,4 +1,4 @@
-use core::convert::TryFrom;
+use core::{convert::TryFrom, mem::size_of};
 use std::fmt::Display;
 
 use super::{PACKET_TYPE_SENTINEL_END, PACKET_TYPE_SENTINEL_START};
@@ -33,11 +33,11 @@ impl PacketType {
         self.0
     }
 
-    pub const fn to_be_bytes(self) -> [u8; 1] {
+    pub const fn to_be_bytes(self) -> [u8; size_of::<u8>()] {
         self.0.to_be_bytes()
     }
 
-    pub const fn from_be_bytes(bytes: [u8; 1]) -> u8 {
+    pub const fn from_be_bytes(bytes: [u8; size_of::<u8>()]) -> u8 {
         u8::from_be_bytes(bytes)
     }
 }

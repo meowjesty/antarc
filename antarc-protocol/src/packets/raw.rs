@@ -31,8 +31,6 @@ impl RawPacket {
         Self { address, bytes }
     }
 
-    /// TODO(alex) #3 [mid] 2021-08-20: Investigate using the crc32 for Header + a small slice of
-    /// the payload, instead of the full thing.
     pub(crate) fn inner_decode(self, time: Duration) -> Result<DecodedCommon, ProtocolError> {
         let mut hasher = Hasher::new();
 
@@ -61,7 +59,8 @@ impl RawPacket {
             //
             // ADD(alex) [low] 2021-08-07: I've tried tackling this to see if a simple wrapper type
             // around `NonZero` would be enough, but it gets a bit too messy for little benefit.
-            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : u32);
+            type ProtocolIdRaw = u32;
+            let read_protocol_id = read_buffer_inc!({buffer, buffer_position } : ProtocolIdRaw);
             if PROTOCOL_ID.get() != read_protocol_id {
                 return Err(ProtocolError::InvalidProtocolId {
                     got: read_protocol_id,
@@ -69,7 +68,8 @@ impl RawPacket {
                 });
             }
 
-            let read_sequence = read_buffer_inc!({ buffer, buffer_position } : u32);
+            type SequenceRaw = u32;
+            let read_sequence = read_buffer_inc!({ buffer, buffer_position } : SequenceRaw);
             debug_assert_ne!(read_sequence, 0);
 
             let read_ack = read_buffer_inc!({ buffer, buffer_position } : Ack);

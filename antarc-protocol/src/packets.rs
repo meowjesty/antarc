@@ -24,7 +24,6 @@ pub type PacketId = u64;
 pub type Sequence = NonZeroU32;
 pub type ConnectionId = NonZeroU16;
 pub type Ack = u32;
-// pub type PacketType = u8;
 pub type Payload = Vec<u8>;
 
 pub const MAX_FRAGMENT_SIZE: usize = 1500;
