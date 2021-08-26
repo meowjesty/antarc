@@ -12,6 +12,7 @@ categories = ["network-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
 [dependencies]
 # antarc-macro = { path = "../antarc-macro" }
 crc32fast = { version = "1.2", features = ["std", "nightly"] }
@@ -21,6 +22,10 @@ thiserror = "1.0"
 [dev-dependencies]
 criterion = "0.3"
 rand = "0.8"
+rayon = "1.5"
+
+[profile.bench]
+debug = true
 
 [[bench]]
 name = "benchmark_clone_vs_arc"
@@ -28,4 +33,8 @@ harness = false
 
 [[bench]]
 name = "benchmark_array_concat"
+harness = false
+
+[[bench]]
+name = "benchmark_hash_packet_vs_part"
 harness = false

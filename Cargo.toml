@@ -8,3 +8,6 @@ members = [
     # "antarc-dummy-sample",
     "antarc-macro",
 ]
+
+[profile.bench]
+debug = true
