@@ -15,6 +15,9 @@ const TINY_RANGE: core::ops::Range<usize> = 0..(1024);
 ///
 /// Not every packet has the same size though, so the smaller ones must be padded to some minimum
 /// size (with 0). This has to happen both on encode and decode.
+///
+/// But in the end, I remain unconvinced, hashing the whole packet makes more sense in a protocol,
+/// as an error detecting tool.
 fn bench_hash_packet_vs_part(c: &mut Criterion) {
     let big_data_vec: Vec<u8> = BIG_RANGE.into_iter().map(|val| val as u8).collect();
     let medium_data_vec: Vec<u8> = MEDIUM_RANGE.into_iter().map(|val| val as u8).collect();
