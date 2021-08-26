@@ -108,6 +108,7 @@ impl RawPacket {
             ack,
         } = partial_decode;
 
+        type ConnectionIdRaw = u16;
         match packet_type {
             ConnectionRequest::PACKET_TYPE => {
                 debug!("server: decoding connection request packet.");
@@ -134,7 +135,8 @@ impl RawPacket {
 
                 // TODO(alex) #2 [low] 2021-08-04: Find out a way to make
                 // `from_be_bytes::<ConnectionId>` work.
-                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                let read_connection_id =
+                    read_buffer_inc!({ buffer, buffer_position } : ConnectionIdRaw);
                 debug_assert_eq!(buffer_position, ConnectionAccepted::HEADER_SIZE);
 
                 let delivery = Received {
@@ -159,7 +161,8 @@ impl RawPacket {
 
                 // TODO(alex) #2 [low] 2021-08-04: Find out a way to make
                 // `from_be_bytes::<ConnectionId>` work.
-                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                let read_connection_id =
+                    read_buffer_inc!({ buffer, buffer_position } : ConnectionIdRaw);
                 debug_assert_eq!(buffer_position, DataTransfer::HEADER_SIZE);
 
                 let read_payload = buffer[buffer_position..].to_vec();
@@ -187,7 +190,8 @@ impl RawPacket {
 
                 let read_fragment_index = read_buffer_inc!({ buffer, buffer_position } : u8);
                 let read_fragment_total = read_buffer_inc!({ buffer, buffer_position } : u8);
-                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                let read_connection_id =
+                    read_buffer_inc!({ buffer, buffer_position } : ConnectionIdRaw);
                 debug_assert_eq!(buffer_position, Fragment::HEADER_SIZE);
 
                 let read_payload = buffer[buffer_position..].to_vec();
@@ -217,7 +221,8 @@ impl RawPacket {
 
                 // TODO(alex) #2 [low] 2021-08-04: Find out a way to make
                 // `from_be_bytes::<ConnectionId>` work.
-                let read_connection_id = read_buffer_inc!({ buffer, buffer_position } : u16);
+                let read_connection_id =
+                    read_buffer_inc!({ buffer, buffer_position } : ConnectionIdRaw);
                 debug_assert_eq!(buffer_position, Heartbeat::HEADER_SIZE);
 
                 let delivery = Received {
