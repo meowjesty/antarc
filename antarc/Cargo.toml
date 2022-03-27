@@ -1,19 +1,38 @@
 [package]
 name = "antarc"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["meowjesty <meowjesty_nyan@outlook.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/meowjesty/antarc"
 repository = "https://github.com/meowjesty/antarc"
-description = "Antarc: custom UDP protocol implementation"
-readme = "../README.md"
-keywords = ["udp", "protocol"]
+description = "Antarc custom protocol"
+keywords = ["protocol"]
 categories = ["network-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-antarc-protocol = { version = "0.1", path = "../antarc-protocol" }
-log = { version = "0.4" }
-thiserror = "1.0"
+crc32fast = { version = "*", features = ["std", "nightly"] }
+log = { version = "*" }
+thiserror = "*"
+
+[dev-dependencies]
+criterion = "*"
+rand = "*"
+rayon = "*"
+
+[profile.bench]
+debug = true
+
+[[bench]]
+name = "benchmark_clone_vs_arc"
+harness = false
+
+[[bench]]
+name = "benchmark_array_concat"
+harness = false
+
+[[bench]]
+name = "benchmark_hash_packet_vs_part"
+harness = false
