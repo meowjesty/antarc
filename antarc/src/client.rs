@@ -1,9 +1,13 @@
-use crate::{state::State, Initial, Mode, Preparing, ServiceState};
+use crate::{state::State, Initial, Preparing, Service, Timer};
 
-pub(super) struct Client<S: ServiceState> {
-    state: S,
+pub(super) struct Client<Status> {
+    status: Status,
 }
 
 impl Client<State<Preparing<Initial>>> {}
 
-impl Mode for Client<State<Preparing<Initial>>> {}
+impl<T: Timer> Service<Client<State<Preparing<Initial>>>, T> {
+    pub fn new(timer: T) -> Self {
+        todo!()
+    }
+}

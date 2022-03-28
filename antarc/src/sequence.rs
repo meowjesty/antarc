@@ -1,1 +1,3 @@
-pub(crate) struct Sequence(u128);
+use core::num::NonZeroU128;
+
+pub(crate) struct Sequence(NonZeroU128);
